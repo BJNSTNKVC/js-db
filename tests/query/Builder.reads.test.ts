@@ -33,6 +33,7 @@ class CreateUsersTable extends Migration {
             table.id();
             table.string('level');
             table.integer('weight').nullable();
+            table.datetime('seen_at').nullable();
         });
     }
 }
@@ -41,12 +42,13 @@ interface Log {
     id: number;
     level: string;
     weight: number | null;
+    seen_at: Date | null;
 }
 
 const logs: Omit<Log, 'id'>[] = [
-    { level: 'info', weight: null },
-    { level: 'info', weight: null },
-    { level: 'warn', weight: 1 },
+    { level: 'info', weight: null, seen_at: new Date('2026-03-01T00:00:00.000Z') },
+    { level: 'info', weight: null, seen_at: new Date('2026-01-01T00:00:00.000Z') },
+    { level: 'warn', weight: 1, seen_at: new Date('2026-02-01T00:00:00.000Z') },
 ];
 
 const seed: Omit<User, 'id'>[] = [
@@ -546,5 +548,31 @@ describe('Builder sorting edge cases', (): void => {
 
     test('returns records unsorted when no order is given', async (): Promise<void> => {
         expect(await connection.table<Log>('logs').get()).toHaveLength(3);
+    });
+});
+
+describe('Builder point lookups on the key path', (): void => {
+    test('reads several records by key', async (): Promise<void> => {
+        const found: User[] = await users().whereIn('id', [1, 3]).get();
+
+        expect(found.map((user: User): string => user.name).sort()).toEqual(['Alice', 'Carol']);
+    });
+});
+
+describe('Builder in memory sorting of dates', (): void => {
+    test('sorts a nullable date column by its time value', async (): Promise<void> => {
+        const sorted: Log[] = await connection.table<Log>('logs').orderBy('seen_at').get();
+
+        expect(sorted.map((log: Log): string => (log.seen_at as Date).toISOString())).toEqual([
+            '2026-01-01T00:00:00.000Z',
+            '2026-02-01T00:00:00.000Z',
+            '2026-03-01T00:00:00.000Z',
+        ]);
+    });
+
+    test('sorts a nullable date column in reverse', async (): Promise<void> => {
+        const sorted: Log[] = await connection.table<Log>('logs').orderBy('seen_at', 'desc').get();
+
+        expect((sorted[0]?.seen_at as Date).toISOString()).toEqual('2026-03-01T00:00:00.000Z');
     });
 });

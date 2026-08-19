@@ -12,6 +12,7 @@ export class Request {
             request.onerror = (event: Event): void => {
                 if (tolerate) {
                     event.preventDefault()
+                    event.stopPropagation()
                 }
 
                 reject(request.error)

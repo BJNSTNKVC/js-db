@@ -19,6 +19,7 @@ interface User {
     role: string;
     visits: number;
     nickname: string | null;
+    score: number | null;
     created_at: Date | null;
     updated_at: Date | null;
 }
@@ -35,6 +36,7 @@ class CreateUsersTable extends Migration {
             table.string('role').default('member');
             table.integer('visits').default(0);
             table.string('nickname').nullable();
+            table.integer('score').nullable();
             table.timestamps();
         });
 
@@ -477,5 +479,30 @@ describe('Builder constraint attribution across nullable unique indexes', (): vo
         await expect(connection.table('nullables').insert({ nickname: null, email: 'a@b.c' })).rejects.toThrow(
             new UniqueConstraintViolationException('nullables', 'nullables_email_unique'),
         );
+    });
+});
+
+describe('Builder writes through key path point lookups', (): void => {
+    test('updates several records by key', async (): Promise<void> => {
+        await users().insert([
+            { name: 'Alice', email: 'alice@example.com' },
+            { name: 'Bob', email: 'bob@example.com' },
+            { name: 'Carol', email: 'carol@example.com' },
+        ]);
+
+        expect(await users().whereIn('id', [1, 3]).update({ role: 'owner' })).toEqual(2);
+        expect(await users().where('role', 'owner').count()).toEqual(2);
+    });
+});
+
+describe('Builder increment on a null column', (): void => {
+    test('treats a null value as zero', async (): Promise<void> => {
+        await users().insert({ name: 'Alice', email: 'alice@example.com' });
+
+        expect(await users().where('name', 'Alice').value('score')).toBeNull();
+
+        await users().where('name', 'Alice').increment('score', 3);
+
+        expect(await users().where('name', 'Alice').value('score')).toEqual(3);
     });
 });

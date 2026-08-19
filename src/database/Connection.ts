@@ -1,13 +1,14 @@
-import { DatabaseBlocked } from '../events'
+import { DatabaseBlocked, TransactionBeginning, TransactionCommitted, TransactionRolledBack } from '../events'
 import { Dispatcher } from '../events/Dispatcher'
 import { DatabaseBlockedException, MigrationMismatchException, TableNotFoundException } from '../exceptions'
 import { Migrator } from '../migrations/Migrator'
 import { Repository } from '../migrations/Repository'
 import { Registry } from '../schema/Registry'
 import { Builder } from '../query/Builder'
+import { Transaction } from './Transaction'
 import type { MigrationConstructor, MigrationRecord, MigrationStatus } from '../migrations/types'
 import type { TableSchema } from '../schema/types'
-import type { ConnectionConfig } from './types'
+import type { ConnectionConfig, TransactionOptions } from './types'
 
 export class Connection {
     /**
@@ -34,6 +35,11 @@ export class Connection {
      * The table schemas, read once per open and held in memory.
      */
     #schemas: Map<string, TableSchema> = new Map<string, TableSchema>()
+
+    /**
+     * The transaction currently running, so a nested call joins it.
+     */
+    #active: Transaction | null = null
 
     /**
      * The names of the migrations run by the last open.
@@ -146,6 +152,81 @@ export class Connection {
      */
     table<T = Record<string, unknown>>(table: string, transaction: IDBTransaction | null = null): Builder<T> {
         return new Builder<T>(this, table, transaction)
+    }
+
+    /**
+     * Run the callback inside a transaction, committing when it resolves.
+     *
+     * IndexedDB commits a transaction as soon as its request queue drains, so the callback may only
+     * await operations from this package. A nested call joins the transaction already running,
+     * because IndexedDB has no savepoints and so cannot roll back only part of one.
+     */
+    async transaction<R>(callback: (transaction: Transaction) => R | Promise<R>, options: TransactionOptions = {}): Promise<R> {
+        if (this.#active !== null) {
+            return callback(this.#active)
+        }
+
+        const database: IDBDatabase = await this.open()
+        const tables: string[] = options.tables ?? Array.from(database.objectStoreNames)
+        const handle: IDBTransaction = database.transaction(tables, 'readwrite')
+        const transaction: Transaction = new Transaction(this, handle)
+
+        let finished: boolean = false
+        let aborting: boolean = false
+
+        // An untolerated request failure bubbles here and takes the transaction down with it, which
+        // happens before our own catch runs. Aborting again would then throw.
+        handle.onerror = (): void => {
+            aborting = true
+        }
+
+        const settled: Promise<void> = new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
+            handle.oncomplete = (): void => {
+                finished = true
+
+                resolve()
+            }
+
+            handle.onabort = (): void => {
+                finished = true
+
+                reject(handle.error ?? new DOMException('The transaction was aborted.', 'AbortError'))
+            }
+        })
+
+        settled.catch((): void => {
+            // A deliberate abort rejects this too, and the original failure is the one worth throwing.
+        })
+
+        this.#active = transaction
+
+        Dispatcher.dispatch(new TransactionBeginning(this.#name))
+
+        try {
+            const result: R = await callback(transaction)
+
+            await settled
+
+            this.#active = null
+
+            Dispatcher.dispatch(new TransactionCommitted(this.#name))
+
+            return result
+        } catch (error: unknown) {
+            this.#active = null
+
+            // A transaction that already committed cannot be rolled back, so saying it was would be
+            // a lie. That only happens when the callback outlived its request queue.
+            if (!finished) {
+                if (!aborting) {
+                    handle.abort()
+                }
+
+                Dispatcher.dispatch(new TransactionRolledBack(this.#name, error))
+            }
+
+            throw error
+        }
     }
 
     /**
