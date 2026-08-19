@@ -1,11 +1,12 @@
 import { QueryExecuted } from '../events'
 import { Dispatcher } from '../events/Dispatcher'
-import { RecordsNotFoundException } from '../exceptions'
+import { RecordsNotFoundException, SchemaException, UniqueConstraintViolationException } from '../exceptions'
 import { Request } from '../database/Request'
+import { Coercer } from '../schema/Coercer'
 import { Planner } from './Planner'
 import { Predicate } from './Predicate'
 import type { Connection } from '../database/Connection'
-import type { TableSchema } from '../schema/types'
+import type { IndexSchema, TableSchema } from '../schema/types'
 import type { Conjunction, Constraint, Direction, Key, Operator, Order, Plan } from './types'
 
 type Nested<T> = (query: Builder<T>) => void
@@ -480,6 +481,310 @@ export class Builder<T = Record<string, unknown>> {
         let index: number = 0
 
         return this.chunk(1, async (records: T[]): Promise<unknown> => callback(records[0] as T, index++))
+    }
+
+    /**
+     * Insert one or more records into the table.
+     */
+    async insert(records: Partial<T> | Partial<T>[]): Promise<number> {
+        const rows: Partial<T>[] = Array.isArray(records) ? records : [records]
+        const schema: TableSchema = await this.#connection.schema(this.#table)
+        const store: IDBObjectStore = await this.#store('readwrite')
+        const started: number = Date.now()
+
+        for (const row of rows) {
+            await this.#add(store, schema, row)
+        }
+
+        this.#emit('insert', started, rows.length)
+
+        return rows.length
+    }
+
+    /**
+     * Insert a record and get the key the database gave it.
+     */
+    async insertGetId(record: Partial<T>): Promise<IDBValidKey> {
+        const schema: TableSchema = await this.#connection.schema(this.#table)
+        const store: IDBObjectStore = await this.#store('readwrite')
+        const started: number = Date.now()
+        const key: IDBValidKey = await this.#add(store, schema, record)
+
+        this.#emit('insert', started, 1)
+
+        return key
+    }
+
+    /**
+     * Update every record matching the query.
+     */
+    async update(values: Partial<T>): Promise<number> {
+        const schema: TableSchema = await this.#connection.schema(this.#table)
+        const prepared: Record<string, unknown> = Coercer.updatable(values as Record<string, unknown>, schema, this.#connection.strict, new Date())
+
+        this.#settled(schema, prepared)
+
+        return this.#modify((cursor: IDBCursorWithValue): void => {
+            cursor.update({ ...cursor.value as Record<string, unknown>, ...prepared })
+        })
+    }
+
+    /**
+     * Update the matching record, inserting it when there is none.
+     */
+    async updateOrInsert(attributes: Partial<T>, values: Partial<T> = {} as Partial<T>): Promise<boolean> {
+        const query: Builder<T> = this.clone().where(attributes as Partial<T>)
+
+        if (await query.exists()) {
+            await query.update(values)
+
+            return false
+        }
+
+        await this.clone().insert({ ...attributes, ...values })
+
+        return true
+    }
+
+    /**
+     * Insert records, updating those that already exist.
+     */
+    async upsert(values: Partial<T>[], uniqueBy: Key<T> | Key<T>[], update?: Key<T>[]): Promise<number> {
+        const schema: TableSchema = await this.#connection.schema(this.#table)
+        const columns: string[] = (Array.isArray(uniqueBy) ? uniqueBy : [uniqueBy]) as string[]
+        const target: IndexSchema | null = this.#conflict(schema, columns)
+        const store: IDBObjectStore = await this.#store('readwrite')
+        const started: number = Date.now()
+
+        for (const value of values) {
+            await this.#merge(store, schema, columns, target, value, update)
+        }
+
+        this.#emit('upsert', started, values.length)
+
+        return values.length
+    }
+
+    /**
+     * Add the given amount to a column of every record matching the query.
+     */
+    async increment(column: Key<T>, amount: number = 1, extra: Partial<T> = {} as Partial<T>): Promise<number> {
+        return this.#step(column, amount, extra)
+    }
+
+    /**
+     * Subtract the given amount from a column of every record matching the query.
+     */
+    async decrement(column: Key<T>, amount: number = 1, extra: Partial<T> = {} as Partial<T>): Promise<number> {
+        return this.#step(column, -amount, extra)
+    }
+
+    /**
+     * Delete every record matching the query.
+     */
+    async delete(): Promise<number> {
+        return this.#modify((cursor: IDBCursorWithValue): void => {
+            cursor.delete()
+        })
+    }
+
+    /**
+     * Delete every record in the table.
+     */
+    async truncate(): Promise<void> {
+        const store: IDBObjectStore = await this.#store('readwrite')
+        const started: number = Date.now()
+
+        await Request.settle(store.clear())
+
+        this.#emit('truncate', started, 0)
+    }
+
+    /**
+     * Add a record to the store, reporting a violated constraint by its index.
+     */
+    async #add(store: IDBObjectStore, schema: TableSchema, record: Partial<T>): Promise<IDBValidKey> {
+        const prepared: Record<string, unknown> = Coercer.insertable(record as Record<string, unknown>, schema, this.#connection.strict, new Date())
+
+        try {
+            return await Request.settle(store.add(prepared), true)
+        } catch (error: unknown) {
+            if (error instanceof DOMException && error.name === 'ConstraintError') {
+                const index: string | null = await this.#violated(store, schema, prepared)
+
+                if (index !== null) {
+                    throw new UniqueConstraintViolationException(this.#table, index)
+                }
+            }
+
+            throw error
+        }
+    }
+
+    /**
+     * Find the unique index the record collides with, or null when it cannot be attributed.
+     */
+    async #violated(store: IDBObjectStore, schema: TableSchema, record: Record<string, unknown>): Promise<string | null> {
+        // A generated key is absent from the record, and an absent value is not a valid range.
+        if (schema.key !== null && this.#keyable(record[schema.key])) {
+            if (await Request.settle(store.count(IDBKeyRange.only(record[schema.key] as IDBValidKey))) > 0) {
+                return schema.key
+            }
+        }
+
+        for (const index of schema.indexes.filter((candidate: IndexSchema): boolean => candidate.unique)) {
+            if (!index.columns.every((column: string): boolean => this.#keyable(record[column]))) {
+                continue
+            }
+
+            const key: IDBValidKey = this.#keyOf(index.columns, record)
+
+            if (await Request.settle(store.index(index.name).count(IDBKeyRange.only(key))) > 0) {
+                return index.name
+            }
+        }
+
+        return null
+    }
+
+    /**
+     * Determine whether the value may be used as an IndexedDB key.
+     */
+    #keyable(value: unknown): boolean {
+        return value !== null && value !== undefined
+    }
+
+    /**
+     * Build the index key the given columns of a record form.
+     */
+    #keyOf(columns: string[], record: Record<string, unknown>): IDBValidKey {
+        if (columns.length === 1) {
+            return record[columns[0] as string] as IDBValidKey
+        }
+
+        return columns.map((column: string): unknown => record[column]) as IDBValidKey
+    }
+
+    /**
+     * Resolve the conflict target of an upsert, or fail when it cannot be enforced.
+     */
+    #conflict(schema: TableSchema, columns: string[]): IndexSchema | null {
+        if (columns.length === 1 && columns[0] === schema.key) {
+            return null
+        }
+
+        const index: IndexSchema | undefined = schema.indexes.find((candidate: IndexSchema): boolean => candidate.unique
+            && candidate.columns.length === columns.length
+            && candidate.columns.every((column: string, position: number): boolean => column === columns[position]))
+
+        if (index === undefined) {
+            throw new SchemaException(`Upsert on table [${this.#table}] requires [${columns.join(', ')}] to be the key path or a unique index.`)
+        }
+
+        return index
+    }
+
+    /**
+     * Insert a record, or merge it into the one already holding its conflict key.
+     */
+    async #merge(store: IDBObjectStore, schema: TableSchema, columns: string[], target: IndexSchema | null, value: Partial<T>, update?: Key<T>[]): Promise<void> {
+        if (target === null) {
+            await Request.settle(store.put(Coercer.insertable(value as Record<string, unknown>, schema, this.#connection.strict, new Date())))
+
+            return
+        }
+
+        const key: IDBValidKey = this.#keyOf(columns, value as Record<string, unknown>)
+        const existing: Record<string, unknown> | undefined = await Request.settle(store.index(target.name).get(IDBKeyRange.only(key)) as IDBRequest<Record<string, unknown> | undefined>)
+
+        if (existing === undefined) {
+            await this.#add(store, schema, value)
+
+            return
+        }
+
+        const changes: Record<string, unknown> = update === undefined
+            ? value as Record<string, unknown>
+            : Object.fromEntries((update as string[]).map((column: string): [string, unknown] => [column, (value as Record<string, unknown>)[column]]))
+
+        const prepared: Record<string, unknown> = Coercer.updatable(changes, schema, this.#connection.strict, new Date())
+
+        this.#settled(schema, prepared)
+
+        await Request.settle(store.put({ ...existing, ...prepared }))
+    }
+
+    /**
+     * Add the given amount to a column of every record matching the query.
+     */
+    async #step(column: Key<T>, amount: number, extra: Partial<T>): Promise<number> {
+        const schema: TableSchema = await this.#connection.schema(this.#table)
+        const prepared: Record<string, unknown> = Coercer.updatable(extra as Record<string, unknown>, schema, this.#connection.strict, new Date())
+
+        this.#settled(schema, prepared)
+
+        return this.#modify((cursor: IDBCursorWithValue): void => {
+            const record: Record<string, unknown> = { ...cursor.value as Record<string, unknown> }
+            const current: number = Number(record[column] ?? 0)
+
+            cursor.update({ ...record, ...prepared, [column]: current + amount })
+        })
+    }
+
+    /**
+     * Assert the changes leave the key path of the record alone.
+     */
+    #settled(schema: TableSchema, changes: Record<string, unknown>): void {
+        if (schema.key !== null && Object.hasOwn(changes, schema.key)) {
+            throw new SchemaException(`Column [${schema.key}] is the key path of table [${this.#table}] and may not be updated.`)
+        }
+    }
+
+    /**
+     * Apply a change to every record matching the query, in the order the plan scans them.
+     */
+    async #modify(apply: (cursor: IDBCursorWithValue) => void): Promise<number> {
+        const schema: TableSchema = await this.#connection.schema(this.#table)
+        const plan: Plan = Planner.plan(this.#constraints, this.#orders, schema)
+        const store: IDBObjectStore = await this.#store('readwrite')
+        const started: number = Date.now()
+        const matches: (record: Record<string, unknown>) => boolean = Predicate.compile(plan.residual)
+        const ceiling: number | null = this.#limit === null ? null : this.#offset + this.#limit
+
+        let seen: number = 0
+        let affected: number = 0
+
+        const visit = (cursor: IDBCursorWithValue): boolean => {
+            if (!matches(cursor.value as Record<string, unknown>)) {
+                return true
+            }
+
+            seen++
+
+            if (seen > this.#offset) {
+                apply(cursor)
+
+                affected++
+            }
+
+            return ceiling === null || seen < ceiling
+        }
+
+        if (plan.values === null) {
+            const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index)
+
+            await Request.walk(source.openCursor(plan.range, plan.direction), visit)
+        } else {
+            for (const value of plan.values) {
+                const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index)
+
+                await Request.walk(source.openCursor(IDBKeyRange.only(value as IDBValidKey)), visit)
+            }
+        }
+
+        this.#emit(Planner.describe(plan), started, affected)
+
+        return affected
     }
 
     /**
