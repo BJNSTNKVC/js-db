@@ -41,32 +41,38 @@ export class Predicate {
      * Test a single constraint against a record.
      */
     static #test(constraint: Constraint, record: Record<string, unknown>): boolean {
-        const held: unknown = constraint.type === 'nested' ? undefined : record[constraint.column]
-        const result: boolean = this.#result(constraint, held, record)
+        if (constraint.type === 'nested') {
+            return this.#negate(constraint.not, this.compile(constraint.constraints)(record))
+        }
 
-        return constraint.not ? !result : result
+        const held: unknown = record[constraint.column]
+
+        if (constraint.type === 'null') {
+            return this.#negate(constraint.not, held === null || held === undefined)
+        }
+
+        // SQL three valued logic: comparing against null is unknown, and negating unknown leaves it
+        // unknown, so a null value satisfies neither a constraint nor its negation.
+        if (held === null || held === undefined) {
+            return false
+        }
+
+        if (constraint.type === 'in') {
+            return this.#negate(constraint.not, constraint.values.some((value: unknown): boolean => this.#compare(held, '==', value)))
+        }
+
+        if (constraint.type === 'between') {
+            return this.#negate(constraint.not, this.#compare(held, '>=', constraint.from) && this.#compare(held, '<=', constraint.to))
+        }
+
+        return this.#negate(constraint.not, this.#compare(held, constraint.operator, constraint.value))
     }
 
     /**
-     * Resolve the constraint against the value it applies to.
+     * Negate a result when the constraint asks for it.
      */
-    static #result(constraint: Constraint, held: unknown, record: Record<string, unknown>): boolean {
-        switch (constraint.type) {
-            case 'basic':
-                return this.#compare(held, constraint.operator, constraint.value)
-
-            case 'in':
-                return constraint.values.some((value: unknown): boolean => this.#compare(held, '==', value))
-
-            case 'null':
-                return held === null || held === undefined
-
-            case 'between':
-                return this.#compare(held, '>=', constraint.from) && this.#compare(held, '<=', constraint.to)
-
-            default:
-                return this.compile(constraint.constraints)(record)
-        }
+    static #negate(not: boolean, result: boolean): boolean {
+        return not ? !result : result
     }
 
     /**

@@ -1,0 +1,727 @@
+import { QueryExecuted } from '../events'
+import { Dispatcher } from '../events/Dispatcher'
+import { RecordsNotFoundException } from '../exceptions'
+import { Request } from '../database/Request'
+import { Planner } from './Planner'
+import { Predicate } from './Predicate'
+import type { Connection } from '../database/Connection'
+import type { TableSchema } from '../schema/types'
+import type { Conjunction, Constraint, Direction, Key, Operator, Order, Plan } from './types'
+
+type Nested<T> = (query: Builder<T>) => void
+
+type Column<T> = Key<T> | Partial<T> | Nested<T>
+
+export class Builder<T = Record<string, unknown>> {
+    /**
+     * The connection the query runs on.
+     */
+    readonly #connection: Connection
+
+    /**
+     * The name of the table the query runs against.
+     */
+    readonly #table: string
+
+    /**
+     * The transaction the query joins, when it runs inside one.
+     */
+    readonly #transaction: IDBTransaction | null
+
+    /**
+     * The constraints the query filters by.
+     */
+    #constraints: Constraint[] = []
+
+    /**
+     * The orders the query sorts by.
+     */
+    #orders: Order[] = []
+
+    /**
+     * The maximum number of records the query returns.
+     */
+    #limit: number | null = null
+
+    /**
+     * The number of records the query skips.
+     */
+    #offset: number = 0
+
+    /**
+     * The columns the query projects, or null for every column.
+     */
+    #columns: string[] | null = null
+
+    /**
+     * Whether the query removes duplicate records.
+     */
+    #distinct: boolean = false
+
+    /**
+     * Create a new query builder.
+     */
+    constructor(connection: Connection, table: string, transaction: IDBTransaction | null = null) {
+        this.#connection = connection
+        this.#table = table
+        this.#transaction = transaction
+    }
+
+    /**
+     * Get the name of the table the query runs against.
+     */
+    get table(): string {
+        return this.#table
+    }
+
+    /**
+     * Add a constraint to the query.
+     */
+    where(column: Column<T>, operator?: Operator | unknown, value?: unknown): this {
+        return this.#constrain('and', false, column, operator, value)
+    }
+
+    /**
+     * Add a disjunctive constraint to the query.
+     */
+    orWhere(column: Column<T>, operator?: Operator | unknown, value?: unknown): this {
+        return this.#constrain('or', false, column, operator, value)
+    }
+
+    /**
+     * Add a negated constraint to the query.
+     */
+    whereNot(column: Column<T>, operator?: Operator | unknown, value?: unknown): this {
+        return this.#constrain('and', true, column, operator, value)
+    }
+
+    /**
+     * Constrain a column to one of the given values.
+     */
+    whereIn(column: Key<T>, values: unknown[]): this {
+        return this.#push({ type: 'in', column, values, conjunction: 'and', not: false })
+    }
+
+    /**
+     * Constrain a column to none of the given values.
+     */
+    whereNotIn(column: Key<T>, values: unknown[]): this {
+        return this.#push({ type: 'in', column, values, conjunction: 'and', not: true })
+    }
+
+    /**
+     * Constrain a column to be null.
+     */
+    whereNull(column: Key<T>): this {
+        return this.#push({ type: 'null', column, conjunction: 'and', not: false })
+    }
+
+    /**
+     * Constrain a column to not be null.
+     */
+    whereNotNull(column: Key<T>): this {
+        return this.#push({ type: 'null', column, conjunction: 'and', not: true })
+    }
+
+    /**
+     * Constrain a column to fall between two values, inclusive.
+     */
+    whereBetween(column: Key<T>, values: [unknown, unknown]): this {
+        return this.#push({ type: 'between', column, from: values[0], to: values[1], conjunction: 'and', not: false })
+    }
+
+    /**
+     * Constrain a column to fall outside two values.
+     */
+    whereNotBetween(column: Key<T>, values: [unknown, unknown]): this {
+        return this.#push({ type: 'between', column, from: values[0], to: values[1], conjunction: 'and', not: true })
+    }
+
+    /**
+     * Constrain a column to match a pattern.
+     */
+    whereLike(column: Key<T>, pattern: string): this {
+        return this.#push({ type: 'basic', column, operator: 'like', value: pattern, conjunction: 'and', not: false })
+    }
+
+    /**
+     * Constrain a column to not match a pattern.
+     */
+    whereNotLike(column: Key<T>, pattern: string): this {
+        return this.#push({ type: 'basic', column, operator: 'not like', value: pattern, conjunction: 'and', not: false })
+    }
+
+    /**
+     * Project only the given columns.
+     */
+    select(...columns: (Key<T> | Key<T>[])[]): this {
+        this.#columns = columns.flat() as string[]
+
+        return this
+    }
+
+    /**
+     * Remove duplicate records from the result.
+     */
+    distinct(value: boolean = true): this {
+        this.#distinct = value
+
+        return this
+    }
+
+    /**
+     * Sort the result by a column.
+     */
+    orderBy(column: Key<T>, direction: Direction = 'asc'): this {
+        this.#orders.push({ column, direction })
+
+        return this
+    }
+
+    /**
+     * Sort the result by a column, newest first.
+     */
+    latest(column: Key<T> = 'created_at'): this {
+        return this.orderBy(column, 'desc')
+    }
+
+    /**
+     * Sort the result by a column, oldest first.
+     */
+    oldest(column: Key<T> = 'created_at'): this {
+        return this.orderBy(column, 'asc')
+    }
+
+    /**
+     * Limit the number of records the query returns.
+     */
+    limit(value: number): this {
+        this.#limit = value
+
+        return this
+    }
+
+    /**
+     * Limit the number of records the query returns.
+     */
+    take(value: number): this {
+        return this.limit(value)
+    }
+
+    /**
+     * Skip the given number of records.
+     */
+    offset(value: number): this {
+        this.#offset = value
+
+        return this
+    }
+
+    /**
+     * Skip the given number of records.
+     */
+    skip(value: number): this {
+        return this.offset(value)
+    }
+
+    /**
+     * Limit the query to a single page of records.
+     */
+    forPage(page: number, perPage: number = 15): this {
+        return this.offset((page - 1) * perPage).limit(perPage)
+    }
+
+    /**
+     * Apply the callback when the value is truthy.
+     */
+    when(value: unknown, callback: (query: this, value: unknown) => void): this {
+        if (value) {
+            callback(this, value)
+        }
+
+        return this
+    }
+
+    /**
+     * Pass the query to the callback and carry on.
+     */
+    tap(callback: (query: this) => void): this {
+        callback(this)
+
+        return this
+    }
+
+    /**
+     * Get a copy of the query.
+     */
+    clone(): Builder<T> {
+        const clone: Builder<T> = new Builder<T>(this.#connection, this.#table, this.#transaction)
+
+        clone.#constraints = [...this.#constraints]
+        clone.#orders = [...this.#orders]
+        clone.#limit = this.#limit
+        clone.#offset = this.#offset
+        clone.#columns = this.#columns === null ? null : [...this.#columns]
+        clone.#distinct = this.#distinct
+
+        return clone
+    }
+
+    /**
+     * Dump the state of the query.
+     */
+    dump(): this {
+        console.log({
+            table      : this.#table,
+            constraints: this.#constraints,
+            orders     : this.#orders,
+            limit      : this.#limit,
+            offset     : this.#offset,
+            columns    : this.#columns,
+            distinct   : this.#distinct,
+        })
+
+        return this
+    }
+
+    /**
+     * Describe the plan the query would run under.
+     */
+    async explain(): Promise<string> {
+        const schema: TableSchema = await this.#connection.schema(this.#table)
+
+        return Planner.describe(Planner.plan(this.#constraints, this.#orders, schema))
+    }
+
+    /**
+     * Get every record matching the query.
+     */
+    async get(): Promise<T[]> {
+        return this.#shape(await this.#records())
+    }
+
+    /**
+     * Get the first record matching the query.
+     */
+    async first(): Promise<T | null> {
+        const records: T[] = await this.clone().limit(1).get()
+
+        return records[0] ?? null
+    }
+
+    /**
+     * Get the first record matching the query, or fail.
+     */
+    async firstOrFail(): Promise<T> {
+        const record: T | null = await this.first()
+
+        if (record === null) {
+            throw new RecordsNotFoundException(`No records found in table [${this.#table}].`)
+        }
+
+        return record
+    }
+
+    /**
+     * Get the record with the given key.
+     */
+    async find(key: IDBValidKey): Promise<T | null> {
+        const store: IDBObjectStore = await this.#store('readonly')
+        const started: number = Date.now()
+        const record: T | undefined = await Request.settle(store.get(key) as IDBRequest<T | undefined>)
+
+        this.#emit('key', started, record === undefined ? 0 : 1)
+
+        return record ?? null
+    }
+
+    /**
+     * Get the record with the given key, or fail.
+     */
+    async findOrFail(key: IDBValidKey): Promise<T> {
+        const record: T | null = await this.find(key)
+
+        if (record === null) {
+            throw new RecordsNotFoundException(`No record with key [${String(key)}] in table [${this.#table}].`)
+        }
+
+        return record
+    }
+
+    /**
+     * Get a single column from the first record matching the query.
+     */
+    async value<V = unknown>(column: Key<T>): Promise<V | null> {
+        const record: T | null = await this.clone().first()
+
+        if (record === null) {
+            return null
+        }
+
+        return (record as Record<string, unknown>)[column] as V ?? null
+    }
+
+    /**
+     * Get a single column from every record matching the query.
+     */
+    async pluck<V = unknown>(column: Key<T>): Promise<V[]>
+    async pluck<V = unknown>(column: Key<T>, key: Key<T>): Promise<Record<string, V>>
+    async pluck<V = unknown>(column: Key<T>, key?: Key<T>): Promise<V[] | Record<string, V>> {
+        const records: Record<string, unknown>[] = await this.#records() as Record<string, unknown>[]
+
+        if (key === undefined) {
+            return records.map((record: Record<string, unknown>): V => record[column] as V)
+        }
+
+        return Object.fromEntries(records.map((record: Record<string, unknown>): [string, V] => [String(record[key]), record[column] as V]))
+    }
+
+    /**
+     * Determine whether any record matches the query.
+     */
+    async exists(): Promise<boolean> {
+        return (await this.clone().limit(1).#records()).length > 0
+    }
+
+    /**
+     * Determine whether no record matches the query.
+     */
+    async doesntExist(): Promise<boolean> {
+        return !await this.exists()
+    }
+
+    /**
+     * Count the records matching the query.
+     */
+    async count(): Promise<number> {
+        const schema: TableSchema = await this.#connection.schema(this.#table)
+        const plan: Plan = Planner.plan(this.#constraints, this.#orders, schema)
+
+        if (plan.residual.length > 0 || plan.values !== null) {
+            return (await this.#records()).length
+        }
+
+        const store: IDBObjectStore = await this.#store('readonly')
+        const started: number = Date.now()
+        const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index)
+        const count: number = await Request.settle(source.count(plan.range ?? undefined))
+
+        this.#emit(Planner.describe(plan), started, count)
+
+        return count
+    }
+
+    /**
+     * Sum a column across the records matching the query.
+     */
+    async sum(column: Key<T>): Promise<number> {
+        return (await this.#numbers(column)).reduce((carry: number, value: number): number => carry + value, 0)
+    }
+
+    /**
+     * Average a column across the records matching the query.
+     */
+    async avg(column: Key<T>): Promise<number | null> {
+        const values: number[] = await this.#numbers(column)
+
+        if (values.length === 0) {
+            return null
+        }
+
+        return values.reduce((carry: number, value: number): number => carry + value, 0) / values.length
+    }
+
+    /**
+     * Get the smallest value of a column across the records matching the query.
+     */
+    async min(column: Key<T>): Promise<number | null> {
+        const values: number[] = await this.#numbers(column)
+
+        return values.length === 0 ? null : Math.min(...values)
+    }
+
+    /**
+     * Get the largest value of a column across the records matching the query.
+     */
+    async max(column: Key<T>): Promise<number | null> {
+        const values: number[] = await this.#numbers(column)
+
+        return values.length === 0 ? null : Math.max(...values)
+    }
+
+    /**
+     * Walk the records matching the query in chunks.
+     */
+    async chunk(size: number, callback: (records: T[], page: number) => unknown): Promise<boolean> {
+        const keys: IDBValidKey[] = await this.#keys()
+
+        for (let index: number = 0; index < keys.length; index += size) {
+            const page: IDBValidKey[] = keys.slice(index, index + size)
+            const store: IDBObjectStore = await this.#store('readonly')
+
+            const records: (T | undefined)[] = await Promise.all(
+                page.map((key: IDBValidKey): Promise<T | undefined> => Request.settle(store.get(key) as IDBRequest<T | undefined>)),
+            )
+
+            const present: T[] = records.filter((record: T | undefined): record is T => record !== undefined)
+
+            if (await callback(this.#shape(present), Math.floor(index / size) + 1) === false) {
+                return false
+            }
+        }
+
+        return true
+    }
+
+    /**
+     * Walk the records matching the query one at a time.
+     */
+    async each(callback: (record: T, index: number) => unknown): Promise<boolean> {
+        let index: number = 0
+
+        return this.chunk(1, async (records: T[]): Promise<unknown> => callback(records[0] as T, index++))
+    }
+
+    /**
+     * Add a constraint of the given shape to the query.
+     */
+    #constrain(conjunction: Conjunction, not: boolean, column: Column<T>, operator?: Operator | unknown, value?: unknown): this {
+        if (typeof column === 'function') {
+            const nested: Builder<T> = new Builder<T>(this.#connection, this.#table, this.#transaction)
+
+            ;(column as Nested<T>)(nested)
+
+            return this.#push({ type: 'nested', constraints: nested.#constraints, conjunction, not })
+        }
+
+        if (typeof column === 'object' && column !== null) {
+            const constraints: Constraint[] = Object.entries(column).map(([key, held]: [string, unknown]): Constraint => ({
+                type       : 'basic',
+                column     : key,
+                operator   : '=',
+                value      : held,
+                conjunction: 'and',
+                not        : false,
+            }))
+
+            return this.#push({ type: 'nested', constraints, conjunction, not })
+        }
+
+        const resolved: { operator: Operator; value: unknown } = value === undefined
+            ? { operator: '=', value: operator }
+            : { operator: operator as Operator, value }
+
+        return this.#push({ type: 'basic', column: column as string, operator: resolved.operator, value: resolved.value, conjunction, not })
+    }
+
+    /**
+     * Append a constraint to the query.
+     */
+    #push(constraint: Constraint): this {
+        this.#constraints.push(constraint)
+
+        return this
+    }
+
+    /**
+     * Get the object store the query reads from.
+     */
+    async #store(mode: IDBTransactionMode): Promise<IDBObjectStore> {
+        if (this.#transaction !== null) {
+            return this.#transaction.objectStore(this.#table)
+        }
+
+        const database: IDBDatabase = await this.#connection.open()
+
+        await this.#connection.schema(this.#table)
+
+        return database.transaction(this.#table, mode).objectStore(this.#table)
+    }
+
+    /**
+     * Get the numeric values of a column across the records matching the query.
+     */
+    async #numbers(column: Key<T>): Promise<number[]> {
+        const records: Record<string, unknown>[] = await this.#records() as Record<string, unknown>[]
+
+        return records
+            .map((record: Record<string, unknown>): unknown => record[column])
+            .filter((value: unknown): boolean => value !== null && value !== undefined)
+            .map((value: unknown): number => Number(value))
+    }
+
+    /**
+     * Get the records matching the query, unshaped.
+     */
+    async #records(): Promise<T[]> {
+        return (await this.#matched()).records
+    }
+
+    /**
+     * Get the keys of the records matching the query.
+     */
+    async #keys(): Promise<IDBValidKey[]> {
+        return (await this.#matched()).keys
+    }
+
+    /**
+     * Run the query, collecting the matching records and their keys.
+     */
+    async #matched(): Promise<{ records: T[]; keys: IDBValidKey[] }> {
+        const schema: TableSchema = await this.#connection.schema(this.#table)
+        const plan: Plan = Planner.plan(this.#constraints, this.#orders, schema)
+        const store: IDBObjectStore = await this.#store('readonly')
+        const started: number = Date.now()
+        const matches: (record: Record<string, unknown>) => boolean = Predicate.compile(plan.residual)
+
+        const collected: { record: T; key: IDBValidKey }[] = plan.values === null
+            ? await this.#cursored(store, plan, matches)
+            : await this.#points(store, plan, matches)
+
+        const ordered: { record: T; key: IDBValidKey }[] = plan.ordered ? collected : this.#sorted(collected)
+        const paged: { record: T; key: IDBValidKey }[] = this.#paged(ordered)
+
+        this.#emit(Planner.describe(plan), started, paged.length)
+
+        return {
+            records: paged.map((entry): T => entry.record),
+            keys   : paged.map((entry): IDBValidKey => entry.key),
+        }
+    }
+
+    /**
+     * Collect the records a cursor over the planned source yields.
+     */
+    async #cursored(store: IDBObjectStore, plan: Plan, matches: (record: Record<string, unknown>) => boolean): Promise<{ record: T; key: IDBValidKey }[]> {
+        const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index)
+        const collected: { record: T; key: IDBValidKey }[] = []
+        const ceiling: number | null = plan.ordered && this.#limit !== null ? this.#offset + this.#limit : null
+
+        await Request.walk(source.openCursor(plan.range, plan.direction), (cursor: IDBCursorWithValue): boolean => {
+            if (matches(cursor.value as Record<string, unknown>)) {
+                collected.push({ record: cursor.value as T, key: cursor.primaryKey })
+            }
+
+            return ceiling === null || collected.length < ceiling
+        })
+
+        return collected
+    }
+
+    /**
+     * Collect the records the planned point lookups yield.
+     */
+    async #points(store: IDBObjectStore, plan: Plan, matches: (record: Record<string, unknown>) => boolean): Promise<{ record: T; key: IDBValidKey }[]> {
+        const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index)
+        const collected: { record: T; key: IDBValidKey }[] = []
+
+        for (const value of plan.values as unknown[]) {
+            const range: IDBKeyRange = IDBKeyRange.only(value as IDBValidKey)
+
+            await Request.walk(source.openCursor(range), (cursor: IDBCursorWithValue): void => {
+                if (matches(cursor.value as Record<string, unknown>)) {
+                    collected.push({ record: cursor.value as T, key: cursor.primaryKey })
+                }
+            })
+        }
+
+        return collected
+    }
+
+    /**
+     * Sort the collected records by the requested orders.
+     */
+    #sorted(collected: { record: T; key: IDBValidKey }[]): { record: T; key: IDBValidKey }[] {
+        if (this.#orders.length === 0) {
+            return collected
+        }
+
+        return [...collected].sort((a, b): number => {
+            for (const order of this.#orders) {
+                const compared: number = this.#compare(
+                    (a.record as Record<string, unknown>)[order.column],
+                    (b.record as Record<string, unknown>)[order.column],
+                )
+
+                if (compared !== 0) {
+                    return order.direction === 'desc' ? -compared : compared
+                }
+            }
+
+            return 0
+        })
+    }
+
+    /**
+     * Compare two column values, treating null as the lowest value.
+     */
+    #compare(a: unknown, b: unknown): number {
+        const left: unknown = a instanceof Date ? a.getTime() : a
+        const right: unknown = b instanceof Date ? b.getTime() : b
+        const missing = (value: unknown): boolean => value === null || value === undefined
+
+        if (missing(left) || missing(right)) {
+            return missing(left) && missing(right) ? 0 : (missing(left) ? -1 : 1)
+        }
+
+        if (left === right) {
+            return 0
+        }
+
+        return (left as number) < (right as number) ? -1 : 1
+    }
+
+    /**
+     * Apply the offset and limit to the collected records.
+     */
+    #paged(collected: { record: T; key: IDBValidKey }[]): { record: T; key: IDBValidKey }[] {
+        const from: number = this.#offset
+
+        return this.#limit === null ? collected.slice(from) : collected.slice(from, from + this.#limit)
+    }
+
+    /**
+     * Project and deduplicate the records the query returns.
+     */
+    #shape(records: T[]): T[] {
+        const projected: T[] = this.#columns === null
+            ? records
+            : records.map((record: T): T => Object.fromEntries(
+                (this.#columns as string[]).map((column: string): [string, unknown] => [column, (record as Record<string, unknown>)[column]]),
+            ) as T)
+
+        if (!this.#distinct) {
+            return projected
+        }
+
+        const seen: Set<string> = new Set<string>()
+
+        return projected.filter((record: T): boolean => {
+            const signature: string = JSON.stringify(record)
+
+            if (seen.has(signature)) {
+                return false
+            }
+
+            seen.add(signature)
+
+            return true
+        })
+    }
+
+    /**
+     * Announce that the query ran.
+     */
+    #emit(plan: string, started: number, records: number): void {
+        Dispatcher.dispatch(new QueryExecuted(
+            this.#connection.name,
+            this.#table,
+            plan,
+            this.#constraints,
+            this.#orders,
+            this.#limit,
+            Date.now() - started,
+            records,
+        ))
+    }
+}

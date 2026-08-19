@@ -245,6 +245,39 @@ describe('Predicate conjunctions', (): void => {
     });
 });
 
+describe('Predicate three valued logic', (): void => {
+    test.each([
+        ['=', false],
+        ['!=', false],
+        ['<>', false],
+        ['>', false],
+        ['<', false],
+        ['like', false],
+        ['not like', false],
+    ] as [Operator, boolean][])('a null value satisfies neither %s nor its negation', (operator: Operator, expected: boolean): void => {
+        expect(matches([basic('value', operator, 7)], { value: null })).toEqual(expected);
+        expect(matches([basic('value', operator, 7, 'and', true)], { value: null })).toEqual(expected);
+    });
+
+    test('a null value satisfies neither in nor not in', (): void => {
+        expect(matches([{ type: 'in', column: 'value', values: [7], conjunction: 'and', not: false }], { value: null })).toEqual(false);
+        expect(matches([{ type: 'in', column: 'value', values: [7], conjunction: 'and', not: true }], { value: null })).toEqual(false);
+    });
+
+    test('a null value satisfies neither between nor not between', (): void => {
+        expect(matches([{ type: 'between', column: 'value', from: 1, to: 10, conjunction: 'and', not: false }], { value: null })).toEqual(false);
+        expect(matches([{ type: 'between', column: 'value', from: 1, to: 10, conjunction: 'and', not: true }], { value: null })).toEqual(false);
+    });
+
+    test('a missing column behaves the same as an explicit null', (): void => {
+        expect(matches([basic('value', '!=', 7, 'and', false)], {})).toEqual(false);
+    });
+
+    test('the null constraint is the only way to match a null', (): void => {
+        expect(matches([{ type: 'null', column: 'value', conjunction: 'and', not: false }], { value: null })).toEqual(true);
+    });
+});
+
 describe('Predicate nested groups', (): void => {
     test('groups constraints so or does not leak', (): void => {
         const constraints: Constraint[] = [

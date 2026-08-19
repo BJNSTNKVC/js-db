@@ -4,6 +4,7 @@ import { DatabaseBlockedException, MigrationMismatchException, TableNotFoundExce
 import { Migrator } from '../migrations/Migrator'
 import { Repository } from '../migrations/Repository'
 import { Registry } from '../schema/Registry'
+import { Builder } from '../query/Builder'
 import type { MigrationConstructor, MigrationRecord, MigrationStatus } from '../migrations/types'
 import type { TableSchema } from '../schema/types'
 import type { ConnectionConfig } from './types'
@@ -138,6 +139,13 @@ export class Connection {
             ran: applied.has(migration),
             at : applied.get(migration) ?? null,
         }))
+    }
+
+    /**
+     * Begin a query against a table.
+     */
+    table<T = Record<string, unknown>>(table: string, transaction: IDBTransaction | null = null): Builder<T> {
+        return new Builder<T>(this, table, transaction)
     }
 
     /**
