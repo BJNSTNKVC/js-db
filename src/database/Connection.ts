@@ -102,12 +102,18 @@ export class Connection {
     }
 
     /**
-     * Run any pending migrations, returning the names of those that ran.
+     * Run any pending migrations, returning the names of those this call ran.
      */
     async migrate(): Promise<string[]> {
         await this.open()
 
-        return this.#migrated
+        // Consumed, so a second call on a live connection reports nothing rather than repeating
+        // what the first one ran.
+        const migrated: string[] = this.#migrated
+
+        this.#migrated = []
+
+        return migrated
     }
 
     /**

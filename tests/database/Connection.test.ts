@@ -150,6 +150,13 @@ describe('Connection versioning', (): void => {
         expect((await connection.open()).version).toEqual(3);
     });
 
+    test('reports nothing on a second migrate of a live connection', async (): Promise<void> => {
+        const connection: Connection = connect([CreateUsersTable]);
+
+        expect(await connection.migrate()).toEqual(['CreateUsersTable']);
+        expect(await connection.migrate()).toEqual([]);
+    });
+
     test('creates the reserved stores for a connection with no migrations', async (): Promise<void> => {
         const connection: Connection = connect([]);
         const database: IDBDatabase = await connection.open();
