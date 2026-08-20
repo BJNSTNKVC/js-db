@@ -6,6 +6,8 @@ on:
 
 jobs:
     test:
+        name: Node v${{ matrix.node }}
+
         runs-on: ubuntu-latest
 
         strategy:
