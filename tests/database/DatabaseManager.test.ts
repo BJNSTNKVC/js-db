@@ -104,14 +104,14 @@ describe('DB.connection', (): void => {
 
 describe('DB delegation', (): void => {
     test('queries the default connection', async (): Promise<void> => {
-        await DB.migrate();
+        await DB.migrate('app');
         await DB.table<User>('users').insert({ name: 'Alice' });
 
         expect(await DB.table<User>('users').count()).toEqual(1);
     });
 
     test('runs a transaction on the default connection', async (): Promise<void> => {
-        await DB.migrate();
+        await DB.migrate('app');
 
         await DB.transaction(async (transaction: Transaction): Promise<void> => {
             await transaction.table<User>('users').insert({ name: 'Alice' });
@@ -121,24 +121,32 @@ describe('DB delegation', (): void => {
     });
 
     test('narrows a transaction on the default connection', async (): Promise<void> => {
-        await DB.migrate();
+        await DB.migrate('app');
 
         await DB.transaction(async (transaction: Transaction): Promise<void> => {
             expect(transaction.tables).toEqual(['users']);
         }, { tables: ['users'] });
     });
 
-    test('migrates the default connection only', async (): Promise<void> => {
-        expect(await DB.migrate()).toEqual(['CreateUsersTable']);
+    test('migrates only the connection it was named', async (): Promise<void> => {
+        expect(await DB.migrate('app')).toEqual(['CreateUsersTable']);
         expect(await DB.status('reporting')).toEqual([{ migration: 'CreateReportsTable', ran: false, at: null }]);
     });
 
-    test('migrates a named connection', async (): Promise<void> => {
+    test('migrates a second connection when named', async (): Promise<void> => {
         expect(await DB.migrate('reporting')).toEqual(['CreateReportsTable']);
     });
 
+    test('declares the connection name as required', (): void => {
+        expect(DB.migrate.length).toEqual(1);
+    });
+
+    test('fails for a connection that is not configured', (): void => {
+        expect((): Promise<string[]> => DB.migrate('missing')).toThrow(new ConnectionNotConfiguredException('missing'));
+    });
+
     test('reports the status of the default connection', async (): Promise<void> => {
-        await DB.migrate();
+        await DB.migrate('app');
 
         const status: MigrationStatus[] = await DB.status();
 
@@ -146,7 +154,7 @@ describe('DB delegation', (): void => {
     });
 
     test('refreshes the default connection', async (): Promise<void> => {
-        await DB.migrate();
+        await DB.migrate('app');
         await DB.table<User>('users').insert({ name: 'Alice' });
 
         expect(await DB.fresh()).toEqual(['CreateUsersTable']);
@@ -156,7 +164,7 @@ describe('DB delegation', (): void => {
 
 describe('DB schema information', (): void => {
     beforeEach(async (): Promise<void> => {
-        await DB.migrate();
+        await DB.migrate('app');
     });
 
     test('reports that a table exists', async (): Promise<void> => {
@@ -194,7 +202,7 @@ describe('DB schema information', (): void => {
 
 describe('Schema facade reads', (): void => {
     beforeEach(async (): Promise<void> => {
-        await DB.migrate();
+        await DB.migrate('app');
     });
 
     test('reports that a table exists', async (): Promise<void> => {
@@ -226,7 +234,7 @@ describe('Schema facade reads', (): void => {
 
 describe('DB.disconnect and DB.purge', (): void => {
     test('reopens after a disconnect, keeping the same connection', async (): Promise<void> => {
-        await DB.migrate();
+        await DB.migrate('app');
 
         const connection: Connection = DB.connection();
 
@@ -237,7 +245,7 @@ describe('DB.disconnect and DB.purge', (): void => {
     });
 
     test('rebuilds the connection after a purge', async (): Promise<void> => {
-        await DB.migrate();
+        await DB.migrate('app');
 
         const connection: Connection = DB.connection();
 
@@ -265,7 +273,7 @@ describe('DB.listen', (): void => {
 
         DB.listen('query', listener);
 
-        await DB.migrate();
+        await DB.migrate('app');
         await DB.table<User>('users').count();
         await DB.table<User>('users').count();
 
@@ -281,7 +289,7 @@ describe('DB.listen', (): void => {
             seen.push(event.plan);
         }, { once: true });
 
-        await DB.migrate();
+        await DB.migrate('app');
         await DB.table<User>('users').count();
         await DB.table<User>('users').count();
 
@@ -297,7 +305,7 @@ describe('DB.listen', (): void => {
         DB.listen('query', listener);
         DB.forget('query', listener);
 
-        await DB.migrate();
+        await DB.migrate('app');
         await DB.table<User>('users').count();
 
         expect(count).toEqual(0);
@@ -344,7 +352,7 @@ describe('DB.listen', (): void => {
 
 describe('DB query log', (): void => {
     test('records nothing until it is enabled', async (): Promise<void> => {
-        await DB.migrate();
+        await DB.migrate('app');
         await DB.table<User>('users').count();
 
         expect(DB.getQueryLog()).toEqual([]);
@@ -352,7 +360,7 @@ describe('DB query log', (): void => {
     });
 
     test('records the queries that run while enabled', async (): Promise<void> => {
-        await DB.migrate();
+        await DB.migrate('app');
 
         DB.enableQueryLog();
 
@@ -373,7 +381,7 @@ describe('DB query log', (): void => {
     });
 
     test('is idempotent when enabled twice', async (): Promise<void> => {
-        await DB.migrate();
+        await DB.migrate('app');
 
         DB.enableQueryLog();
         DB.enableQueryLog();
@@ -384,7 +392,7 @@ describe('DB query log', (): void => {
     });
 
     test('stops recording once disabled', async (): Promise<void> => {
-        await DB.migrate();
+        await DB.migrate('app');
 
         DB.enableQueryLog();
         DB.disableQueryLog();
@@ -403,7 +411,7 @@ describe('DB query log', (): void => {
     });
 
     test('empties the log when flushed', async (): Promise<void> => {
-        await DB.migrate();
+        await DB.migrate('app');
 
         DB.enableQueryLog();
 
@@ -415,7 +423,7 @@ describe('DB query log', (): void => {
     });
 
     test('hands out a copy of the log', async (): Promise<void> => {
-        await DB.migrate();
+        await DB.migrate('app');
 
         DB.enableQueryLog();
 

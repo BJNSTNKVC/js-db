@@ -99,9 +99,12 @@ export class DatabaseManager {
     }
 
     /**
-     * Run any pending migrations, returning the names of those that ran.
+     * Run any pending migrations, returning the names of those this call ran.
+     *
+     * The connection is named rather than defaulted, so an app with several of them cannot boot
+     * having silently migrated only one.
      */
-    static migrate(name?: string): Promise<string[]> {
+    static migrate(name: string): Promise<string[]> {
         return this.connection(name).migrate()
     }
 

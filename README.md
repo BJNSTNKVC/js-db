@@ -53,7 +53,7 @@ DB.configure({
     },
 });
 
-await DB.migrate();
+await DB.migrate('app');
 ```
 
 | Option | Meaning |
@@ -63,14 +63,16 @@ await DB.migrate();
 | `connections[name].migrations` | Ordered migration classes. Their order **is** the schema version. |
 | `connections[name].strict` | Defaults to `true`. Nullability violations and uncoercible values throw. `false` writes `null` instead. |
 
-`DB.migrate()` is idempotent. It opens the database at the version your migrations ask for, and when
-that already matches, nothing runs. Calling it on every boot is the intended usage — there is no
-"has this been migrated?" check for you to write.
+`DB.migrate(name)` is idempotent. It opens the database at the version your migrations ask for, and
+when that already matches, nothing runs. Calling it on every boot is the intended usage — there is
+no "has this been migrated?" check for you to write.
 
-An app with several connections awaits one call per connection:
+The connection name is **required**, unlike every other method on the manager. Boot is the one place
+where quietly falling back to the default connection would let an app start having migrated only one
+of its databases, so an app with several of them awaits one call each:
 
 ```ts
-await DB.migrate();
+await DB.migrate('app');
 await DB.migrate('reporting');
 ```
 
@@ -145,7 +147,7 @@ const seed: unknown[] = await (await fetch('/seed.json')).json();
 
 DB.configure({ /* ... */ });
 
-await DB.migrate();
+await DB.migrate('app');
 await DB.table('users').insert(seed);
 ```
 
@@ -159,8 +161,8 @@ await DB.status();
 // [{ migration: 'CreateUsersTable', ran: true, at: '2026-08-27T21:00:00.000Z' }]
 ```
 
-`DB.status()` never migrates as a side effect, so you can call it before `DB.migrate()` to see what
-is pending.
+`DB.status()` never migrates as a side effect, so you can call it before `DB.migrate(name)` to
+see what is pending.
 
 ### Defining a schema
 
