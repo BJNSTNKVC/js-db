@@ -27,7 +27,3 @@ export interface Plan {
     ordered: boolean
     residual: Constraint[]
 }
-
-export interface Record_ {
-    [key: string]: unknown
-}

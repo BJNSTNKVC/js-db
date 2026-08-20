@@ -1,9 +1,11 @@
+import { DatabaseManager } from '../database/DatabaseManager'
 import { Request } from '../database/Request'
 import { ReservedTableException, SchemaException, TableNotFoundException } from '../exceptions'
 import { Migrator } from '../migrations/Migrator'
 import { Repository } from '../migrations/Repository'
 import { Blueprint } from './Blueprint'
 import { Registry } from './Registry'
+import type { Connection } from '../database/Connection'
 import type { MigrationContext } from '../migrations/Migrator'
 import type { BlueprintOperations, ColumnSchema, IndexSchema, RenamedColumn, TableSchema } from './types'
 
@@ -13,6 +15,48 @@ export class Schema {
      */
     static reserved(): string[] {
         return [Repository.table, Registry.table]
+    }
+
+    /**
+     * Get a connection to read schema information from.
+     */
+    static connection(name?: string): Connection {
+        return DatabaseManager.connection(name)
+    }
+
+    /**
+     * Determine whether a table exists.
+     */
+    static hasTable(table: string): Promise<boolean> {
+        return this.connection().hasTable(table)
+    }
+
+    /**
+     * Determine whether a table has a column.
+     */
+    static hasColumn(table: string, column: string): Promise<boolean> {
+        return this.connection().hasColumn(table, column)
+    }
+
+    /**
+     * Get the names of every table.
+     */
+    static getTables(): Promise<string[]> {
+        return this.connection().tables()
+    }
+
+    /**
+     * Get the columns of a table.
+     */
+    static getColumns(table: string): Promise<ColumnSchema[]> {
+        return this.connection().getColumns(table)
+    }
+
+    /**
+     * Get the indexes of a table.
+     */
+    static getIndexes(table: string): Promise<IndexSchema[]> {
+        return this.connection().getIndexes(table)
     }
 
     /**

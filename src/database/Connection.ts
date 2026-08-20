@@ -7,7 +7,7 @@ import { Registry } from '../schema/Registry'
 import { Builder } from '../query/Builder'
 import { Transaction } from './Transaction'
 import type { MigrationConstructor, MigrationRecord, MigrationStatus } from '../migrations/types'
-import type { TableSchema } from '../schema/types'
+import type { ColumnSchema, IndexSchema, TableSchema } from '../schema/types'
 import type { ConnectionConfig, TransactionOptions } from './types'
 
 export class Connection {
@@ -251,6 +251,34 @@ export class Connection {
         await this.open()
 
         return [...this.#schemas.keys()]
+    }
+
+    /**
+     * Determine whether a table exists.
+     */
+    async hasTable(table: string): Promise<boolean> {
+        return (await this.tables()).includes(table)
+    }
+
+    /**
+     * Determine whether a table has a column.
+     */
+    async hasColumn(table: string, column: string): Promise<boolean> {
+        return (await this.getColumns(table)).some((candidate: ColumnSchema): boolean => candidate.name === column)
+    }
+
+    /**
+     * Get the columns of a table.
+     */
+    async getColumns(table: string): Promise<ColumnSchema[]> {
+        return (await this.schema(table)).columns
+    }
+
+    /**
+     * Get the indexes of a table.
+     */
+    async getIndexes(table: string): Promise<IndexSchema[]> {
+        return (await this.schema(table)).indexes
     }
 
     /**

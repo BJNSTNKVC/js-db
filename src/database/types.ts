@@ -14,3 +14,15 @@ export interface DatabaseConfig {
 export interface TransactionOptions {
     tables?: string[]
 }
+
+export interface QueryLogEntry {
+    connection: string
+    table: string
+    plan: string
+    duration: number
+    records: number
+}
+
+export interface ListenOptions {
+    once?: boolean
+}
