@@ -1,15 +1,16 @@
 export class Request {
     /**
      * Resolve when the request succeeds, reject when it fails.
-     *
-     * A tolerated failure does not abort the surrounding transaction, so the caller may keep
-     * reading from it - which is how a violated constraint is traced back to its index.
      */
     static settle<T>(request: IDBRequest<T>, tolerate: boolean = false): Promise<T> {
         return new Promise<T>((resolve: (value: T) => void, reject: (reason: unknown) => void): void => {
             request.onsuccess = (): void => resolve(request.result)
 
             request.onerror = (event: Event): void => {
+                // A tolerated failure keeps the surrounding transaction alive, so the caller may go
+                // on reading from it. That is how a violated constraint is traced back to the index
+                // that raised it. Preventing the default stops the abort, and stopping propagation
+                // keeps the error from reaching the transaction at all.
                 if (tolerate) {
                     event.preventDefault()
                     event.stopPropagation()

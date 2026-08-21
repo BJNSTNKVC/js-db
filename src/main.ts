@@ -5,6 +5,7 @@ export { Connection } from './database/Connection'
 export { DatabaseManager, DatabaseManager as DB } from './database/DatabaseManager'
 export { Migration } from './migrations/Migration'
 export { Schema } from './schema/Schema'
+export { Seeder } from './seeders/Seeder'
 export { Transaction } from './database/Transaction'
 
 export {
@@ -15,6 +16,10 @@ export {
     MigrationStarted,
     NoPendingMigrations,
     QueryExecuted,
+    SeederEnded,
+    SeederStarted,
+    SeedingEnded,
+    SeedingStarted,
     TransactionBeginning,
     TransactionCommitted,
     TransactionRolledBack,
@@ -36,5 +41,6 @@ export {
 export type { DatabaseEvent, DatabaseEventListener } from './events'
 export type { ColumnSchema, ColumnType, IndexSchema, TableSchema } from './schema/types'
 export type { Conjunction, Constraint, Direction, Key, Operator, Order, Plan } from './query/types'
-export type { ConnectionConfig, DatabaseConfig, ListenOptions, QueryLogEntry, TransactionOptions } from './database/types'
+export type { ConnectionConfig, DatabaseConfig, FreshOptions, ListenOptions, QueryLogEntry, TransactionOptions } from './database/types'
 export type { MigrationConstructor, MigrationStatus } from './migrations/types'
+export type { SeederConstructor } from './seeders/types'

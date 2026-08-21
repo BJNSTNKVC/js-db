@@ -496,6 +496,7 @@ describe('Connection strictness', (): void => {
         expect(connection.name).toEqual('reporting');
         expect(connection.database).toEqual('reports');
         expect(connection.migrations).toEqual([]);
+        expect(connection.seeders).toEqual([]);
     });
 });
 

@@ -7,6 +7,10 @@ import {
     MigrationStarted,
     NoPendingMigrations,
     QueryExecuted,
+    SeederEnded,
+    SeederStarted,
+    SeedingEnded,
+    SeedingStarted,
     TransactionBeginning,
     TransactionCommitted,
     TransactionRolledBack,
@@ -119,5 +123,44 @@ describe('DatabaseBlocked', (): void => {
 
         expect(event.type).toEqual('db:database-blocked');
         expect(event.database).toEqual('app');
+    });
+});
+
+describe('SeedingStarted', (): void => {
+    test('exposes the connection and the seeders', (): void => {
+        const event: SeedingStarted = new SeedingStarted('app', ['UserSeeder']);
+
+        expect(event).toBeInstanceOf(Event);
+        expect(event.type).toEqual('db:seeding-started');
+        expect(event.connection).toEqual('app');
+        expect(event.seeders).toEqual(['UserSeeder']);
+    });
+});
+
+describe('SeederStarted', (): void => {
+    test('exposes the seeder', (): void => {
+        const event: SeederStarted = new SeederStarted('UserSeeder');
+
+        expect(event.type).toEqual('db:seeder-started');
+        expect(event.seeder).toEqual('UserSeeder');
+    });
+});
+
+describe('SeederEnded', (): void => {
+    test('exposes the seeder', (): void => {
+        const event: SeederEnded = new SeederEnded('UserSeeder');
+
+        expect(event.type).toEqual('db:seeder-ended');
+        expect(event.seeder).toEqual('UserSeeder');
+    });
+});
+
+describe('SeedingEnded', (): void => {
+    test('exposes the connection and the seeders', (): void => {
+        const event: SeedingEnded = new SeedingEnded('app', ['UserSeeder']);
+
+        expect(event.type).toEqual('db:seeding-ended');
+        expect(event.connection).toEqual('app');
+        expect(event.seeders).toEqual(['UserSeeder']);
     });
 });

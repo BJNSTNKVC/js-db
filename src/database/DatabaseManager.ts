@@ -11,6 +11,10 @@ import type {
     MigrationStarted,
     NoPendingMigrations,
     QueryExecuted,
+    SeederEnded,
+    SeederStarted,
+    SeedingEnded,
+    SeedingStarted,
     TransactionBeginning,
     TransactionCommitted,
     TransactionRolledBack,
@@ -19,7 +23,7 @@ import type { MigrationStatus } from '../migrations/types'
 import type { ColumnSchema, IndexSchema } from '../schema/types'
 import type { Builder } from '../query/Builder'
 import type { Transaction } from './Transaction'
-import type { DatabaseConfig, ListenOptions, QueryLogEntry, TransactionOptions } from './types'
+import type { DatabaseConfig, FreshOptions, ListenOptions, QueryLogEntry, TransactionOptions } from './types'
 
 export class DatabaseManager {
     /**
@@ -100,19 +104,28 @@ export class DatabaseManager {
 
     /**
      * Run any pending migrations, returning the names of those this call ran.
-     *
-     * The connection is named rather than defaulted, so an app with several of them cannot boot
-     * having silently migrated only one.
      */
     static migrate(name: string): Promise<string[]> {
+        // The connection is named rather than defaulted, unlike every other method here, because
+        // boot is where a silent fallback would let an app start having migrated only one of its
+        // databases.
         return this.connection(name).migrate()
     }
 
     /**
-     * Delete the database and replay every migration.
+     * Run every registered seeder, returning their names.
      */
-    static fresh(name?: string): Promise<string[]> {
-        return this.connection(name).fresh()
+    static seed(name: string): Promise<string[]> {
+        // Named for the same reason as migrate: an app with several connections should not seed one
+        // of them by accident.
+        return this.connection(name).seed()
+    }
+
+    /**
+     * Delete the database and replay every migration, optionally seeding afterwards.
+     */
+    static fresh(name?: string, options?: FreshOptions): Promise<string[]> {
+        return this.connection(name).fresh(options)
     }
 
     /**
@@ -177,11 +190,10 @@ export class DatabaseManager {
 
     /**
      * Register an event listener.
-     *
-     * Listeners are persistent unless told otherwise, which is the one deliberate departure from
-     * the storage packages, where every listener fires exactly once.
      */
     static listen<K extends keyof DatabaseEvent>(event: K, listener: DatabaseEventListener<K>, options: ListenOptions = {}): void {
+        // Listeners are persistent unless told otherwise. This is a deliberate departure from the
+        // storage packages, where listen() registers with once and so fires exactly one time.
         Dispatcher.listen(`db:${event}`, listener as (event: Event) => void, options.once ?? false)
     }
 
@@ -260,6 +272,34 @@ export class DatabaseManager {
      */
     static onDatabaseBlocked(listener: (event: DatabaseBlocked) => void, options?: ListenOptions): void {
         this.listen('database-blocked', listener, options)
+    }
+
+    /**
+     * Register a listener on the "seeding-started" event.
+     */
+    static onSeedingStarted(listener: (event: SeedingStarted) => void, options?: ListenOptions): void {
+        this.listen('seeding-started', listener, options)
+    }
+
+    /**
+     * Register a listener on the "seeder-started" event.
+     */
+    static onSeederStarted(listener: (event: SeederStarted) => void, options?: ListenOptions): void {
+        this.listen('seeder-started', listener, options)
+    }
+
+    /**
+     * Register a listener on the "seeder-ended" event.
+     */
+    static onSeederEnded(listener: (event: SeederEnded) => void, options?: ListenOptions): void {
+        this.listen('seeder-ended', listener, options)
+    }
+
+    /**
+     * Register a listener on the "seeding-ended" event.
+     */
+    static onSeedingEnded(listener: (event: SeedingEnded) => void, options?: ListenOptions): void {
+        this.listen('seeding-ended', listener, options)
     }
 
     /**

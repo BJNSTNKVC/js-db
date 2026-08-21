@@ -1,9 +1,15 @@
 import type { MigrationConstructor } from '../migrations/types'
+import type { SeederConstructor } from '../seeders/types'
 
 export interface ConnectionConfig {
     database: string
     migrations?: MigrationConstructor[]
+    seeders?: SeederConstructor[]
     strict?: boolean
+}
+
+export interface FreshOptions {
+    seed?: boolean
 }
 
 export interface DatabaseConfig {

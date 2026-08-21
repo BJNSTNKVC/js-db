@@ -1,4 +1,4 @@
-import { DatabaseBlocked, TransactionBeginning, TransactionCommitted, TransactionRolledBack } from '../events'
+import { DatabaseBlocked, SeederEnded, SeederStarted, SeedingEnded, SeedingStarted, TransactionBeginning, TransactionCommitted, TransactionRolledBack } from '../events'
 import { Dispatcher } from '../events/Dispatcher'
 import { DatabaseBlockedException, MigrationMismatchException, TableNotFoundException } from '../exceptions'
 import { Migrator } from '../migrations/Migrator'
@@ -8,7 +8,9 @@ import { Builder } from '../query/Builder'
 import { Transaction } from './Transaction'
 import type { MigrationConstructor, MigrationRecord, MigrationStatus } from '../migrations/types'
 import type { ColumnSchema, IndexSchema, TableSchema } from '../schema/types'
-import type { ConnectionConfig, TransactionOptions } from './types'
+import type { Seeder } from '../seeders/Seeder'
+import type { SeederConstructor } from '../seeders/types'
+import type { ConnectionConfig, FreshOptions, TransactionOptions } from './types'
 
 export class Connection {
     /**
@@ -83,6 +85,13 @@ export class Connection {
     }
 
     /**
+     * Get the seeders registered on the connection.
+     */
+    get seeders(): SeederConstructor[] {
+        return this.#config.seeders ?? []
+    }
+
+    /**
      * Open the underlying database, running any pending migrations.
      */
     async open(): Promise<IDBDatabase> {
@@ -117,9 +126,46 @@ export class Connection {
     }
 
     /**
+     * Run every registered seeder, returning their names.
+     */
+    async seed(): Promise<string[]> {
+        await this.open()
+
+        const seeders: SeederConstructor[] = this.seeders
+
+        if (seeders.length === 0) {
+            return []
+        }
+
+        const names: string[] = seeders.map((seeder: SeederConstructor): string => new seeder().name())
+
+        Dispatcher.dispatch(new SeedingStarted(this.#name, names))
+
+        for (const constructor of seeders) {
+            const seeder: Seeder = new constructor()
+            const name: string = seeder.name()
+
+            Dispatcher.dispatch(new SeederStarted(name))
+
+            // Seeders run one after another outside the version change transaction, and are
+            // deliberately not wrapped in a transaction of their own. That is what lets them await
+            // a fetch, and it leaves each one free to open a transaction if it wants atomicity.
+            // Nothing records that a seeder ran, so one meant to survive repeated boots has to be
+            // written idempotently.
+            await seeder.run(this)
+
+            Dispatcher.dispatch(new SeederEnded(name))
+        }
+
+        Dispatcher.dispatch(new SeedingEnded(this.#name, names))
+
+        return names
+    }
+
+    /**
      * Delete the database and replay every migration.
      */
-    async fresh(): Promise<string[]> {
+    async fresh(options: FreshOptions = {}): Promise<string[]> {
         this.disconnect()
 
         await new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
@@ -135,7 +181,13 @@ export class Connection {
             }
         })
 
-        return this.migrate()
+        const migrated: string[] = await this.migrate()
+
+        if (options.seed === true) {
+            await this.seed()
+        }
+
+        return migrated
     }
 
     /**
@@ -162,12 +214,11 @@ export class Connection {
 
     /**
      * Run the callback inside a transaction, committing when it resolves.
-     *
-     * IndexedDB commits a transaction as soon as its request queue drains, so the callback may only
-     * await operations from this package. A nested call joins the transaction already running,
-     * because IndexedDB has no savepoints and so cannot roll back only part of one.
      */
     async transaction<R>(callback: (transaction: Transaction) => R | Promise<R>, options: TransactionOptions = {}): Promise<R> {
+        // A nested call joins the transaction already running rather than opening a second one.
+        // IndexedDB has no savepoints, so there is no way to roll back only part of one, and two
+        // overlapping transactions over the same stores would deadlock.
         if (this.#active !== null) {
             return callback(this.#active)
         }
@@ -209,6 +260,8 @@ export class Connection {
         Dispatcher.dispatch(new TransactionBeginning(this.#name))
 
         try {
+            // IndexedDB commits a transaction the moment its request queue drains, so the callback
+            // may only await operations from this package.
             const result: R = await callback(transaction)
 
             await settled

@@ -5,6 +5,10 @@ import type { MigrationsStarted } from './MigrationsStarted'
 import type { MigrationStarted } from './MigrationStarted'
 import type { NoPendingMigrations } from './NoPendingMigrations'
 import type { QueryExecuted } from './QueryExecuted'
+import type { SeederEnded } from './SeederEnded'
+import type { SeederStarted } from './SeederStarted'
+import type { SeedingEnded } from './SeedingEnded'
+import type { SeedingStarted } from './SeedingStarted'
 import type { TransactionBeginning } from './TransactionBeginning'
 import type { TransactionCommitted } from './TransactionCommitted'
 import type { TransactionRolledBack } from './TransactionRolledBack'
@@ -16,6 +20,10 @@ export { MigrationsStarted } from './MigrationsStarted'
 export { MigrationStarted } from './MigrationStarted'
 export { NoPendingMigrations } from './NoPendingMigrations'
 export { QueryExecuted } from './QueryExecuted'
+export { SeederEnded } from './SeederEnded'
+export { SeederStarted } from './SeederStarted'
+export { SeedingEnded } from './SeedingEnded'
+export { SeedingStarted } from './SeedingStarted'
 export { TransactionBeginning } from './TransactionBeginning'
 export { TransactionCommitted } from './TransactionCommitted'
 export { TransactionRolledBack } from './TransactionRolledBack'
@@ -28,6 +36,10 @@ export type DatabaseEvent = {
     'migrations-started'     : MigrationsStarted
     'no-pending-migrations'  : NoPendingMigrations
     'query'                  : QueryExecuted
+    'seeder-ended'           : SeederEnded
+    'seeder-started'         : SeederStarted
+    'seeding-ended'          : SeedingEnded
+    'seeding-started'        : SeedingStarted
     'transaction-beginning'  : TransactionBeginning
     'transaction-committed'  : TransactionCommitted
     'transaction-rolled-back': TransactionRolledBack
