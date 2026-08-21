@@ -5,6 +5,7 @@ import { Migrator } from '../migrations/Migrator'
 import { Repository } from '../migrations/Repository'
 import { Registry } from '../schema/Registry'
 import { Builder } from '../query/Builder'
+import { Resolver } from './Resolver'
 import { Transaction } from './Transaction'
 import type { MigrationConstructor, MigrationRecord, MigrationStatus } from '../migrations/types'
 import type { ColumnSchema, IndexSchema, TableSchema } from '../schema/types'
@@ -141,21 +142,24 @@ export class Connection {
 
         Dispatcher.dispatch(new SeedingStarted(this.#name, names))
 
-        for (const constructor of seeders) {
-            const seeder: Seeder = new constructor()
-            const name: string = seeder.name()
+        // This connection stands in as the default for the duration, so a seeder reaching for
+        // DB.table() writes to the connection being seeded rather than the configured default.
+        // Laravel's SeedCommand does the same, swapping the default and restoring it afterwards.
+        await Resolver.during(this.#name, async (): Promise<void> => {
+            for (const constructor of seeders) {
+                const seeder: Seeder = new constructor()
+                const name: string = seeder.name()
 
-            Dispatcher.dispatch(new SeederStarted(name))
+                Dispatcher.dispatch(new SeederStarted(name))
 
-            // Seeders run one after another outside the version change transaction, and are
-            // deliberately not wrapped in a transaction of their own. That is what lets them await
-            // a fetch, and it leaves each one free to open a transaction if it wants atomicity.
-            // Nothing records that a seeder ran, so one meant to survive repeated boots has to be
-            // written idempotently.
-            await seeder.run(this)
+                // Seeders run one after another outside the version change transaction, and are
+                // deliberately not wrapped in a transaction of their own. That is what lets them
+                // await a fetch, and leaves each free to open a transaction if it wants atomicity.
+                await seeder.run()
 
-            Dispatcher.dispatch(new SeederEnded(name))
-        }
+                Dispatcher.dispatch(new SeederEnded(name))
+            }
+        })
 
         Dispatcher.dispatch(new SeedingEnded(this.#name, names))
 

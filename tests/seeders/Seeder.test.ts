@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'vitest';
 import { Seeder } from '../../src/seeders/Seeder';
-import type { Connection } from '../../src/database/Connection';
 
 class UserSeeder extends Seeder {
     /**
@@ -29,13 +28,11 @@ class Asynchronous extends Seeder {
     /**
      * Seed the database.
      */
-    override async run(connection: Connection): Promise<void> {
+    override async run(): Promise<void> {
         // A seeder runs outside the version change transaction, so it may await anything.
         await new Promise<void>((resolve): void => {
             setTimeout(resolve, 0);
         });
-
-        expect(connection).toBeUndefined();
     }
 }
 
@@ -49,14 +46,10 @@ describe('Seeder', (): void => {
     });
 
     test('accepts a synchronous run', (): void => {
-        const seeder: Seeder = new UserSeeder();
-
-        expect(seeder.run(undefined as unknown as Connection)).toBeUndefined();
+        expect(new UserSeeder().run()).toBeUndefined();
     });
 
     test('accepts an asynchronous run', async (): Promise<void> => {
-        const seeder: Seeder = new Asynchronous();
-
-        await expect(seeder.run(undefined as unknown as Connection)).resolves.toBeUndefined();
+        await expect(new Asynchronous().run()).resolves.toBeUndefined();
     });
 });

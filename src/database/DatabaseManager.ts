@@ -1,6 +1,7 @@
 import { Dispatcher } from '../events/Dispatcher'
 import { ConnectionNotConfiguredException } from '../exceptions'
 import { Connection } from './Connection'
+import { Resolver } from './Resolver'
 import type {
     DatabaseBlocked,
     DatabaseEvent,
@@ -68,7 +69,9 @@ export class DatabaseManager {
             throw new ConnectionNotConfiguredException(name ?? 'default')
         }
 
-        const resolved: string = name ?? config.default
+        // An explicit name always wins. Otherwise a seeding run may stand in for the configured
+        // default, so a seeder reaching for the facade writes to the connection being seeded.
+        const resolved: string = name ?? Resolver.override() ?? config.default
         const cached: Connection | undefined = this.#connections.get(resolved)
 
         if (cached !== undefined) {

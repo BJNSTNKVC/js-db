@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, test } from 'vitest';
 import { DB } from '../../src/main';
-import { Connection } from '../../src/database/Connection';
 import { Migration } from '../../src/migrations/Migration';
 import { Seeder } from '../../src/seeders/Seeder';
 import { Schema } from '../../src/schema/Schema';
@@ -33,8 +32,8 @@ class UserSeeder extends Seeder {
     /**
      * Seed the database.
      */
-    override async run(connection: Connection): Promise<void> {
-        await connection.table<User>('users').insert([{ name: 'Alice' }, { name: 'Bob' }]);
+    override async run(): Promise<void> {
+        await DB.table<User>('users').insert([{ name: 'Alice' }, { name: 'Bob' }]);
     }
 }
 
@@ -42,8 +41,8 @@ class RoleSeeder extends Seeder {
     /**
      * Seed the database.
      */
-    override async run(connection: Connection): Promise<void> {
-        await connection.table<User>('users').where('name', 'Alice').update({ role: 'admin' });
+    override async run(): Promise<void> {
+        await DB.table<User>('users').where('name', 'Alice').update({ role: 'admin' });
     }
 }
 
@@ -136,8 +135,8 @@ describe('DB.seed', (): void => {
             /**
              * Seed the database.
              */
-            override async run(connection: Connection): Promise<void> {
-                await connection.table<User>('users').upsert([{ name: 'Alice' }], 'name');
+            override async run(): Promise<void> {
+                await DB.table<User>('users').upsert([{ name: 'Alice' }], 'name');
             }
         }
 
@@ -180,12 +179,12 @@ describe('DB.seed', (): void => {
             /**
              * Seed the database.
              */
-            override async run(connection: Connection): Promise<void> {
+            override async run(): Promise<void> {
                 const fetched: string[] = await new Promise<string[]>((resolve): void => {
                     setTimeout((): void => resolve(['Carol']), 5);
                 });
 
-                await connection.table<User>('users').insert(fetched.map((name: string): Partial<User> => ({ name })));
+                await DB.table<User>('users').insert(fetched.map((name: string): Partial<User> => ({ name })));
             }
         }
 
@@ -200,8 +199,8 @@ describe('DB.seed', (): void => {
             /**
              * Seed the database.
              */
-            override async run(connection: Connection): Promise<void> {
-                await connection.transaction(async (transaction: Transaction): Promise<void> => {
+            override async run(): Promise<void> {
+                await DB.transaction(async (transaction: Transaction): Promise<void> => {
                     await transaction.table<User>('users').insert({ name: 'Alice' });
                     await transaction.table<User>('users').insert({ name: 'Bob' });
                 });
@@ -329,5 +328,124 @@ describe('DB.fresh with seeding', (): void => {
 
         expect(await DB.fresh('app', { seed: true })).toEqual(['CreateUsersTable']);
         expect(await DB.table<User>('users').count()).toEqual(0);
+    });
+});
+
+describe('Default connection while seeding', (): void => {
+    /**
+     * Register two connections, with the seeders on the one that is not the default.
+     */
+    const pair = (seeders: SeederConstructor[]): void => {
+        const suffix: number = ++sequence;
+
+        DB.configure({
+            default    : 'app',
+            connections: {
+                app      : { database: `scoped-app-${suffix}`, migrations: [CreateUsersTable] },
+                reporting: { database: `scoped-reporting-${suffix}`, migrations: [CreateUsersTable], seeders },
+            },
+        });
+    };
+
+    test('stands the seeded connection in as the default', async (): Promise<void> => {
+        const seen: string[] = [];
+
+        class ReportingSeeder extends Seeder {
+            /**
+             * Seed the database.
+             */
+            override run(): void {
+                seen.push(DB.connection().name);
+            }
+        }
+
+        pair([ReportingSeeder]);
+
+        await DB.seed('reporting');
+
+        expect(seen).toEqual(['reporting']);
+    });
+
+    test('restores the configured default afterwards', async (): Promise<void> => {
+        pair([UserSeeder]);
+
+        await DB.seed('reporting');
+
+        expect(DB.connection().name).toEqual('app');
+    });
+
+    test('restores the configured default even when a seeder fails', async (): Promise<void> => {
+        class FailingSeeder extends Seeder {
+            /**
+             * Seed the database.
+             */
+            override run(): void {
+                throw new Error('Nope.');
+            }
+        }
+
+        pair([FailingSeeder]);
+
+        await expect(DB.seed('reporting')).rejects.toThrow('Nope.');
+
+        expect(DB.connection().name).toEqual('app');
+    });
+
+    test('lets a seeder name a connection explicitly, overriding the stand in', async (): Promise<void> => {
+        class CrossSeeder extends Seeder {
+            /**
+             * Seed the database.
+             */
+            override async run(): Promise<void> {
+                await DB.connection('app').table<User>('users').insert({ name: 'Alice' });
+            }
+        }
+
+        pair([CrossSeeder]);
+
+        await DB.seed('reporting');
+
+        expect(await DB.connection('app').table<User>('users').count()).toEqual(1);
+        expect(await DB.connection('reporting').table<User>('users').count()).toEqual(0);
+    });
+
+    test('nests, so an inner run restores the outer stand in', async (): Promise<void> => {
+        const seen: string[] = [];
+
+        class InnerSeeder extends Seeder {
+            /**
+             * Seed the database.
+             */
+            override run(): void {
+                seen.push(DB.connection().name);
+            }
+        }
+
+        class OuterSeeder extends Seeder {
+            /**
+             * Seed the database.
+             */
+            override async run(): Promise<void> {
+                seen.push(DB.connection().name);
+
+                await DB.seed('app');
+
+                seen.push(DB.connection().name);
+            }
+        }
+
+        const suffix: number = ++sequence;
+
+        DB.configure({
+            default    : 'app',
+            connections: {
+                app      : { database: `nested-app-${suffix}`, migrations: [CreateUsersTable], seeders: [InnerSeeder] },
+                reporting: { database: `nested-reporting-${suffix}`, migrations: [CreateUsersTable], seeders: [OuterSeeder] },
+            },
+        });
+
+        await DB.seed('reporting');
+
+        expect(seen).toEqual(['reporting', 'app', 'reporting']);
     });
 });

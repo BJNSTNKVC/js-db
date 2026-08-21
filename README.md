@@ -173,16 +173,16 @@ change transaction and therefore cannot await a `fetch`. A seeder runs outside i
 anything at all, which makes it the right home for any seed data that comes off the network.
 
 ```ts
-import { Seeder, type Connection } from '@bjnstnkvc/db';
+import { DB, Seeder } from '@bjnstnkvc/db';
 
 class UserSeeder extends Seeder {
     /**
      * Seed the database.
      */
-    override async run(connection: Connection): Promise<void> {
+    override async run(): Promise<void> {
         const fetched: User[] = await (await fetch('/users.json')).json();
 
-        await connection.table<User>('users').insert(fetched);
+        await DB.table<User>('users').insert(fetched);
     }
 }
 ```
@@ -197,8 +197,22 @@ await DB.seed('app');
 `DB.seed(name)` opens the connection first, which migrates it, so the tables a seeder writes to are
 guaranteed to exist. The connection name is required for the same reason it is on `migrate`.
 
-The seeder receives the `Connection` it is seeding rather than reaching for the `DB` facade, so a
-seeder registered on a second connection writes to that one and not to the default.
+#### Which connection a seeder writes to
+
+For the duration of the run, the connection being seeded **stands in as the default**. So a seeder
+registered on `reporting` that calls `DB.table('users')` writes to `reporting`, not to the
+configured default, and the previous default is restored when the run finishes or fails. Laravel's
+`SeedCommand` does the same thing.
+
+Naming a connection explicitly still wins, so a seeder may reach across:
+
+```ts
+await DB.connection('app').table<User>('users').insert({ name: 'Alice' });
+```
+
+One consequence worth knowing: while a seed run is in flight, `DB.table(...)` anywhere in the app
+resolves to the connection being seeded. Seeding at boot, before the rest of the app starts, keeps
+that from mattering.
 
 #### Seeders are not recorded
 
@@ -211,8 +225,8 @@ class UserSeeder extends Seeder {
     /**
      * Seed the database.
      */
-    override async run(connection: Connection): Promise<void> {
-        await connection.table<User>('users').upsert([
+    override async run(): Promise<void> {
+        await DB.table<User>('users').upsert([
             { email: 'admin@example.com', name: 'Admin' },
         ], 'email');
     }
@@ -227,8 +241,8 @@ class UserSeeder extends Seeder {
     /**
      * Seed the database.
      */
-    override async run(connection: Connection): Promise<void> {
-        await connection.transaction(async (transaction: Transaction): Promise<void> => {
+    override async run(): Promise<void> {
+        await DB.transaction(async (transaction: Transaction): Promise<void> => {
             await transaction.table<User>('users').insert({ name: 'Alice' });
             await transaction.table('posts').insert({ user_id: 1, title: 'Hello' });
         });
