@@ -1,3 +1,3 @@
-import type { Seeder } from './Seeder'
+import type { Seeder } from './Seeder';
 
-export type SeederConstructor = new () => Seeder
+export type SeederConstructor = new () => Seeder;

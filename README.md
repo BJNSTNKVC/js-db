@@ -129,38 +129,26 @@ class CreateUsersTable extends Migration {
 
 #### What a migration may await
 
-This is the one real footgun in the package, and it comes from IndexedDB itself: a transaction
-commits the moment its request queue drains. A migration runs inside the version-change
-transaction, so it may **only** await operations from this package.
+A migration runs inside the version-change transaction, and IndexedDB commits a transaction the
+moment its request queue drains. So a migration may **only** await operations from this package.
+Awaiting `Schema.*` and `DB.table(...)` is safe. Awaiting a `fetch`, a timer, or any other promise
+ends the transaction, and the next schema call throws `MigrationTransactionClosedException`.
 
-```ts
-// Wrong. Awaiting a fetch ends the transaction, and the next line throws
-// MigrationTransactionClosedException.
-override async up(): Promise<void> {
-    const seed: Response = await fetch('/seed.json');
-
-    await Schema.create('users', (table: Blueprint): void => table.id());
-}
-```
-
-```ts
-// Right. Fetch first, then migrate.
-const seed: unknown[] = await (await fetch('/seed.json')).json();
-
-DB.configure({ /* ... */ });
-
-await DB.migrate('app');
-await DB.table('users').insert(seed);
-```
-
-Awaiting `Schema.*` and `DB.table(...)` operations inside a migration is safe. Awaiting a `fetch`, a
-timer, or any other promise is not.
+If you need data from the network, that is what a seeder is for. See [Seeding](#seeding).
 
 #### Migration status
 
 ```ts
 await DB.status();
-// [{ migration: 'CreateUsersTable', ran: true, at: '2026-08-27T21:00:00.000Z' }]
+```
+
+Resolves to one entry per registered migration:
+
+```
+[
+    { migration: 'CreateUsersTable', ran: true, at: '2026-08-27T21:00:00.000Z' },
+    { migration: 'AddRoleToUsersTable', ran: false, at: null }
+]
 ```
 
 `DB.status()` never migrates as a side effect, so you can call it before `DB.migrate(name)` to
@@ -191,7 +179,12 @@ Register the seeders on the connection and run them when you want to:
 
 ```ts
 await DB.seed('app');
-// ['UserSeeder']
+```
+
+Resolves to the names of the seeders that ran:
+
+```
+['UserSeeder']
 ```
 
 `DB.seed(name)` opens the connection first, which migrates it, so the tables a seeder writes to are
@@ -334,12 +327,15 @@ const users: User[] = await DB.table<User>('users')
 
 #### Constraints
 
+`where` takes four forms: a column and a value for an implicit `=`, a column with an explicit
+operator, an object of column-value pairs, and a closure that opens a nested group.
+
 ```ts
 DB.table<User>('users')
-    .where('name', 'John')                            // implicit =
-    .where('age', '>=', 18)                           // explicit operator
-    .where({ role: 'admin', age: 30 })                // object form
-    .where((query: Builder<User>): void => {          // nested group
+    .where('name', 'John')
+    .where('age', '>=', 18)
+    .where({ role: 'admin', age: 30 })
+    .where((query: Builder<User>): void => {
         query.where('age', 25).orWhere('name', 'Jane');
     })
     .orWhere('role', 'owner')
@@ -385,14 +381,14 @@ the result rather than saving any work.
 #### Terminals
 
 ```ts
-await DB.table<User>('users').get();                     // User[]
-await DB.table<User>('users').first();                   // User | null
-await DB.table<User>('users').firstOrFail();             // throws RecordsNotFoundException
-await DB.table<User>('users').find(1);                   // point lookup on the key path
+await DB.table<User>('users').get();
+await DB.table<User>('users').first();
+await DB.table<User>('users').firstOrFail();
+await DB.table<User>('users').find(1);
 await DB.table<User>('users').findOrFail(1);
-await DB.table<User>('users').value('email');            // the column of the first record
-await DB.table<User>('users').pluck('email');            // string[]
-await DB.table<User>('users').pluck('email', 'name');    // Record<string, string>
+await DB.table<User>('users').value('email');
+await DB.table<User>('users').pluck('email');
+await DB.table<User>('users').pluck('email', 'name');
 await DB.table<User>('users').exists();
 await DB.table<User>('users').doesntExist();
 await DB.table<User>('users').count();
@@ -401,6 +397,21 @@ await DB.table<User>('users').avg('age');
 await DB.table<User>('users').min('age');
 await DB.table<User>('users').max('age');
 ```
+
+| Terminal | Resolves to |
+| --- | --- |
+| `get()` | `T[]` |
+| `first()` | `T` or `null` |
+| `firstOrFail()` | `T`, or throws `RecordsNotFoundException` |
+| `find(key)` | `T` or `null`, by point lookup on the key path |
+| `findOrFail(key)` | `T`, or throws `RecordsNotFoundException` |
+| `value(column)` | The column of the first matching record, or `null` |
+| `pluck(column)` | `V[]` in result order |
+| `pluck(column, key)` | `Record<string, V>`, keyed by a second column |
+| `exists()` / `doesntExist()` | `boolean` |
+| `count()` | `number` |
+| `sum(column)` | `number` |
+| `avg(column)` / `min(column)` / `max(column)` | `number` or `null` when nothing matched |
 
 `chunk` and `each` walk the result a page at a time, and stop early when the callback returns
 `false`:
@@ -458,9 +469,17 @@ The builder does not fetch everything and filter in memory. It compiles your con
 IndexedDB key range over one index, plus a residual predicate applied while cursoring:
 
 ```ts
-await DB.table<User>('users').where('id', 1).explain();          // 'key'
-await DB.table<User>('users').where('email', 'a@b.c').explain(); // 'index:users_email_unique'
-await DB.table<User>('users').where('role', 'admin').explain();  // 'scan'
+await DB.table<User>('users').where('id', 1).explain();
+await DB.table<User>('users').where('email', 'a@b.c').explain();
+await DB.table<User>('users').where('role', 'admin').explain();
+```
+
+Each resolves to a description of the plan chosen:
+
+```
+'key'
+'index:users_email_unique'
+'scan'
 ```
 
 - One index only. IndexedDB has no index intersection, so the planner picks the most selective
@@ -530,14 +549,24 @@ DB.enableQueryLog();
 await DB.table<User>('users').where('role', 'admin').get();
 
 DB.getQueryLog();
-// [{ connection: 'app', table: 'users', plan: 'scan', duration: 2, records: 7 }]
+```
 
-DB.flushQueryLog();
-DB.disableQueryLog();
-DB.logging(); // false
+Resolves to one entry per query that ran while the log was enabled:
+
+```
+[
+    { connection: 'app', table: 'users', plan: 'scan', duration: 2, records: 7 }
+]
 ```
 
 Because `plan` is on every entry, the log is enough to spot a query that scans a whole table.
+
+```ts
+DB.flushQueryLog();
+DB.disableQueryLog();
+```
+
+`DB.logging()` then returns `false`, and `DB.getQueryLog()` an empty array.
 
 ### Multiple tabs
 
@@ -553,11 +582,18 @@ IndexedDB is shared across tabs, which produces two situations worth handling:
 ### Connections
 
 ```ts
-DB.connection();                // the default connection
-DB.connection('reporting');     // a named connection, cached after the first resolve
-DB.disconnect();                // close the handle, keep the connection registered
-DB.purge();                     // close it and drop it, so the next resolve rebuilds it
+DB.connection();
+DB.connection('reporting');
+DB.disconnect();
+DB.purge();
 ```
+
+| Call | Effect |
+| --- | --- |
+| `connection()` | The default connection |
+| `connection(name)` | A named connection, cached after the first resolve |
+| `disconnect(name?)` | Close the handle, leaving the connection registered so the next query reopens it |
+| `purge(name?)` | Close it and drop it, so the next resolve rebuilds it from configuration |
 
 ### Reserved tables
 
@@ -585,13 +621,15 @@ memory, so writes inside a narrowed transaction still get their defaults.
 IndexedDB does not exist in Node, so point your test setup at
 [`fake-indexeddb`](https://www.npmjs.com/package/fake-indexeddb):
 
+In `tests/setup.ts`:
+
 ```ts
-// tests/setup.ts
 import 'fake-indexeddb/auto';
 ```
 
+And in `vitest.config.ts`:
+
 ```ts
-// vitest.config.ts
 export default defineConfig({
     test: {
         setupFiles: ['./tests/setup.ts'],

@@ -1,7 +1,7 @@
-import { Dispatcher } from '../events/Dispatcher'
-import { ConnectionNotConfiguredException } from '../exceptions'
-import { Connection } from './Connection'
-import { Resolver } from './Resolver'
+import { Dispatcher } from '../events/Dispatcher';
+import { ConnectionNotConfiguredException } from '../exceptions';
+import { Connection } from './Connection';
+import { Resolver } from './Resolver';
 import type {
     DatabaseBlocked,
     DatabaseEvent,
@@ -19,90 +19,90 @@ import type {
     TransactionBeginning,
     TransactionCommitted,
     TransactionRolledBack,
-} from '../events'
-import type { MigrationStatus } from '../migrations/types'
-import type { ColumnSchema, IndexSchema } from '../schema/types'
-import type { Builder } from '../query/Builder'
-import type { Transaction } from './Transaction'
-import type { DatabaseConfig, FreshOptions, ListenOptions, QueryLogEntry, TransactionOptions } from './types'
+} from '../events';
+import type { MigrationStatus } from '../migrations/types';
+import type { ColumnSchema, IndexSchema } from '../schema/types';
+import type { Builder } from '../query/Builder';
+import type { Transaction } from './Transaction';
+import type { DatabaseConfig, FreshOptions, ListenOptions, QueryLogEntry, TransactionOptions } from './types';
 
 export class DatabaseManager {
     /**
      * The registered configuration.
      */
-    static #config: DatabaseConfig | null = null
+    static #config: DatabaseConfig | null = null;
 
     /**
      * The connections resolved so far, keyed by name.
      */
-    static #connections: Map<string, Connection> = new Map<string, Connection>()
+    static #connections: Map<string, Connection> = new Map<string, Connection>();
 
     /**
      * The queries recorded while the log is enabled.
      */
-    static #log: QueryLogEntry[] = []
+    static #log: QueryLogEntry[] = [];
 
     /**
      * The listener recording queries, present only while the log is enabled.
      */
-    static #logger: ((event: Event) => void) | null = null
+    static #logger: ((event: Event) => void) | null = null;
 
     /**
      * Register the database configuration, replacing anything registered before.
      */
     static configure(config: DatabaseConfig): void {
         for (const connection of this.#connections.values()) {
-            connection.disconnect()
+            connection.disconnect();
         }
 
-        this.#config = config
-        this.#connections = new Map<string, Connection>()
+        this.#config = config;
+        this.#connections = new Map<string, Connection>();
     }
 
     /**
      * Resolve a connection by name, or the default one.
      */
     static connection(name?: string): Connection {
-        const config: DatabaseConfig | null = this.#config
+        const config: DatabaseConfig | null = this.#config;
 
         if (config === null) {
-            throw new ConnectionNotConfiguredException(name ?? 'default')
+            throw new ConnectionNotConfiguredException(name ?? 'default');
         }
 
         // An explicit name always wins. Otherwise a seeding run may stand in for the configured
         // default, so a seeder reaching for the facade writes to the connection being seeded.
-        const resolved: string = name ?? Resolver.override() ?? config.default
-        const cached: Connection | undefined = this.#connections.get(resolved)
+        const resolved: string = name ?? Resolver.override() ?? config.default;
+        const cached: Connection | undefined = this.#connections.get(resolved);
 
         if (cached !== undefined) {
-            return cached
+            return cached;
         }
 
-        const entry = config.connections[resolved]
+        const entry = config.connections[resolved];
 
         if (entry === undefined) {
-            throw new ConnectionNotConfiguredException(resolved)
+            throw new ConnectionNotConfiguredException(resolved);
         }
 
-        const connection: Connection = new Connection(resolved, entry)
+        const connection: Connection = new Connection(resolved, entry);
 
-        this.#connections.set(resolved, connection)
+        this.#connections.set(resolved, connection);
 
-        return connection
+        return connection;
     }
 
     /**
      * Begin a query against a table on the default connection.
      */
     static table<T = Record<string, unknown>>(table: string): Builder<T> {
-        return this.connection().table<T>(table)
+        return this.connection().table<T>(table);
     }
 
     /**
      * Run the callback inside a transaction on the default connection.
      */
     static transaction<R>(callback: (transaction: Transaction) => R | Promise<R>, options?: TransactionOptions): Promise<R> {
-        return this.connection().transaction<R>(callback, options)
+        return this.connection().transaction<R>(callback, options);
     }
 
     /**
@@ -112,7 +112,7 @@ export class DatabaseManager {
         // The connection is named rather than defaulted, unlike every other method here, because
         // boot is where a silent fallback would let an app start having migrated only one of its
         // databases.
-        return this.connection(name).migrate()
+        return this.connection(name).migrate();
     }
 
     /**
@@ -121,74 +121,74 @@ export class DatabaseManager {
     static seed(name: string): Promise<string[]> {
         // Named for the same reason as migrate: an app with several connections should not seed one
         // of them by accident.
-        return this.connection(name).seed()
+        return this.connection(name).seed();
     }
 
     /**
      * Delete the database and replay every migration, optionally seeding afterwards.
      */
     static fresh(name?: string, options?: FreshOptions): Promise<string[]> {
-        return this.connection(name).fresh(options)
+        return this.connection(name).fresh(options);
     }
 
     /**
      * Get the state of every registered migration.
      */
     static status(name?: string): Promise<MigrationStatus[]> {
-        return this.connection(name).status()
+        return this.connection(name).status();
     }
 
     /**
      * Determine whether a table exists.
      */
     static hasTable(table: string, name?: string): Promise<boolean> {
-        return this.connection(name).hasTable(table)
+        return this.connection(name).hasTable(table);
     }
 
     /**
      * Determine whether a table has a column.
      */
     static hasColumn(table: string, column: string, name?: string): Promise<boolean> {
-        return this.connection(name).hasColumn(table, column)
+        return this.connection(name).hasColumn(table, column);
     }
 
     /**
      * Get the names of every table.
      */
     static getTables(name?: string): Promise<string[]> {
-        return this.connection(name).tables()
+        return this.connection(name).tables();
     }
 
     /**
      * Get the columns of a table.
      */
     static getColumns(table: string, name?: string): Promise<ColumnSchema[]> {
-        return this.connection(name).getColumns(table)
+        return this.connection(name).getColumns(table);
     }
 
     /**
      * Get the indexes of a table.
      */
     static getIndexes(table: string, name?: string): Promise<IndexSchema[]> {
-        return this.connection(name).getIndexes(table)
+        return this.connection(name).getIndexes(table);
     }
 
     /**
      * Close a connection, leaving it registered so the next query reopens it.
      */
     static disconnect(name?: string): void {
-        this.connection(name).disconnect()
+        this.connection(name).disconnect();
     }
 
     /**
      * Close a connection and drop it, so the next resolve rebuilds it from configuration.
      */
     static purge(name?: string): void {
-        const connection: Connection = this.connection(name)
+        const connection: Connection = this.connection(name);
 
-        connection.disconnect()
+        connection.disconnect();
 
-        this.#connections.delete(connection.name)
+        this.#connections.delete(connection.name);
     }
 
     /**
@@ -197,112 +197,112 @@ export class DatabaseManager {
     static listen<K extends keyof DatabaseEvent>(event: K, listener: DatabaseEventListener<K>, options: ListenOptions = {}): void {
         // Listeners are persistent unless told otherwise. This is a deliberate departure from the
         // storage packages, where listen() registers with once and so fires exactly one time.
-        Dispatcher.listen(`db:${event}`, listener as (event: Event) => void, options.once ?? false)
+        Dispatcher.listen(`db:${event}`, listener as (event: Event) => void, options.once ?? false);
     }
 
     /**
      * Remove an event listener.
      */
     static forget<K extends keyof DatabaseEvent>(event: K, listener: DatabaseEventListener<K>): void {
-        Dispatcher.forget(`db:${event}`, listener as (event: Event) => void)
+        Dispatcher.forget(`db:${event}`, listener as (event: Event) => void);
     }
 
     /**
      * Register a listener on the "query" event.
      */
     static onQueryExecuted(listener: (event: QueryExecuted) => void, options?: ListenOptions): void {
-        this.listen('query', listener, options)
+        this.listen('query', listener, options);
     }
 
     /**
      * Register a listener on the "transaction-beginning" event.
      */
     static onTransactionBeginning(listener: (event: TransactionBeginning) => void, options?: ListenOptions): void {
-        this.listen('transaction-beginning', listener, options)
+        this.listen('transaction-beginning', listener, options);
     }
 
     /**
      * Register a listener on the "transaction-committed" event.
      */
     static onTransactionCommitted(listener: (event: TransactionCommitted) => void, options?: ListenOptions): void {
-        this.listen('transaction-committed', listener, options)
+        this.listen('transaction-committed', listener, options);
     }
 
     /**
      * Register a listener on the "transaction-rolled-back" event.
      */
     static onTransactionRolledBack(listener: (event: TransactionRolledBack) => void, options?: ListenOptions): void {
-        this.listen('transaction-rolled-back', listener, options)
+        this.listen('transaction-rolled-back', listener, options);
     }
 
     /**
      * Register a listener on the "migrations-started" event.
      */
     static onMigrationsStarted(listener: (event: MigrationsStarted) => void, options?: ListenOptions): void {
-        this.listen('migrations-started', listener, options)
+        this.listen('migrations-started', listener, options);
     }
 
     /**
      * Register a listener on the "migration-started" event.
      */
     static onMigrationStarted(listener: (event: MigrationStarted) => void, options?: ListenOptions): void {
-        this.listen('migration-started', listener, options)
+        this.listen('migration-started', listener, options);
     }
 
     /**
      * Register a listener on the "migration-ended" event.
      */
     static onMigrationEnded(listener: (event: MigrationEnded) => void, options?: ListenOptions): void {
-        this.listen('migration-ended', listener, options)
+        this.listen('migration-ended', listener, options);
     }
 
     /**
      * Register a listener on the "migrations-ended" event.
      */
     static onMigrationsEnded(listener: (event: MigrationsEnded) => void, options?: ListenOptions): void {
-        this.listen('migrations-ended', listener, options)
+        this.listen('migrations-ended', listener, options);
     }
 
     /**
      * Register a listener on the "no-pending-migrations" event.
      */
     static onNoPendingMigrations(listener: (event: NoPendingMigrations) => void, options?: ListenOptions): void {
-        this.listen('no-pending-migrations', listener, options)
+        this.listen('no-pending-migrations', listener, options);
     }
 
     /**
      * Register a listener on the "database-blocked" event.
      */
     static onDatabaseBlocked(listener: (event: DatabaseBlocked) => void, options?: ListenOptions): void {
-        this.listen('database-blocked', listener, options)
+        this.listen('database-blocked', listener, options);
     }
 
     /**
      * Register a listener on the "seeding-started" event.
      */
     static onSeedingStarted(listener: (event: SeedingStarted) => void, options?: ListenOptions): void {
-        this.listen('seeding-started', listener, options)
+        this.listen('seeding-started', listener, options);
     }
 
     /**
      * Register a listener on the "seeder-started" event.
      */
     static onSeederStarted(listener: (event: SeederStarted) => void, options?: ListenOptions): void {
-        this.listen('seeder-started', listener, options)
+        this.listen('seeder-started', listener, options);
     }
 
     /**
      * Register a listener on the "seeder-ended" event.
      */
     static onSeederEnded(listener: (event: SeederEnded) => void, options?: ListenOptions): void {
-        this.listen('seeder-ended', listener, options)
+        this.listen('seeder-ended', listener, options);
     }
 
     /**
      * Register a listener on the "seeding-ended" event.
      */
     static onSeedingEnded(listener: (event: SeedingEnded) => void, options?: ListenOptions): void {
-        this.listen('seeding-ended', listener, options)
+        this.listen('seeding-ended', listener, options);
     }
 
     /**
@@ -310,11 +310,11 @@ export class DatabaseManager {
      */
     static enableQueryLog(): void {
         if (this.#logger !== null) {
-            return
+            return;
         }
 
         this.#logger = (event: Event): void => {
-            const query: QueryExecuted = event as QueryExecuted
+            const query: QueryExecuted = event as QueryExecuted;
 
             this.#log.push({
                 connection: query.connection,
@@ -322,10 +322,10 @@ export class DatabaseManager {
                 plan      : query.plan,
                 duration  : query.duration,
                 records   : query.records,
-            })
-        }
+            });
+        };
 
-        Dispatcher.listen('db:query', this.#logger)
+        Dispatcher.listen('db:query', this.#logger);
     }
 
     /**
@@ -333,32 +333,32 @@ export class DatabaseManager {
      */
     static disableQueryLog(): void {
         if (this.#logger === null) {
-            return
+            return;
         }
 
-        Dispatcher.forget('db:query', this.#logger)
+        Dispatcher.forget('db:query', this.#logger);
 
-        this.#logger = null
+        this.#logger = null;
     }
 
     /**
      * Get the recorded queries.
      */
     static getQueryLog(): QueryLogEntry[] {
-        return [...this.#log]
+        return [...this.#log];
     }
 
     /**
      * Discard the recorded queries.
      */
     static flushQueryLog(): void {
-        this.#log = []
+        this.#log = [];
     }
 
     /**
      * Determine whether queries are being recorded.
      */
     static logging(): boolean {
-        return this.#logger !== null
+        return this.#logger !== null;
     }
 }

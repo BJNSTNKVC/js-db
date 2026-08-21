@@ -1,6 +1,6 @@
-import type { Constraint, Operator } from './types'
+import type { Constraint, Operator } from './types';
 
-const METACHARACTERS: RegExp = /[.*+?^${}()|[\]\\]/g
+const METACHARACTERS: RegExp = /[.*+?^${}()|[\]\\]/g;
 
 export class Predicate {
     /**
@@ -8,33 +8,33 @@ export class Predicate {
      */
     static compile(constraints: Constraint[]): (record: Record<string, unknown>) => boolean {
         if (constraints.length === 0) {
-            return (): boolean => true
+            return (): boolean => true;
         }
 
-        const groups: Constraint[][] = this.#grouped(constraints)
+        const groups: Constraint[][] = this.#grouped(constraints);
 
         return (record: Record<string, unknown>): boolean => groups.some(
             (group: Constraint[]): boolean => group.every(
                 (constraint: Constraint): boolean => this.#test(constraint, record),
             ),
-        )
+        );
     }
 
     /**
      * Split the constraints into disjunctive groups, so and binds tighter than or.
      */
     static #grouped(constraints: Constraint[]): Constraint[][] {
-        const groups: Constraint[][] = []
+        const groups: Constraint[][] = [];
 
         for (const [index, constraint] of constraints.entries()) {
             if (index === 0 || constraint.conjunction === 'or') {
-                groups.push([])
+                groups.push([]);
             }
 
-            groups[groups.length - 1]?.push(constraint)
+            groups[groups.length - 1]?.push(constraint);
         }
 
-        return groups
+        return groups;
     }
 
     /**
@@ -42,37 +42,37 @@ export class Predicate {
      */
     static #test(constraint: Constraint, record: Record<string, unknown>): boolean {
         if (constraint.type === 'nested') {
-            return this.#negate(constraint.not, this.compile(constraint.constraints)(record))
+            return this.#negate(constraint.not, this.compile(constraint.constraints)(record));
         }
 
-        const held: unknown = record[constraint.column]
+        const held: unknown = record[constraint.column];
 
         if (constraint.type === 'null') {
-            return this.#negate(constraint.not, held === null || held === undefined)
+            return this.#negate(constraint.not, held === null || held === undefined);
         }
 
         // SQL three valued logic: comparing against null is unknown, and negating unknown leaves it
         // unknown, so a null value satisfies neither a constraint nor its negation.
         if (held === null || held === undefined) {
-            return false
+            return false;
         }
 
         if (constraint.type === 'in') {
-            return this.#negate(constraint.not, constraint.values.some((value: unknown): boolean => this.#compare(held, '==', value)))
+            return this.#negate(constraint.not, constraint.values.some((value: unknown): boolean => this.#compare(held, '==', value)));
         }
 
         if (constraint.type === 'between') {
-            return this.#negate(constraint.not, this.#compare(held, '>=', constraint.from) && this.#compare(held, '<=', constraint.to))
+            return this.#negate(constraint.not, this.#compare(held, '>=', constraint.from) && this.#compare(held, '<=', constraint.to));
         }
 
-        return this.#negate(constraint.not, this.#compare(held, constraint.operator, constraint.value))
+        return this.#negate(constraint.not, this.#compare(held, constraint.operator, constraint.value));
     }
 
     /**
      * Negate a result when the constraint asks for it.
      */
     static #negate(not: boolean, result: boolean): boolean {
-        return not ? !result : result
+        return not ? !result : result;
     }
 
     /**
@@ -80,40 +80,40 @@ export class Predicate {
      */
     static #compare(held: unknown, operator: Operator, given: unknown): boolean {
         if (operator === 'like' || operator === 'not like') {
-            const matched: boolean = typeof held === 'string' && this.#pattern(String(given)).test(held)
+            const matched: boolean = typeof held === 'string' && this.#pattern(String(given)).test(held);
 
-            return operator === 'like' ? matched : !matched
+            return operator === 'like' ? matched : !matched;
         }
 
-        const a: unknown = this.#comparable(held)
-        const b: unknown = this.#comparable(given)
+        const a: unknown = this.#comparable(held);
+        const b: unknown = this.#comparable(given);
 
         switch (operator) {
             case '=':
             case '==':
-                return a == b
+                return a == b;
 
             case '===':
-                return a === b
+                return a === b;
 
             case '!=':
             case '<>':
-                return a != b
+                return a != b;
 
             case '!==':
-                return a !== b
+                return a !== b;
 
             case '<':
-                return (a as number) < (b as number)
+                return (a as number) < (b as number);
 
             case '>':
-                return (a as number) > (b as number)
+                return (a as number) > (b as number);
 
             case '<=':
-                return (a as number) <= (b as number)
+                return (a as number) <= (b as number);
 
             default:
-                return (a as number) >= (b as number)
+                return (a as number) >= (b as number);
         }
     }
 
@@ -121,40 +121,40 @@ export class Predicate {
      * Reduce a value to something the comparison operators can order.
      */
     static #comparable(value: unknown): unknown {
-        return value instanceof Date ? value.getTime() : value
+        return value instanceof Date ? value.getTime() : value;
     }
 
     /**
      * Translate a like pattern into a case insensitive regular expression.
      */
     static #pattern(pattern: string): RegExp {
-        let source: string = ''
+        let source: string = '';
 
         for (let index: number = 0; index < pattern.length; index++) {
-            const character: string = pattern[index] as string
+            const character: string = pattern[index] as string;
 
             if (character === '\\' && (pattern[index + 1] === '%' || pattern[index + 1] === '_')) {
-                source += (pattern[index + 1] as string).replace(METACHARACTERS, '\\$&')
-                index++
+                source += (pattern[index + 1] as string).replace(METACHARACTERS, '\\$&');
+                index++;
 
-                continue
+                continue;
             }
 
             if (character === '%') {
-                source += '.*'
+                source += '.*';
 
-                continue
+                continue;
             }
 
             if (character === '_') {
-                source += '.'
+                source += '.';
 
-                continue
+                continue;
             }
 
-            source += character.replace(METACHARACTERS, '\\$&')
+            source += character.replace(METACHARACTERS, '\\$&');
         }
 
-        return new RegExp(`^${source}$`, 'i')
+        return new RegExp(`^${source}$`, 'i');
     }
 }

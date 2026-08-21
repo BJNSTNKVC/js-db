@@ -1,12 +1,12 @@
-export { Blueprint } from './schema/Blueprint'
-export { Builder } from './query/Builder'
-export { ColumnDefinition } from './schema/ColumnDefinition'
-export { Connection } from './database/Connection'
-export { DatabaseManager, DatabaseManager as DB } from './database/DatabaseManager'
-export { Migration } from './migrations/Migration'
-export { Schema } from './schema/Schema'
-export { Seeder } from './seeders/Seeder'
-export { Transaction } from './database/Transaction'
+export { Blueprint } from './schema/Blueprint';
+export { Builder } from './query/Builder';
+export { ColumnDefinition } from './schema/ColumnDefinition';
+export { Connection } from './database/Connection';
+export { DatabaseManager, DatabaseManager as DB } from './database/DatabaseManager';
+export { Migration } from './migrations/Migration';
+export { Schema } from './schema/Schema';
+export { Seeder } from './seeders/Seeder';
+export { Transaction } from './database/Transaction';
 
 export {
     DatabaseBlocked,
@@ -23,7 +23,7 @@ export {
     TransactionBeginning,
     TransactionCommitted,
     TransactionRolledBack,
-} from './events'
+} from './events';
 
 export {
     ConnectionNotConfiguredException,
@@ -36,11 +36,11 @@ export {
     SchemaException,
     TableNotFoundException,
     UniqueConstraintViolationException,
-} from './exceptions'
+} from './exceptions';
 
-export type { DatabaseEvent, DatabaseEventListener } from './events'
-export type { ColumnSchema, ColumnType, IndexSchema, TableSchema } from './schema/types'
-export type { Conjunction, Constraint, Direction, Key, Operator, Order, Plan } from './query/types'
-export type { ConnectionConfig, DatabaseConfig, FreshOptions, ListenOptions, QueryLogEntry, TransactionOptions } from './database/types'
-export type { MigrationConstructor, MigrationStatus } from './migrations/types'
-export type { SeederConstructor } from './seeders/types'
+export type { DatabaseEvent, DatabaseEventListener } from './events';
+export type { ColumnSchema, ColumnType, IndexSchema, TableSchema } from './schema/types';
+export type { Conjunction, Constraint, Direction, Key, Operator, Order, Plan } from './query/types';
+export type { ConnectionConfig, DatabaseConfig, FreshOptions, ListenOptions, QueryLogEntry, TransactionOptions } from './database/types';
+export type { MigrationConstructor, MigrationStatus } from './migrations/types';
+export type { SeederConstructor } from './seeders/types';
