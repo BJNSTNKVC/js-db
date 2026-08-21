@@ -48,6 +48,7 @@ DB.configure({
         app: {
             database  : 'app',
             migrations: [CreateUsersTable],
+            seeders   : [UserSeeder],
             strict    : true,
         },
     },
@@ -61,11 +62,12 @@ await DB.migrate('app');
 | `default` | The connection used when none is named |
 | `connections[name].database` | The IndexedDB database name |
 | `connections[name].migrations` | Ordered migration classes. Their order **is** the schema version. |
+| `connections[name].seeders` | Ordered seeder classes, run by `DB.seed(name)`. See [Seeding](#seeding). |
 | `connections[name].strict` | Defaults to `true`. Nullability violations and uncoercible values throw. `false` writes `null` instead. |
 
 `DB.migrate(name)` is idempotent. It opens the database at the version your migrations ask for, and
-when that already matches, nothing runs. Calling it on every boot is the intended usage — there is
-no "has this been migrated?" check for you to write.
+when that already matches, nothing runs. Calling it on every boot is the intended usage, and there
+is no "has this been migrated?" check for you to write.
 
 The connection name is **required**, unlike every other method on the manager. Boot is the one place
 where quietly falling back to the default connection would let an app start having migrated only one
@@ -164,6 +166,86 @@ await DB.status();
 `DB.status()` never migrates as a side effect, so you can call it before `DB.migrate(name)` to
 see what is pending.
 
+### Seeding
+
+Seeding is a separate step from migrating, and deliberately so. A migration runs inside the version
+change transaction and therefore cannot await a `fetch`. A seeder runs outside it, so it can await
+anything at all, which makes it the right home for any seed data that comes off the network.
+
+```ts
+import { Seeder, type Connection } from '@bjnstnkvc/db';
+
+class UserSeeder extends Seeder {
+    /**
+     * Seed the database.
+     */
+    override async run(connection: Connection): Promise<void> {
+        const fetched: User[] = await (await fetch('/users.json')).json();
+
+        await connection.table<User>('users').insert(fetched);
+    }
+}
+```
+
+Register the seeders on the connection and run them when you want to:
+
+```ts
+await DB.seed('app');
+// ['UserSeeder']
+```
+
+`DB.seed(name)` opens the connection first, which migrates it, so the tables a seeder writes to are
+guaranteed to exist. The connection name is required for the same reason it is on `migrate`.
+
+The seeder receives the `Connection` it is seeding rather than reaching for the `DB` facade, so a
+seeder registered on a second connection writes to that one and not to the default.
+
+#### Seeders are not recorded
+
+Unlike migrations, nothing records that a seeder ran. Every call to `DB.seed(name)` runs every
+registered seeder again, which matches Laravel and keeps the surface small. If you call it on each
+boot, write your seeders idempotently:
+
+```ts
+class UserSeeder extends Seeder {
+    /**
+     * Seed the database.
+     */
+    override async run(connection: Connection): Promise<void> {
+        await connection.table<User>('users').upsert([
+            { email: 'admin@example.com', name: 'Admin' },
+        ], 'email');
+    }
+}
+```
+
+Seeding is also not atomic across seeders. They run one after another, and a failure in the third
+leaves the first two committed. A seeder that needs all-or-nothing opens its own transaction:
+
+```ts
+class UserSeeder extends Seeder {
+    /**
+     * Seed the database.
+     */
+    override async run(connection: Connection): Promise<void> {
+        await connection.transaction(async (transaction: Transaction): Promise<void> => {
+            await transaction.table<User>('users').insert({ name: 'Alice' });
+            await transaction.table('posts').insert({ user_id: 1, title: 'Hello' });
+        });
+    }
+}
+```
+
+#### Rebuilding from scratch
+
+`DB.fresh(name)` deletes the database and replays the migrations. Pass `{ seed: true }` to seed it
+afterwards as well, the way `migrate:fresh --seed` does in Laravel:
+
+```ts
+await DB.fresh('app');
+await DB.fresh('app', { seed: true });
+```
+
 ### Defining a schema
 
 IndexedDB stores whole objects and enforces only a key path, `autoIncrement` and indexes. Column
@@ -184,7 +266,7 @@ types are recorded as metadata and enforced by this package at write time.
 | `table.timestamps()` | Nullable `created_at` / `updated_at`, filled automatically |
 
 Altering a table also supports `dropColumn`, `renameColumn`, `dropIndex` and `Schema.rename`. The key
-path may not be dropped or renamed — IndexedDB fixes it when the store is created.
+path may not be dropped or renamed, because IndexedDB fixes it when the store is created.
 
 ```ts
 await Schema.table('users', (table: Blueprint): void => {
@@ -259,7 +341,7 @@ DB.table<User>('users')
 ```
 
 Operators: `=`, `==`, `===`, `!=`, `<>`, `!==`, `<`, `>`, `<=`, `>=`, `like`, `not like`. `==` is
-loose and `===` is strict, matching `@bjnstnkvc/collection`.
+loose and `===` is strict.
 
 Constraints follow SQL's three-valued logic: a comparison against `null` is unknown, and negating
 unknown leaves it unknown. So a record whose `age` is `null` satisfies neither
@@ -283,7 +365,7 @@ DB.table<User>('users')
     .dump();
 ```
 
-`select()` projects in memory after the fetch — IndexedDB always returns whole records, so it shapes
+`select()` projects in memory after the fetch. IndexedDB always returns whole records, so it shapes
 the result rather than saving any work.
 
 #### Terminals
@@ -350,7 +432,7 @@ index, rather than a bare `DOMException`.
 `upsert` requires its conflict target to be the key path or a unique index, because IndexedDB cannot
 enforce anything else. Any other column throws `SchemaException`.
 
-The key path may not be updated — `update`, `upsert` and `increment` all refuse it.
+The key path may not be updated, so `update`, `upsert` and `increment` all refuse it.
 
 `update` and `delete` honour `limit` and `offset` in the order the plan scans, which is index order
 when an index drives the query and key order otherwise. Pair them with an indexed `orderBy` if you
@@ -419,7 +501,11 @@ DB.forget('query', listener);
 
 Available events: `query`, `transaction-beginning`, `transaction-committed`,
 `transaction-rolled-back`, `migrations-started`, `migration-started`, `migration-ended`,
-`migrations-ended`, `no-pending-migrations`, `database-blocked`.
+`migrations-ended`, `no-pending-migrations`, `seeding-started`, `seeder-started`, `seeder-ended`,
+`seeding-ended`, `database-blocked`.
+
+A connection with no seeders announces nothing, so `seeding-started` firing always means at least
+one seeder is about to run.
 
 Listeners are **persistent by default**, with an opt-in `{ once: true }`. This is a deliberate
 departure from `@bjnstnkvc/local-storage`, where every listener fires exactly once.
@@ -448,7 +534,7 @@ IndexedDB is shared across tabs, which produces two situations worth handling:
   the other tabs.
 - Another tab upgrades the database. The connection closes its own handle so it does not block that
   upgrade. If the other tab is running newer code with more migrations, this tab can no longer open
-  the database and reports `MigrationMismatchException` — reload the page.
+  the database and reports `MigrationMismatchException`, so reload the page.
 
 ### Connections
 
@@ -475,11 +561,10 @@ memory, so writes inside a narrowed transaction still get their defaults.
 ## Not included
 
 - Joins, `groupBy` / `having` and subqueries
-- `down()` / `rollback()` / migration batches — IndexedDB versions cannot decrease
-- Soft deletes — an Eloquent concern, and Laravel's `DB::table()` does not honour them either
-- Model hydration and relations — see `@bjnstnkvc/model`
-- A Collection return type. Terminals return plain arrays, so the package stays dependency-free:
-  `Collection.make(await DB.table('users').get())`
+- `down()` / `rollback()` / migration batches, because IndexedDB versions cannot decrease
+- Soft deletes, which are an Eloquent concern. Laravel's `DB::table()` does not honour them either.
+- Model hydration and relations
+- A collection return type. Terminals return plain arrays, which keeps the package dependency-free.
 
 ## Testing
 
