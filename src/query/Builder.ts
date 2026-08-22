@@ -3,7 +3,9 @@ import { Dispatcher } from '../events/Dispatcher';
 import { RecordsNotFoundException, SchemaException, UniqueConstraintViolationException } from '../exceptions';
 import { Request } from '../database/Request';
 import { Coercer } from '../schema/Coercer';
+import { Comparator } from './Comparator';
 import { Planner } from './Planner';
+import { Grouping } from './Grouping';
 import { Predicate } from './Predicate';
 import type { Connection } from '../database/Connection';
 import type { IndexSchema, TableSchema } from '../schema/types';
@@ -168,6 +170,24 @@ export class Builder<T = Record<string, unknown>> {
         this.#distinct = value;
 
         return this;
+    }
+
+    /**
+     * Group the matching records by one or more columns.
+     */
+    groupBy<G extends (keyof T & string)[]>(...columns: G): Grouping<T, G> {
+        // The grouping owns its own ordering and paging, so the fetch it is handed drops this
+        // query's, which would otherwise page records before they were ever grouped.
+        const records: Builder<T> = this.clone();
+
+        records.#orders = [];
+        records.#limit = null;
+        records.#offset = 0;
+
+        return new Grouping<T, G>(
+            async (): Promise<Record<string, unknown>[]> => await records.#records() as Record<string, unknown>[],
+            columns,
+        );
     }
 
     /**
@@ -937,43 +957,11 @@ export class Builder<T = Record<string, unknown>> {
      * Sort the collected records by the requested orders.
      */
     #sorted(collected: { record: T; key: IDBValidKey }[]): { record: T; key: IDBValidKey }[] {
-        if (this.#orders.length === 0) {
-            return collected;
-        }
-
-        return [...collected].sort((a, b): number => {
-            for (const order of this.#orders) {
-                const compared: number = this.#compare(
-                    (a.record as Record<string, unknown>)[order.column],
-                    (b.record as Record<string, unknown>)[order.column],
-                );
-
-                if (compared !== 0) {
-                    return order.direction === 'desc' ? -compared : compared;
-                }
-            }
-
-            return 0;
-        });
-    }
-
-    /**
-     * Compare two column values, treating null as the lowest value.
-     */
-    #compare(a: unknown, b: unknown): number {
-        const left: unknown = a instanceof Date ? a.getTime() : a;
-        const right: unknown = b instanceof Date ? b.getTime() : b;
-        const missing = (value: unknown): boolean => value === null || value === undefined;
-
-        if (missing(left) || missing(right)) {
-            return missing(left) && missing(right) ? 0 : (missing(left) ? -1 : 1);
-        }
-
-        if (left === right) {
-            return 0;
-        }
-
-        return (left as number) < (right as number) ? -1 : 1;
+        return Comparator.sort(
+            collected,
+            this.#orders,
+            (entry, column: string): unknown => (entry.record as Record<string, unknown>)[column],
+        );
     }
 
     /**

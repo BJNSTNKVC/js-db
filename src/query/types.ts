@@ -27,3 +27,17 @@ export interface Plan {
     ordered: boolean;
     residual: Constraint[];
 }
+
+export type Aggregation =
+    | { count: '*' | (string & {}) }
+    | { sum: string }
+    | { avg: string }
+    | { min: string }
+    | { max: string };
+
+export type Aggregations = Record<string, Aggregation>;
+
+export type Aggregated<A extends Aggregation> = A extends { count: unknown } ? number : number | null;
+
+export type Grouped<T, G extends (keyof T & string)[], A extends Aggregations> =
+    { [K in G[number]]: T[K] } & { [K in keyof A]: Aggregated<A[K]> };

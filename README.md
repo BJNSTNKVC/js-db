@@ -463,6 +463,75 @@ The key path may not be updated, so `update`, `upsert` and `increment` all refus
 when an index drives the query and key order otherwise. Pair them with an indexed `orderBy` if you
 need a defined order.
 
+### Grouping
+
+Laravel spells aggregates as raw SQL, which has nothing to hand a string to here. So the aggregates
+are named in an object instead, and the alias becomes the key:
+
+```ts
+const rows = await DB.table<User>('users')
+    .where('active', true)
+    .groupBy('role')
+    .aggregate({
+        total : { count: '*' },
+        oldest: { max: 'age' },
+    })
+    .having('total', '>', 5)
+    .orderBy('total', 'desc')
+    .get();
+```
+
+Resolves to one row per group, carrying the grouped columns and the aggregates:
+
+```
+[
+    { role: 'member', total: 12, oldest: 61 },
+    { role: 'admin', total: 7, oldest: 44 }
+]
+```
+
+Because the alias is an object key rather than a string inside an expression, the result type is
+inferred rather than cast. That row is typed `{ role: string; total: number; oldest: number | null }`,
+and reading a column you did not group or aggregate is a compile error.
+
+| Aggregate | Meaning |
+| --- | --- |
+| `{ count: '*' }` | The number of records in the group, always a `number` |
+| `{ count: 'column' }` | The number of records whose column is not null |
+| `{ sum: 'column' }` | The total, `0` for a group with no values |
+| `{ avg: 'column' }` | The mean, `null` for a group with no values |
+| `{ min: 'column' }` / `{ max: 'column' }` | The extreme, `null` for a group with no values |
+
+Group by several columns by passing several names:
+
+```ts
+await DB.table<User>('users').groupBy('team', 'role').aggregate({ total: { count: '*' } }).get();
+```
+
+`aggregate()` is optional. Grouping with nothing aggregated gives you one row per distinct
+combination, which is what `distinct()` does over the same columns.
+
+#### having, ordering and paging apply to groups
+
+`having` and `orHaving` filter the grouped rows, and take the same operators as `where`. They can
+name either a grouped column or an aggregate alias, since by then both are just columns on the row.
+
+`orderBy`, `limit` and `offset` on a grouping apply to **groups**, not records. Any ordering or
+paging set before `groupBy` is dropped, because paging records before grouping them is almost never
+what you meant:
+
+```ts
+await DB.table<User>('users')
+    .groupBy('role')
+    .aggregate({ total: { count: '*' } })
+    .orderBy('total', 'desc')
+    .limit(3)
+    .get();
+```
+
+Grouping happens in memory after the records are fetched, so the planner still applies to the
+`where` clauses that select them, and a grouped query reports the plan of that underlying fetch.
+
 ### Query plans
 
 The builder does not fetch everything and filter in memory. It compiles your constraints into an
@@ -607,14 +676,6 @@ memory, so writes inside a narrowed transaction still get their defaults.
 `MigrationTransactionClosedException`, `NotNullConstraintViolationException`,
 `RecordsNotFoundException`, `ReservedTableException`, `SchemaException`, `TableNotFoundException`,
 `UniqueConstraintViolationException`.
-
-## Not included
-
-- Joins, `groupBy` / `having` and subqueries
-- `down()` / `rollback()` / migration batches, because IndexedDB versions cannot decrease
-- Soft deletes, which are an Eloquent concern. Laravel's `DB::table()` does not honour them either.
-- Model hydration and relations
-- A collection return type. Terminals return plain arrays, which keeps the package dependency-free.
 
 ## Testing
 
