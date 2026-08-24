@@ -11,6 +11,7 @@ const values: string[] = [
     'DatabaseBlockedException',
     'DatabaseManager',
     'Grouping',
+    'Join',
     'ConnectionNotConfiguredException',
     'Migration',
     'MigrationEnded',

@@ -57,6 +57,16 @@ export class Predicate {
             return false;
         }
 
+        if (constraint.type === 'column') {
+            const other: unknown = record[constraint.other];
+
+            if (other === null || other === undefined) {
+                return false;
+            }
+
+            return this.#negate(constraint.not, this.#compare(held, constraint.operator, other));
+        }
+
         if (constraint.type === 'in') {
             return this.#negate(constraint.not, constraint.values.some((value: unknown): boolean => this.#compare(held, '==', value)));
         }

@@ -11,6 +11,7 @@ export type Constraint =
     | { type: 'in'; column: string; values: unknown[]; conjunction: Conjunction; not: boolean }
     | { type: 'null'; column: string; conjunction: Conjunction; not: boolean }
     | { type: 'between'; column: string; from: unknown; to: unknown; conjunction: Conjunction; not: boolean }
+    | { type: 'column'; column: string; operator: Operator; other: string; conjunction: Conjunction; not: boolean }
     | { type: 'nested'; constraints: Constraint[]; conjunction: Conjunction; not: boolean };
 
 export interface Order {
@@ -26,6 +27,26 @@ export interface Plan {
     direction: IDBCursorDirection;
     ordered: boolean;
     residual: Constraint[];
+}
+
+export type JoinType = 'inner' | 'left' | 'right' | 'cross';
+
+export interface JoinCondition {
+    first: string;
+    operator: Operator;
+    second: string;
+    conjunction: Conjunction;
+}
+
+export interface JoinClause {
+    table: string;
+    type: JoinType;
+    conditions: JoinCondition[];
+}
+
+export interface Projection {
+    column: string;
+    alias: string;
 }
 
 export type Aggregation =

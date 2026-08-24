@@ -3,15 +3,20 @@ import { Dispatcher } from '../events/Dispatcher';
 import { RecordsNotFoundException, SchemaException, UniqueConstraintViolationException } from '../exceptions';
 import { Request } from '../database/Request';
 import { Coercer } from '../schema/Coercer';
+import { Columns } from './Columns';
 import { Comparator } from './Comparator';
+import { Join } from './Join';
+import { Joiner } from './Joiner';
 import { Planner } from './Planner';
 import { Grouping } from './Grouping';
 import { Predicate } from './Predicate';
 import type { Connection } from '../database/Connection';
-import type { IndexSchema, TableSchema } from '../schema/types';
-import type { Conjunction, Constraint, Direction, Key, Operator, Order, Plan } from './types';
+import type { ColumnSchema, IndexSchema, TableSchema } from '../schema/types';
+import type { Conjunction, Constraint, Direction, JoinClause, JoinType, Key, Operator, Order, Plan, Projection } from './types';
 
 type Nested<T> = (query: Builder<T>) => void;
+
+type Joining = (join: Join) => void;
 
 type Column<T> = Key<T> | Partial<T> | Nested<T>;
 
@@ -60,6 +65,11 @@ export class Builder<T = Record<string, unknown>> {
      * Whether the query removes duplicate records.
      */
     #distinct: boolean = false;
+
+    /**
+     * The tables joined onto this one.
+     */
+    #joins: JoinClause[] = [];
 
     /**
      * Create a new query builder.
@@ -155,7 +165,48 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Project only the given columns.
+     * Join another table, keeping only the rows that match.
+     */
+    join<R = Record<string, unknown>>(table: string, first: string | Joining, operator?: Operator | string, second?: string): Builder<R> {
+        return this.#join<R>('inner', table, first, operator, second);
+    }
+
+    /**
+     * Join another table, keeping every row of this one.
+     */
+    leftJoin<R = Record<string, unknown>>(table: string, first: string | Joining, operator?: Operator | string, second?: string): Builder<R> {
+        return this.#join<R>('left', table, first, operator, second);
+    }
+
+    /**
+     * Join another table, keeping every row of it.
+     */
+    rightJoin<R = Record<string, unknown>>(table: string, first: string | Joining, operator?: Operator | string, second?: string): Builder<R> {
+        return this.#join<R>('right', table, first, operator, second);
+    }
+
+    /**
+     * Pair every row of this table with every row of another.
+     */
+    crossJoin<R = Record<string, unknown>>(table: string): Builder<R> {
+        this.#joins.push({ table, type: 'cross', conditions: [] });
+
+        return this as unknown as Builder<R>;
+    }
+
+    /**
+     * Constrain a column against another column of the same row.
+     */
+    whereColumn(column: Key<T>, operator: Operator | string, other?: string): this {
+        const resolved: { operator: Operator; other: string } = other === undefined
+            ? { operator: '=', other: operator }
+            : { operator: operator as Operator, other };
+
+        return this.#push({ type: 'column', column, operator: resolved.operator, other: resolved.other, conjunction: 'and', not: false });
+    }
+
+    /**
+     * Project only the given columns, which may alias what they select.
      */
     select(...columns: (Key<T> | Key<T>[])[]): this {
         this.#columns = columns.flat() as string[];
@@ -284,6 +335,7 @@ export class Builder<T = Record<string, unknown>> {
         clone.#offset = this.#offset;
         clone.#columns = this.#columns === null ? null : [...this.#columns];
         clone.#distinct = this.#distinct;
+        clone.#joins = [...this.#joins];
 
         return clone;
     }
@@ -474,6 +526,20 @@ export class Builder<T = Record<string, unknown>> {
      * Walk the records matching the query in chunks.
      */
     async chunk(size: number, callback: (records: T[], page: number) => unknown): Promise<boolean> {
+        // A joined row is synthesised and has no key of its own, so its pages are sliced from the
+        // materialised result rather than fetched back by key.
+        if (this.#joins.length > 0) {
+            const rows: T[] = await this.#records();
+
+            for (let index: number = 0; index < rows.length; index += size) {
+                if (await callback(rows.slice(index, index + size), Math.floor(index / size) + 1) === false) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
         const keys: IDBValidKey[] = await this.#keys();
 
         for (let index: number = 0; index < keys.length; index += size) {
@@ -851,16 +917,16 @@ export class Builder<T = Record<string, unknown>> {
     /**
      * Get the object store the query reads from.
      */
-    async #store(mode: IDBTransactionMode): Promise<IDBObjectStore> {
+    async #store(mode: IDBTransactionMode, table: string = this.#table): Promise<IDBObjectStore> {
         if (this.#transaction !== null) {
-            return this.#transaction.objectStore(this.#table);
+            return this.#transaction.objectStore(table);
         }
 
         const database: IDBDatabase = await this.#connection.open();
 
-        await this.#connection.schema(this.#table);
+        await this.#connection.schema(table);
 
-        return database.transaction(this.#table, mode).objectStore(this.#table);
+        return database.transaction(table, mode).objectStore(table);
     }
 
     /**
@@ -890,9 +956,129 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
+     * Record a join, accepting either the column shorthand or a closure of conditions.
+     */
+    #join<R>(type: JoinType, table: string, first: string | Joining, operator?: Operator | string, second?: string): Builder<R> {
+        const clause: Join = new Join();
+
+        if (typeof first === 'function') {
+            first(clause);
+        } else {
+            clause.on(first, operator as Operator | string, second);
+        }
+
+        this.#joins.push({ table, type, conditions: clause.conditions() });
+
+        return this as unknown as Builder<R>;
+    }
+
+    /**
+     * Get the columns of every table the query reads, keyed by table.
+     */
+    async #tables(): Promise<Map<string, string[]>> {
+        const tables: Map<string, string[]> = new Map<string, string[]>();
+        const names: string[] = [this.#table, ...this.#joins.map((clause: JoinClause): string => clause.table)];
+
+        for (const name of names) {
+            const schema: TableSchema = await this.#connection.schema(name);
+
+            tables.set(name, schema.columns.map((column: ColumnSchema): string => column.name));
+        }
+
+        return tables;
+    }
+
+    /**
+     * Run the joins, returning rows whose keys are all qualified by table.
+     */
+    async #joined(): Promise<Record<string, unknown>[]> {
+        const tables: Map<string, string[]> = await this.#tables();
+        const store: IDBObjectStore = await this.#store('readonly');
+        const started: number = Date.now();
+
+        let rows: Record<string, unknown>[] = Joiner.qualify(
+            await Request.settle(store.getAll() as IDBRequest<Record<string, unknown>[]>),
+            this.#table,
+        );
+
+        for (const clause of this.#joins) {
+            const other: IDBObjectStore = await this.#store('readonly', clause.table);
+            const records: Record<string, unknown>[] = await Request.settle(other.getAll() as IDBRequest<Record<string, unknown>[]>);
+            const columns: string[] = (tables.get(clause.table) as string[]).map((column: string): string => `${clause.table}.${column}`);
+
+            rows = Joiner.join(rows, Joiner.qualify(records, clause.table), clause, columns);
+        }
+
+        const constraints: Constraint[] = this.#constraints.map((constraint: Constraint): Constraint => this.#qualified(constraint, tables));
+        const orders: Order[] = this.#orders.map((order: Order): Order => ({ ...order, column: Columns.resolve(order.column, tables) }));
+        const matches: (row: Record<string, unknown>) => boolean = Predicate.compile(constraints);
+
+        const kept: Record<string, unknown>[] = rows.filter(matches);
+        const sorted: Record<string, unknown>[] = Comparator.sort(kept, orders, (row: Record<string, unknown>, column: string): unknown => row[column]);
+        const from: number = this.#offset;
+        const paged: Record<string, unknown>[] = this.#limit === null ? sorted.slice(from) : sorted.slice(from, from + this.#limit);
+
+        this.#emit('join', started, paged.length);
+
+        return this.#flatten(paged, tables);
+    }
+
+    /**
+     * Qualify every column a constraint names with the table that owns it.
+     */
+    #qualified(constraint: Constraint, tables: Map<string, string[]>): Constraint {
+        if (constraint.type === 'nested') {
+            return { ...constraint, constraints: constraint.constraints.map((nested: Constraint): Constraint => this.#qualified(nested, tables)) };
+        }
+
+        if (constraint.type === 'column') {
+            return { ...constraint, column: Columns.resolve(constraint.column, tables), other: Columns.resolve(constraint.other, tables) };
+        }
+
+        return { ...constraint, column: Columns.resolve(constraint.column, tables) };
+    }
+
+    /**
+     * Flatten qualified rows the way SQL does, letting later tables win a collision.
+     */
+    #flatten(rows: Record<string, unknown>[], tables: Map<string, string[]>): Record<string, unknown>[] {
+        if (this.#columns !== null) {
+            return rows.map((row: Record<string, unknown>): Record<string, unknown> => Object.fromEntries(
+                (this.#columns as string[]).map((expression: string): [string, unknown] => {
+                    const projection: Projection = Columns.parse(expression);
+
+                    return [projection.alias, row[Columns.resolve(projection.column, tables)]];
+                }),
+            ));
+        }
+
+        const order: string[] = [...tables.keys()];
+
+        return rows.map((row: Record<string, unknown>): Record<string, unknown> => {
+            const flat: Record<string, unknown> = {};
+
+            for (const table of order) {
+                for (const column of tables.get(table) as string[]) {
+                    if (Object.hasOwn(row, `${table}.${column}`)) {
+                        flat[column] = row[`${table}.${column}`];
+                    }
+                }
+            }
+
+            return flat;
+        });
+    }
+
+    /**
      * Run the query, collecting the matching records and their keys.
      */
     async #matched(): Promise<{ records: T[]; keys: IDBValidKey[] }> {
+        if (this.#joins.length > 0) {
+            const rows: Record<string, unknown>[] = await this.#joined();
+
+            return { records: rows as T[], keys: [] };
+        }
+
         const schema: TableSchema = await this.#connection.schema(this.#table);
         const plan: Plan = Planner.plan(this.#constraints, this.#orders, schema);
         const store: IDBObjectStore = await this.#store('readonly');
@@ -977,10 +1163,15 @@ export class Builder<T = Record<string, unknown>> {
      * Project and deduplicate the records the query returns.
      */
     #shape(records: T[]): T[] {
-        const projected: T[] = this.#columns === null
+        // A joined query has already projected, since only there can a column need qualifying.
+        const projected: T[] = this.#columns === null || this.#joins.length > 0
             ? records
             : records.map((record: T): T => Object.fromEntries(
-                (this.#columns as string[]).map((column: string): [string, unknown] => [column, (record as Record<string, unknown>)[column]]),
+                (this.#columns as string[]).map((expression: string): [string, unknown] => {
+                    const projection: Projection = Columns.parse(expression);
+
+                    return [projection.alias, (record as Record<string, unknown>)[projection.column]];
+                }),
             ) as T);
 
         if (!this.#distinct) {
