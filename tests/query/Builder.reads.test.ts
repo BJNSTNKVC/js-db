@@ -29,6 +29,11 @@ class CreateUsersTable extends Migration {
             table.string('role');
         });
 
+        await Schema.create('empties', (table: Blueprint): void => {
+            table.id();
+            table.integer('score').nullable().index();
+        });
+
         await Schema.create('logs', (table: Blueprint): void => {
             table.id();
             table.string('level');
@@ -574,5 +579,50 @@ describe('Builder in memory sorting of dates', (): void => {
         const sorted: Log[] = await connection.table<Log>('logs').orderBy('seen_at', 'desc').get();
 
         expect((sorted[0]?.seen_at as Date).toISOString()).toEqual('2026-03-01T00:00:00.000Z');
+    });
+});
+
+describe('Builder index driven extremes', (): void => {
+    test('reads the smallest value from the index rather than the records', async (): Promise<void> => {
+        const opened = vi.spyOn(IDBObjectStore.prototype, 'openCursor');
+
+        expect(await users().min('age')).toEqual(25);
+        expect(opened).not.toHaveBeenCalled();
+    });
+
+    test('reads the largest value from the index rather than the records', async (): Promise<void> => {
+        const opened = vi.spyOn(IDBObjectStore.prototype, 'openCursor');
+
+        expect(await users().max('age')).toEqual(35);
+        expect(opened).not.toHaveBeenCalled();
+    });
+
+    test('announces the index it read the extreme from', async (): Promise<void> => {
+        const seen: string[] = [];
+
+        Dispatcher.listen('db:query', ((event: QueryExecuted): void => {
+            seen.push(event.plan);
+        }) as (event: Event) => void, true);
+
+        await users().min('age');
+
+        expect(seen).toEqual(['index:users_age_index']);
+    });
+
+    test('falls back to the records once a constraint narrows the query', async (): Promise<void> => {
+        expect(await users().where('role', 'member').min('age')).toEqual(25);
+        expect(await users().where('role', 'member').max('age')).toEqual(25);
+    });
+
+    test('falls back to the records for an unindexed column', async (): Promise<void> => {
+        expect(await connection.table<Log>('logs').min('weight')).toEqual(1);
+        expect(await connection.table<Log>('logs').max('weight')).toEqual(1);
+    });
+
+    test('yields null from the index when the table holds no value for the column', async (): Promise<void> => {
+        await connection.table('empties').truncate();
+
+        expect(await connection.table('empties').min('score')).toBeNull();
+        expect(await connection.table('empties').max('score')).toBeNull();
     });
 });

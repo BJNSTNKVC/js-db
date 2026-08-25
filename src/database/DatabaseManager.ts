@@ -109,9 +109,9 @@ export class DatabaseManager {
      * Run any pending migrations, returning the names of those this call ran.
      */
     static migrate(name: string): Promise<string[]> {
-        // The connection is named rather than defaulted, unlike every other method here, because
-        // boot is where a silent fallback would let an app start having migrated only one of its
-        // databases.
+        // Every method whose subject is the connection itself names it, rather than falling back to
+        // the default. A silent fallback here would migrate, seed or delete the wrong database. The
+        // table-level helpers below still default, since there the subject is the table.
         return this.connection(name).migrate();
     }
 
@@ -119,22 +119,20 @@ export class DatabaseManager {
      * Run every registered seeder, returning their names.
      */
     static seed(name: string): Promise<string[]> {
-        // Named for the same reason as migrate: an app with several connections should not seed one
-        // of them by accident.
         return this.connection(name).seed();
     }
 
     /**
      * Delete the database and replay every migration, optionally seeding afterwards.
      */
-    static fresh(name?: string, options?: FreshOptions): Promise<string[]> {
+    static fresh(name: string, options?: FreshOptions): Promise<string[]> {
         return this.connection(name).fresh(options);
     }
 
     /**
      * Get the state of every registered migration.
      */
-    static status(name?: string): Promise<MigrationStatus[]> {
+    static status(name: string): Promise<MigrationStatus[]> {
         return this.connection(name).status();
     }
 
@@ -176,14 +174,14 @@ export class DatabaseManager {
     /**
      * Close a connection, leaving it registered so the next query reopens it.
      */
-    static disconnect(name?: string): void {
+    static disconnect(name: string): void {
         this.connection(name).disconnect();
     }
 
     /**
      * Close a connection and drop it, so the next resolve rebuilds it from configuration.
      */
-    static purge(name?: string): void {
+    static purge(name: string): void {
         const connection: Connection = this.connection(name);
 
         connection.disconnect();

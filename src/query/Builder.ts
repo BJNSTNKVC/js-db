@@ -10,6 +10,7 @@ import { Joiner } from './Joiner';
 import { Planner } from './Planner';
 import { Grouping } from './Grouping';
 import { Predicate } from './Predicate';
+import { Signature } from './Signature';
 import type { Connection } from '../database/Connection';
 import type { ColumnSchema, IndexSchema, TableSchema } from '../schema/types';
 import type { Conjunction, Constraint, Direction, JoinClause, JoinType, Key, Operator, Order, Plan, Projection } from './types';
@@ -400,7 +401,7 @@ export class Builder<T = Record<string, unknown>> {
      */
     async find(key: IDBValidKey): Promise<T | null> {
         const store: IDBObjectStore = await this.#store('readonly');
-        const started: number = Date.now();
+        const started: number = performance.now();
         const record: T | undefined = await Request.settle(store.get(key) as IDBRequest<T | undefined>);
 
         this.#emit('key', started, record === undefined ? 0 : 1);
@@ -475,7 +476,7 @@ export class Builder<T = Record<string, unknown>> {
         }
 
         const store: IDBObjectStore = await this.#store('readonly');
-        const started: number = Date.now();
+        const started: number = performance.now();
         const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index);
         const count: number = await Request.settle(source.count(plan.range ?? undefined));
 
@@ -508,18 +509,59 @@ export class Builder<T = Record<string, unknown>> {
      * Get the smallest value of a column across the records matching the query.
      */
     async min(column: Key<T>): Promise<number | null> {
-        const values: number[] = await this.#numbers(column);
-
-        return values.length === 0 ? null : Math.min(...values);
+        return this.#extreme(column, 'next');
     }
 
     /**
      * Get the largest value of a column across the records matching the query.
      */
     async max(column: Key<T>): Promise<number | null> {
+        return this.#extreme(column, 'prev');
+    }
+
+    /**
+     * Get the value at one end of a column's range.
+     */
+    async #extreme(column: Key<T>, direction: IDBCursorDirection): Promise<number | null> {
+        const index: IndexSchema | null = await this.#sole(column);
+
+        // An index is already sorted, and IndexedDB omits records with no value for its key path,
+        // which is exactly what SQL does with nulls. So the answer is its first entry.
+        if (index !== null) {
+            const store: IDBObjectStore = await this.#store('readonly');
+            const started: number = performance.now();
+            const cursor: IDBCursorWithValue | null = await Request.settle(store.index(index.name).openCursor(null, direction));
+
+            this.#emit(`index:${index.name}`, started, cursor === null ? 0 : 1);
+
+            return cursor === null ? null : Number(cursor.key);
+        }
+
         const values: number[] = await this.#numbers(column);
 
-        return values.length === 0 ? null : Math.max(...values);
+        if (values.length === 0) {
+            return null;
+        }
+
+        // Reduced rather than spread, since Math.min(...values) throws past roughly 100k arguments.
+        return values.reduce((carry: number, value: number): number => direction === 'next'
+            ? Math.min(carry, value)
+            : Math.max(carry, value));
+    }
+
+    /**
+     * Get the single column index that can answer an unconstrained extreme, if there is one.
+     */
+    async #sole(column: Key<T>): Promise<IndexSchema | null> {
+        if (this.#joins.length > 0 || this.#constraints.length > 0) {
+            return null;
+        }
+
+        const schema: TableSchema = await this.#connection.schema(this.#table);
+
+        return schema.indexes.find((index: IndexSchema): boolean => index.columns.length === 1
+            && index.columns[0] === column
+            && !index.multiEntry) ?? null;
     }
 
     /**
@@ -576,7 +618,7 @@ export class Builder<T = Record<string, unknown>> {
         const rows: Partial<T>[] = Array.isArray(records) ? records : [records];
         const schema: TableSchema = await this.#connection.schema(this.#table);
         const store: IDBObjectStore = await this.#store('readwrite');
-        const started: number = Date.now();
+        const started: number = performance.now();
 
         for (const row of rows) {
             await this.#add(store, schema, row);
@@ -593,7 +635,7 @@ export class Builder<T = Record<string, unknown>> {
     async insertGetId(record: Partial<T>): Promise<IDBValidKey> {
         const schema: TableSchema = await this.#connection.schema(this.#table);
         const store: IDBObjectStore = await this.#store('readwrite');
-        const started: number = Date.now();
+        const started: number = performance.now();
         const key: IDBValidKey = await this.#add(store, schema, record);
 
         this.#emit('insert', started, 1);
@@ -640,7 +682,7 @@ export class Builder<T = Record<string, unknown>> {
         const columns: string[] = (Array.isArray(uniqueBy) ? uniqueBy : [uniqueBy]) as string[];
         const target: IndexSchema | null = this.#conflict(schema, columns);
         const store: IDBObjectStore = await this.#store('readwrite');
-        const started: number = Date.now();
+        const started: number = performance.now();
 
         for (const value of values) {
             await this.#merge(store, schema, columns, target, value, update);
@@ -679,7 +721,7 @@ export class Builder<T = Record<string, unknown>> {
      */
     async truncate(): Promise<void> {
         const store: IDBObjectStore = await this.#store('readwrite');
-        const started: number = Date.now();
+        const started: number = performance.now();
 
         await Request.settle(store.clear());
 
@@ -833,7 +875,7 @@ export class Builder<T = Record<string, unknown>> {
         const schema: TableSchema = await this.#connection.schema(this.#table);
         const plan: Plan = Planner.plan(this.#constraints, this.#orders, schema);
         const store: IDBObjectStore = await this.#store('readwrite');
-        const started: number = Date.now();
+        const started: number = performance.now();
         const matches: (record: Record<string, unknown>) => boolean = Predicate.compile(plan.residual);
         const ceiling: number | null = this.#limit === null ? null : this.#offset + this.#limit;
 
@@ -994,7 +1036,7 @@ export class Builder<T = Record<string, unknown>> {
     async #joined(): Promise<Record<string, unknown>[]> {
         const tables: Map<string, string[]> = await this.#tables();
         const store: IDBObjectStore = await this.#store('readonly');
-        const started: number = Date.now();
+        const started: number = performance.now();
 
         let rows: Record<string, unknown>[] = Joiner.qualify(
             await Request.settle(store.getAll() as IDBRequest<Record<string, unknown>[]>),
@@ -1082,7 +1124,7 @@ export class Builder<T = Record<string, unknown>> {
         const schema: TableSchema = await this.#connection.schema(this.#table);
         const plan: Plan = Planner.plan(this.#constraints, this.#orders, schema);
         const store: IDBObjectStore = await this.#store('readonly');
-        const started: number = Date.now();
+        const started: number = performance.now();
         const matches: (record: Record<string, unknown>) => boolean = Predicate.compile(plan.residual);
 
         const collected: { record: T; key: IDBValidKey }[] = plan.values === null
@@ -1181,7 +1223,7 @@ export class Builder<T = Record<string, unknown>> {
         const seen: Set<string> = new Set<string>();
 
         return projected.filter((record: T): boolean => {
-            const signature: string = JSON.stringify(record);
+            const signature: string = Signature.of(record as Record<string, unknown>);
 
             if (seen.has(signature)) {
                 return false;
@@ -1204,7 +1246,7 @@ export class Builder<T = Record<string, unknown>> {
             this.#constraints,
             this.#orders,
             this.#limit,
-            Date.now() - started,
+            performance.now() - started,
             records,
         ));
     }

@@ -148,7 +148,7 @@ describe('DB delegation', (): void => {
     test('reports the status of the default connection', async (): Promise<void> => {
         await DB.migrate('app');
 
-        const status: MigrationStatus[] = await DB.status();
+        const status: MigrationStatus[] = await DB.status('app');
 
         expect(status.map((entry: MigrationStatus): string => entry.migration)).toEqual(['CreateUsersTable']);
     });
@@ -157,7 +157,7 @@ describe('DB delegation', (): void => {
         await DB.migrate('app');
         await DB.table<User>('users').insert({ name: 'Alice' });
 
-        expect(await DB.fresh()).toEqual(['CreateUsersTable']);
+        expect(await DB.fresh('app')).toEqual(['CreateUsersTable']);
         expect(await DB.table<User>('users').count()).toEqual(0);
     });
 });
@@ -238,7 +238,7 @@ describe('DB.disconnect and DB.purge', (): void => {
 
         const connection: Connection = DB.connection();
 
-        DB.disconnect();
+        DB.disconnect('app');
 
         expect(DB.connection()).toBe(connection);
         expect(await DB.table<User>('users').count()).toEqual(0);
@@ -249,7 +249,7 @@ describe('DB.disconnect and DB.purge', (): void => {
 
         const connection: Connection = DB.connection();
 
-        DB.purge();
+        DB.purge('app');
 
         expect(DB.connection()).not.toBe(connection);
     });

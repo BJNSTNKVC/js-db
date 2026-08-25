@@ -1,5 +1,6 @@
 import { Comparator } from './Comparator';
 import { Predicate } from './Predicate';
+import { Signature } from './Signature';
 import type { Aggregation, Aggregations, Conjunction, Constraint, Direction, Grouped, Key, Operator, Order } from './types';
 
 type Records = () => Promise<Record<string, unknown>[]>;
@@ -148,7 +149,7 @@ export class Grouping<T, G extends (keyof T & string)[], A extends Aggregations 
         const grouped: Map<string, Record<string, unknown>[]> = new Map<string, Record<string, unknown>[]>();
 
         for (const record of records) {
-            const key: string = JSON.stringify(this.#columns.map((column: string): unknown => record[column]));
+            const key: string = Signature.ofValues(this.#columns.map((column: string): unknown => record[column]));
             const members: Record<string, unknown>[] | undefined = grouped.get(key);
 
             if (members === undefined) {

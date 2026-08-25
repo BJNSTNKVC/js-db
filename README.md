@@ -69,9 +69,10 @@ await DB.migrate('app');
 when that already matches, nothing runs. Calling it on every boot is the intended usage, and there
 is no "has this been migrated?" check for you to write.
 
-The connection name is **required**, unlike every other method on the manager. Boot is the one place
-where quietly falling back to the default connection would let an app start having migrated only one
-of its databases, so an app with several of them awaits one call each:
+The connection name is **required** here. Every method whose subject is the connection itself names
+it rather than falling back to the default, since a silent fallback would migrate, seed or delete the
+wrong database. That covers `migrate`, `seed`, `fresh`, `status`, `disconnect` and `purge`. The
+table-level helpers still default, because there the subject is the table:
 
 ```ts
 await DB.migrate('app');
@@ -101,7 +102,7 @@ records are left alone.
 #### Migrations are forward-only
 
 IndexedDB versions cannot decrease, so there is no `down()`, no `rollback()` and no batches. To
-start over, `DB.fresh()` deletes the database and replays every migration.
+start over, `DB.fresh(name)` deletes the database and replays every migration.
 
 Migrations may only ever be **appended**. Reordering them, or removing one that already ran, throws
 `MigrationMismatchException` rather than corrupting the schema.
@@ -139,7 +140,7 @@ If you need data from the network, that is what a seeder is for. See [Seeding](#
 #### Migration status
 
 ```ts
-await DB.status();
+await DB.status('app');
 ```
 
 Resolves to one entry per registered migration:
@@ -151,7 +152,7 @@ Resolves to one entry per registered migration:
 ]
 ```
 
-`DB.status()` never migrates as a side effect, so you can call it before `DB.migrate(name)` to
+`DB.status(name)` never migrates as a side effect, so you can call it before `DB.migrate(name)` to
 see what is pending.
 
 ### Seeding
@@ -728,11 +729,15 @@ Resolves to one entry per query that ran while the log was enabled:
 
 ```
 [
-    { connection: 'app', table: 'users', plan: 'scan', duration: 2, records: 7 }
+    { connection: 'app', table: 'users', plan: 'scan', duration: 2.41, records: 7 }
 ]
 ```
 
 Because `plan` is on every entry, the log is enough to spot a query that scans a whole table.
+
+Durations come from `performance.now()`, so they are sub-millisecond. `disableQueryLog()` stops
+recording but keeps what was already recorded, and the log survives client-side navigation, so only
+`flushQueryLog()` empties it.
 
 ```ts
 DB.flushQueryLog();
@@ -757,16 +762,16 @@ IndexedDB is shared across tabs, which produces two situations worth handling:
 ```ts
 DB.connection();
 DB.connection('reporting');
-DB.disconnect();
-DB.purge();
+DB.disconnect('app');
+DB.purge('app');
 ```
 
 | Call | Effect |
 | --- | --- |
 | `connection()` | The default connection |
 | `connection(name)` | A named connection, cached after the first resolve |
-| `disconnect(name?)` | Close the handle, leaving the connection registered so the next query reopens it |
-| `purge(name?)` | Close it and drop it, so the next resolve rebuilds it from configuration |
+| `disconnect(name)` | Close the handle, leaving the connection registered so the next query reopens it |
+| `purge(name)` | Close it and drop it, so the next resolve rebuilds it from configuration |
 
 ### Reserved tables
 
