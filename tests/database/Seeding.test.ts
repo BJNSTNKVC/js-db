@@ -449,3 +449,37 @@ describe('Default connection while seeding', (): void => {
         expect(seen).toEqual(['reporting', 'app', 'reporting']);
     });
 });
+
+describe('One seeder registered on two connections', (): void => {
+    test('resolves to whichever connection is being seeded', async (): Promise<void> => {
+        const seen: string[] = [];
+
+        class SharedSeeder extends Seeder {
+            /**
+             * Seed the database.
+             */
+            override async run(): Promise<void> {
+                seen.push(DB.connection().name);
+
+                await DB.table<User>('users').insert({ name: 'Alice' });
+            }
+        }
+
+        const suffix: number = ++sequence;
+
+        DB.configure({
+            default    : 'app',
+            connections: {
+                app      : { database: `shared-app-${suffix}`, migrations: [CreateUsersTable], seeders: [SharedSeeder] },
+                reporting: { database: `shared-reporting-${suffix}`, migrations: [CreateUsersTable], seeders: [SharedSeeder] },
+            },
+        });
+
+        await DB.seed('app');
+        await DB.seed('reporting');
+
+        expect(seen).toEqual(['app', 'reporting']);
+        expect(await DB.connection('app').table<User>('users').count()).toEqual(1);
+        expect(await DB.connection('reporting').table<User>('users').count()).toEqual(1);
+    });
+});
