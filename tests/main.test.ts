@@ -20,6 +20,7 @@ const values: string[] = [
     'MigrationTransactionClosedException',
     'MigrationsEnded',
     'MigrationsStarted',
+    'MultipleRecordsFoundException',
     'NoPendingMigrations',
     'NotNullConstraintViolationException',
     'QueryExecuted',

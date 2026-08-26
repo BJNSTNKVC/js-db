@@ -3,6 +3,7 @@ import { Connection } from '../../src/database/Connection';
 import { Migration } from '../../src/migrations/Migration';
 import { Schema } from '../../src/schema/Schema';
 import { Blueprint } from '../../src/schema/Blueprint';
+import { MultipleRecordsFoundException, RecordsNotFoundException } from '../../src/exceptions';
 import type { Builder } from '../../src/query/Builder';
 import type { Paginated } from '../../src/query/types';
 
@@ -215,6 +216,27 @@ describe('Builder date parts', (): void => {
 
     test('matches nothing where the column is null', async (): Promise<void> => {
         expect(await names(users().whereYear('seen_at', 2026))).not.toContain('Dave');
+    });
+});
+
+
+describe('Builder.sole', (): void => {
+    test('returns the one matching record', async (): Promise<void> => {
+        expect((await users().where('name', 'Alice').sole()).name).toEqual('Alice');
+    });
+
+    test('fails when nothing matches', async (): Promise<void> => {
+        await expect(users().where('name', 'Nobody').sole()).rejects.toBeInstanceOf(RecordsNotFoundException);
+    });
+
+    test('fails when more than one matches', async (): Promise<void> => {
+        await expect(users().where('role', 'member').sole()).rejects.toBeInstanceOf(MultipleRecordsFoundException);
+    });
+
+    test('names the table when more than one matches', async (): Promise<void> => {
+        await expect(users().where('role', 'member').sole()).rejects.toThrow(
+            new MultipleRecordsFoundException('users'),
+        );
     });
 });
 

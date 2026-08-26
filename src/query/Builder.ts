@@ -1,6 +1,6 @@
 import { QueryExecuted } from '../events';
 import { Dispatcher } from '../events/Dispatcher';
-import { RecordsNotFoundException, SchemaException, UniqueConstraintViolationException } from '../exceptions';
+import { MultipleRecordsFoundException, RecordsNotFoundException, SchemaException, UniqueConstraintViolationException } from '../exceptions';
 import { Request } from '../database/Request';
 import { Coercer } from '../schema/Coercer';
 import { Columns } from './Columns';
@@ -488,6 +488,23 @@ export class Builder<T = Record<string, unknown>> {
         }
 
         return record;
+    }
+
+    /**
+     * Get the one record matching the query, failing when there is not exactly one.
+     */
+    async sole(): Promise<T> {
+        const records: T[] = await this.clone().limit(2).get();
+
+        if (records.length === 0) {
+            throw new RecordsNotFoundException(`No records found in table [${this.#table}].`);
+        }
+
+        if (records.length > 1) {
+            throw new MultipleRecordsFoundException(this.#table);
+        }
+
+        return records[0] as T;
     }
 
     /**

@@ -32,6 +32,7 @@ export {
     DatabaseBlockedException,
     MigrationMismatchException,
     MigrationTransactionClosedException,
+    MultipleRecordsFoundException,
     NotNullConstraintViolationException,
     QuotaExceededException,
     RecordsNotFoundException,

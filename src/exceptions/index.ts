@@ -2,6 +2,7 @@ export { ConnectionNotConfiguredException } from './ConnectionNotConfiguredExcep
 export { DatabaseBlockedException } from './DatabaseBlockedException';
 export { MigrationMismatchException } from './MigrationMismatchException';
 export { MigrationTransactionClosedException } from './MigrationTransactionClosedException';
+export { MultipleRecordsFoundException } from './MultipleRecordsFoundException';
 export { NotNullConstraintViolationException } from './NotNullConstraintViolationException';
 export { QuotaExceededException } from './QuotaExceededException';
 export { RecordsNotFoundException } from './RecordsNotFoundException';
