@@ -190,6 +190,46 @@ export class DatabaseManager {
     }
 
     /**
+     * Get how much storage this origin is using, and how much it may use.
+     */
+    static async estimate(): Promise<StorageEstimate> {
+        const storage: StorageManager | undefined = globalThis.navigator?.storage;
+
+        // Not every environment exposes the Storage Manager, and a missing one is not a failure.
+        if (storage === undefined) {
+            return {};
+        }
+
+        return storage.estimate();
+    }
+
+    /**
+     * Ask the browser not to evict this origin's storage under pressure.
+     */
+    static async persist(): Promise<boolean> {
+        const storage: StorageManager | undefined = globalThis.navigator?.storage;
+
+        if (storage === undefined) {
+            return false;
+        }
+
+        return storage.persist();
+    }
+
+    /**
+     * Determine whether this origin's storage is already exempt from eviction.
+     */
+    static async persisted(): Promise<boolean> {
+        const storage: StorageManager | undefined = globalThis.navigator?.storage;
+
+        if (storage === undefined) {
+            return false;
+        }
+
+        return storage.persisted();
+    }
+
+    /**
      * Register an event listener.
      */
     static listen<K extends keyof DatabaseEvent>(event: K, listener: DatabaseEventListener<K>, options: ListenOptions = {}): void {

@@ -23,6 +23,7 @@ const values: string[] = [
     'NoPendingMigrations',
     'NotNullConstraintViolationException',
     'QueryExecuted',
+    'QuotaExceededException',
     'RecordsNotFoundException',
     'ReservedTableException',
     'Schema',

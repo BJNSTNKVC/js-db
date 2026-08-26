@@ -3,6 +3,7 @@ export { DatabaseBlockedException } from './DatabaseBlockedException';
 export { MigrationMismatchException } from './MigrationMismatchException';
 export { MigrationTransactionClosedException } from './MigrationTransactionClosedException';
 export { NotNullConstraintViolationException } from './NotNullConstraintViolationException';
+export { QuotaExceededException } from './QuotaExceededException';
 export { RecordsNotFoundException } from './RecordsNotFoundException';
 export { ReservedTableException } from './ReservedTableException';
 export { SchemaException } from './SchemaException';

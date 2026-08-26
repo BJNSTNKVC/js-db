@@ -33,6 +33,7 @@ export {
     MigrationMismatchException,
     MigrationTransactionClosedException,
     NotNullConstraintViolationException,
+    QuotaExceededException,
     RecordsNotFoundException,
     ReservedTableException,
     SchemaException,

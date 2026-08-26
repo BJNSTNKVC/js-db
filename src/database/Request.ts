@@ -1,3 +1,5 @@
+import { QuotaExceededException } from '../exceptions';
+
 export class Request {
     /**
      * Resolve when the request succeeds, reject when it fails.
@@ -16,7 +18,7 @@ export class Request {
                     event.stopPropagation();
                 }
 
-                reject(request.error);
+                reject(this.translate(request.error));
             };
         });
     }
@@ -44,7 +46,20 @@ export class Request {
                 cursor.continue();
             };
 
-            request.onerror = (): void => reject(request.error);
+            request.onerror = (): void => reject(this.translate(request.error));
         });
+    }
+
+    /**
+     * Name the failure, where the platform reports one this package can say more about.
+     */
+    static translate(error: DOMException | null): unknown {
+        // A full origin is the likeliest failure a browser database hits, and the platform reports
+        // it with no hint that the fix is freeing space rather than changing the query.
+        if (error !== null && error.name === 'QuotaExceededError') {
+            return new QuotaExceededException();
+        }
+
+        return error;
     }
 }

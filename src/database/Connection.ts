@@ -5,6 +5,7 @@ import { Migrator } from '../migrations/Migrator';
 import { Repository } from '../migrations/Repository';
 import { Registry } from '../schema/Registry';
 import { Builder } from '../query/Builder';
+import { Request } from './Request';
 import { Resolver } from './Resolver';
 import { Transaction } from './Transaction';
 import type { MigrationConstructor, MigrationRecord, MigrationStatus } from '../migrations/types';
@@ -251,7 +252,7 @@ export class Connection {
             handle.onabort = (): void => {
                 finished = true;
 
-                reject(handle.error ?? new DOMException('The transaction was aborted.', 'AbortError'));
+                reject(Request.translate(handle.error) ?? new DOMException('The transaction was aborted.', 'AbortError'));
             };
         });
 
