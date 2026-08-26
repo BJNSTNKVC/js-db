@@ -6,12 +6,15 @@ export type Conjunction = 'and' | 'or';
 
 export type Direction = 'asc' | 'desc';
 
+export type DatePart = 'year' | 'month' | 'day';
+
 export type Constraint =
     | { type: 'basic'; column: string; operator: Operator; value: unknown; conjunction: Conjunction; not: boolean }
     | { type: 'in'; column: string; values: unknown[]; conjunction: Conjunction; not: boolean }
     | { type: 'null'; column: string; conjunction: Conjunction; not: boolean }
     | { type: 'between'; column: string; from: unknown; to: unknown; conjunction: Conjunction; not: boolean }
     | { type: 'column'; column: string; operator: Operator; other: string; conjunction: Conjunction; not: boolean }
+    | { type: 'part'; column: string; part: DatePart; value: number; conjunction: Conjunction; not: boolean }
     | { type: 'nested'; constraints: Constraint[]; conjunction: Conjunction; not: boolean };
 
 export interface Order {

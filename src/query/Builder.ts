@@ -13,7 +13,7 @@ import { Predicate } from './Predicate';
 import { Signature } from './Signature';
 import type { Connection } from '../database/Connection';
 import type { ColumnSchema, IndexSchema, TableSchema } from '../schema/types';
-import type { Conjunction, Constraint, Direction, JoinClause, JoinType, Key, Operator, Order, Paginated, Plan, Projection } from './types';
+import type { Conjunction, Constraint, DatePart, Direction, JoinClause, JoinType, Key, Operator, Order, Paginated, Plan, Projection } from './types';
 
 type Nested<T> = (query: Builder<T>) => void;
 
@@ -219,6 +219,41 @@ export class Builder<T = Record<string, unknown>> {
      */
     orWhereNotLike(column: Key<T>, pattern: string): this {
         return this.#push({ type: 'basic', column, operator: 'not like', value: pattern, conjunction: 'or', not: false });
+    }
+
+    /**
+     * Constrain a date column to fall on a given day.
+     */
+    whereDate(column: Key<T>, value: Date | string): this {
+        const day: Date = new Date(value);
+
+        // A day is expressed as the range it covers, so an indexed column can still drive the scan
+        // and a stored time of day does not have to match.
+        const from: Date = new Date(day.getFullYear(), day.getMonth(), day.getDate());
+        const to: Date = new Date(from.getFullYear(), from.getMonth(), from.getDate() + 1);
+
+        return this.#push({ type: 'between', column, from, to: new Date(to.getTime() - 1), conjunction: 'and', not: false });
+    }
+
+    /**
+     * Constrain a date column to fall in a given year.
+     */
+    whereYear(column: Key<T>, value: number): this {
+        return this.#part('and', column, 'year', value);
+    }
+
+    /**
+     * Constrain a date column to fall in a given month, numbered from one.
+     */
+    whereMonth(column: Key<T>, value: number): this {
+        return this.#part('and', column, 'month', value);
+    }
+
+    /**
+     * Constrain a date column to fall on a given day of the month.
+     */
+    whereDay(column: Key<T>, value: number): this {
+        return this.#part('and', column, 'day', value);
     }
 
     /**
@@ -1055,6 +1090,13 @@ export class Builder<T = Record<string, unknown>> {
             : { operator: operator as Operator, value };
 
         return this.#push({ type: 'basic', column: column as string, operator: resolved.operator, value: resolved.value, conjunction, not });
+    }
+
+    /**
+     * Add a constraint on one part of a date column.
+     */
+    #part(conjunction: Conjunction, column: Key<T>, part: DatePart, value: number): this {
+        return this.#push({ type: 'part', column, part, value, conjunction, not: false });
     }
 
     /**

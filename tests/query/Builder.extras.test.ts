@@ -44,6 +44,11 @@ let connection: Connection;
  */
 const users = (): Builder<User> => connection.table<User>('users');
 
+/**
+ * Get the names of the records a query returns.
+ */
+const names = async (query: Builder<User>): Promise<string[]> => (await query.get()).map((user: User): string => user.name);
+
 beforeAll(async (): Promise<void> => {
     connection = new Connection('app', { database: 'builder-extras', migrations: [CreateUsersTable] });
 
@@ -176,6 +181,40 @@ describe('Builder.lazy', (): void => {
         }
 
         expect(seen).toHaveLength(25);
+    });
+});
+
+
+describe('Builder date parts', (): void => {
+    test('constrains to a day, whatever time is stored', async (): Promise<void> => {
+        expect((await names(users().whereDate('seen_at', '2026-02-01'))).sort()).toEqual(['Alice', 'Bob']);
+    });
+
+    test('accepts a date instance', async (): Promise<void> => {
+        expect(await names(users().whereDate('seen_at', new Date('2026-03-15T12:00:00.000Z')))).toEqual(['Carol']);
+    });
+
+    test('constrains to a year', async (): Promise<void> => {
+        expect(await users().whereYear('seen_at', 2026).count()).toEqual(3);
+        expect(await users().whereYear('seen_at', 2025).count()).toEqual(1);
+    });
+
+    test('constrains to a month, numbered from one', async (): Promise<void> => {
+        expect(await users().whereMonth('seen_at', 2).count()).toEqual(2);
+        expect(await users().whereMonth('seen_at', 12).count()).toEqual(1);
+    });
+
+    test('constrains to a day of the month', async (): Promise<void> => {
+        expect(await users().whereDay('seen_at', 15).count()).toEqual(1);
+        expect(await users().whereDay('seen_at', 7).count()).toEqual(0);
+    });
+
+    test('matches nothing where the column holds no date', async (): Promise<void> => {
+        expect(await users().whereYear('name', 2026).count()).toEqual(0);
+    });
+
+    test('matches nothing where the column is null', async (): Promise<void> => {
+        expect(await names(users().whereYear('seen_at', 2026))).not.toContain('Dave');
     });
 });
 

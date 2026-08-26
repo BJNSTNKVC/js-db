@@ -1,4 +1,4 @@
-import type { Constraint, Operator } from './types';
+import type { Constraint, DatePart, Operator } from './types';
 
 const METACHARACTERS: RegExp = /[.*+?^${}()|[\]\\]/g;
 
@@ -67,6 +67,10 @@ export class Predicate {
             return this.#negate(constraint.not, this.#compare(held, constraint.operator, other));
         }
 
+        if (constraint.type === 'part') {
+            return this.#negate(constraint.not, this.#part(held, constraint.part) === constraint.value);
+        }
+
         if (constraint.type === 'in') {
             return this.#negate(constraint.not, constraint.values.some((value: unknown): boolean => this.#compare(held, '==', value)));
         }
@@ -76,6 +80,24 @@ export class Predicate {
         }
 
         return this.#negate(constraint.not, this.#compare(held, constraint.operator, constraint.value));
+    }
+
+    /**
+     * Read one part of a value that should hold a date.
+     */
+    static #part(held: unknown, part: DatePart): number | null {
+        const date: Date = held instanceof Date ? held : new Date(held as string | number);
+
+        if (Number.isNaN(date.getTime())) {
+            return null;
+        }
+
+        if (part === 'year') {
+            return date.getFullYear();
+        }
+
+        // Numbered from one, as SQL does, rather than from zero as JavaScript does.
+        return part === 'month' ? date.getMonth() + 1 : date.getDate();
     }
 
     /**
