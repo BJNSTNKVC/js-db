@@ -3,7 +3,7 @@ import { Connection } from '../../src/database/Connection';
 import { Migration } from '../../src/migrations/Migration';
 import { Schema } from '../../src/schema/Schema';
 import { Blueprint } from '../../src/schema/Blueprint';
-import { MultipleRecordsFoundException, RecordsNotFoundException } from '../../src/exceptions';
+import { MultipleRecordsFoundException, RecordsNotFoundException, UniqueConstraintViolationException } from '../../src/exceptions';
 import type { Builder } from '../../src/query/Builder';
 import type { Paginated } from '../../src/query/types';
 
@@ -236,6 +236,34 @@ describe('Builder.sole', (): void => {
     test('names the table when more than one matches', async (): Promise<void> => {
         await expect(users().where('role', 'member').sole()).rejects.toThrow(
             new MultipleRecordsFoundException('users'),
+        );
+    });
+});
+
+
+describe('Builder.insertOrIgnore', (): void => {
+    test('inserts the records the constraints allow', async (): Promise<void> => {
+        const inserted: number = await users().insertOrIgnore([
+            { name: 'Frank', email: 'frank@example.com', role: 'member' },
+            { name: 'Clone', email: 'alice@example.com', role: 'member' },
+        ]);
+
+        expect(inserted).toEqual(1);
+        expect(await users().where('name', 'Frank').count()).toEqual(1);
+        expect(await users().where('name', 'Clone').count()).toEqual(0);
+    });
+
+    test('inserts a single record', async (): Promise<void> => {
+        expect(await users().insertOrIgnore({ name: 'Grace', email: 'grace@example.com', role: 'member' })).toEqual(1);
+    });
+
+    test('ignores a record the unique index rejects', async (): Promise<void> => {
+        expect(await users().insertOrIgnore({ name: 'Clone', email: 'alice@example.com', role: 'member' })).toEqual(0);
+    });
+
+    test('still reports a failure that is not a rejected constraint', async (): Promise<void> => {
+        await expect(users().insertOrIgnore({ email: 'nameless@example.com', role: 'member' })).rejects.not.toBeInstanceOf(
+            UniqueConstraintViolationException,
         );
     });
 });

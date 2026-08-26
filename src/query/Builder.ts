@@ -792,6 +792,35 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
+     * Insert one or more records, skipping any the unique indexes reject.
+     */
+    async insertOrIgnore(records: Partial<T> | Partial<T>[]): Promise<number> {
+        const rows: Partial<T>[] = Array.isArray(records) ? records : [records];
+        const schema: TableSchema = await this.#connection.schema(this.#table);
+        const store: IDBObjectStore = await this.#store('readwrite');
+        const started: number = performance.now();
+
+        let inserted: number = 0;
+
+        for (const row of rows) {
+            try {
+                await this.#add(store, schema, row);
+
+                inserted++;
+            } catch (error: unknown) {
+                // Only a rejected constraint is skipped. Anything else is the caller's problem.
+                if (!(error instanceof UniqueConstraintViolationException)) {
+                    throw error;
+                }
+            }
+        }
+
+        this.#emit('insert', started, inserted);
+
+        return inserted;
+    }
+
+    /**
      * Insert a record and get the key the database gave it.
      */
     async insertGetId(record: Partial<T>): Promise<IDBValidKey> {
