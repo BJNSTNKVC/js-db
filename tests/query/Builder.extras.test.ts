@@ -102,3 +102,80 @@ describe('Builder.paginate', (): void => {
     });
 });
 
+
+describe('Builder.lazy', (): void => {
+    test('yields every matching record', async (): Promise<void> => {
+        const seen: string[] = [];
+
+        for await (const user of users().orderBy('name').lazy()) {
+            seen.push(user.name);
+        }
+
+        expect(seen).toEqual(['Alice', 'Bob', 'Carol', 'Dave', 'Erin']);
+    });
+
+    test('yields across page boundaries', async (): Promise<void> => {
+        const seen: string[] = [];
+
+        for await (const user of users().orderBy('name').lazy(2)) {
+            seen.push(user.name);
+        }
+
+        expect(seen).toEqual(['Alice', 'Bob', 'Carol', 'Dave', 'Erin']);
+    });
+
+    test('stops fetching once the caller breaks out', async (): Promise<void> => {
+        const seen: string[] = [];
+
+        for await (const user of users().orderBy('name').lazy(2)) {
+            seen.push(user.name);
+
+            if (seen.length === 2) {
+                break;
+            }
+        }
+
+        expect(seen).toEqual(['Alice', 'Bob']);
+    });
+
+    test('honours the constraints of the query', async (): Promise<void> => {
+        const seen: string[] = [];
+
+        for await (const user of users().where('role', 'member').orderBy('name').lazy()) {
+            seen.push(user.name);
+        }
+
+        expect(seen).toEqual(['Bob', 'Carol', 'Dave']);
+    });
+
+    test('projects the selected columns', async (): Promise<void> => {
+        const seen: User[] = [];
+
+        for await (const user of users().orderBy('name').select('name').lazy()) {
+            seen.push(user);
+        }
+
+        expect(seen[0]).toEqual({ name: 'Alice' });
+    });
+
+    test('yields nothing when nothing matches', async (): Promise<void> => {
+        const seen: User[] = [];
+
+        for await (const user of users().where('name', 'Nobody').lazy()) {
+            seen.push(user);
+        }
+
+        expect(seen).toEqual([]);
+    });
+
+    test('yields the rows of a joined query', async (): Promise<void> => {
+        const seen: unknown[] = [];
+
+        for await (const row of users().crossJoin('users').lazy()) {
+            seen.push(row);
+        }
+
+        expect(seen).toHaveLength(25);
+    });
+});
+

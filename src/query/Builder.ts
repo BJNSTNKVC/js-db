@@ -685,6 +685,34 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
+     * Walk the records matching the query as an async iterable.
+     */
+    async *lazy(size: number = 100): AsyncGenerator<T, void, undefined> {
+        // A joined row is synthesised and has no key to fetch it back by, so there is nothing to
+        // page over and the materialised result is yielded as it stands.
+        if (this.#joins.length > 0) {
+            yield* await this.#records();
+
+            return;
+        }
+
+        const keys: IDBValidKey[] = await this.#keys();
+
+        // Only the keys are held for the whole walk. Each page of records is fetched when the caller
+        // reaches it, and released once consumed.
+        for (let index: number = 0; index < keys.length; index += size) {
+            const page: IDBValidKey[] = keys.slice(index, index + size);
+            const store: IDBObjectStore = await this.#store('readonly');
+
+            const records: (T | undefined)[] = await Promise.all(
+                page.map((key: IDBValidKey): Promise<T | undefined> => Request.settle(store.get(key) as IDBRequest<T | undefined>)),
+            );
+
+            yield* this.#shape(records.filter((record: T | undefined): record is T => record !== undefined));
+        }
+    }
+
+    /**
      * Walk the records matching the query one at a time.
      */
     async each(callback: (record: T, index: number) => unknown): Promise<boolean> {
