@@ -351,6 +351,10 @@ DB.table<User>('users')
     .whereNotLike('name', 'Test%');
 ```
 
+Every one of these has an `or` form too: `orWhere`, `orWhereIn`, `orWhereNotIn`, `orWhereNull`,
+`orWhereNotNull`, `orWhereBetween`, `orWhereNotBetween`, `orWhereLike`, `orWhereNotLike` and
+`orWhereColumn`, so a disjunction no longer needs a nested closure.
+
 Operators: `=`, `==`, `===`, `!=`, `<>`, `!==`, `<`, `>`, `<=`, `>=`, `like`, `not like`. `==` is
 loose and `===` is strict.
 

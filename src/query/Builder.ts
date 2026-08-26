@@ -117,10 +117,24 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
+     * Constrain a column to one of the given values, disjunctively.
+     */
+    orWhereIn(column: Key<T>, values: unknown[]): this {
+        return this.#push({ type: 'in', column, values, conjunction: 'or', not: false });
+    }
+
+    /**
      * Constrain a column to none of the given values.
      */
     whereNotIn(column: Key<T>, values: unknown[]): this {
         return this.#push({ type: 'in', column, values, conjunction: 'and', not: true });
+    }
+
+    /**
+     * Constrain a column to none of the given values, disjunctively.
+     */
+    orWhereNotIn(column: Key<T>, values: unknown[]): this {
+        return this.#push({ type: 'in', column, values, conjunction: 'or', not: true });
     }
 
     /**
@@ -131,10 +145,24 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
+     * Constrain a column to be null, disjunctively.
+     */
+    orWhereNull(column: Key<T>): this {
+        return this.#push({ type: 'null', column, conjunction: 'or', not: false });
+    }
+
+    /**
      * Constrain a column to not be null.
      */
     whereNotNull(column: Key<T>): this {
         return this.#push({ type: 'null', column, conjunction: 'and', not: true });
+    }
+
+    /**
+     * Constrain a column to not be null, disjunctively.
+     */
+    orWhereNotNull(column: Key<T>): this {
+        return this.#push({ type: 'null', column, conjunction: 'or', not: true });
     }
 
     /**
@@ -145,10 +173,24 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
+     * Constrain a column to fall between two values, disjunctively.
+     */
+    orWhereBetween(column: Key<T>, values: [unknown, unknown]): this {
+        return this.#push({ type: 'between', column, from: values[0], to: values[1], conjunction: 'or', not: false });
+    }
+
+    /**
      * Constrain a column to fall outside two values.
      */
     whereNotBetween(column: Key<T>, values: [unknown, unknown]): this {
         return this.#push({ type: 'between', column, from: values[0], to: values[1], conjunction: 'and', not: true });
+    }
+
+    /**
+     * Constrain a column to fall outside two values, disjunctively.
+     */
+    orWhereNotBetween(column: Key<T>, values: [unknown, unknown]): this {
+        return this.#push({ type: 'between', column, from: values[0], to: values[1], conjunction: 'or', not: true });
     }
 
     /**
@@ -159,10 +201,24 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
+     * Constrain a column to match a pattern, disjunctively.
+     */
+    orWhereLike(column: Key<T>, pattern: string): this {
+        return this.#push({ type: 'basic', column, operator: 'like', value: pattern, conjunction: 'or', not: false });
+    }
+
+    /**
      * Constrain a column to not match a pattern.
      */
     whereNotLike(column: Key<T>, pattern: string): this {
         return this.#push({ type: 'basic', column, operator: 'not like', value: pattern, conjunction: 'and', not: false });
+    }
+
+    /**
+     * Constrain a column to not match a pattern, disjunctively.
+     */
+    orWhereNotLike(column: Key<T>, pattern: string): this {
+        return this.#push({ type: 'basic', column, operator: 'not like', value: pattern, conjunction: 'or', not: false });
     }
 
     /**
@@ -199,11 +255,14 @@ export class Builder<T = Record<string, unknown>> {
      * Constrain a column against another column of the same row.
      */
     whereColumn(column: Key<T>, operator: Operator | string, other?: string): this {
-        const resolved: { operator: Operator; other: string } = other === undefined
-            ? { operator: '=', other: operator }
-            : { operator: operator as Operator, other };
+        return this.#compared('and', column, operator, other);
+    }
 
-        return this.#push({ type: 'column', column, operator: resolved.operator, other: resolved.other, conjunction: 'and', not: false });
+    /**
+     * Constrain a column against another column of the same row, disjunctively.
+     */
+    orWhereColumn(column: Key<T>, operator: Operator | string, other?: string): this {
+        return this.#compared('or', column, operator, other);
     }
 
     /**
@@ -945,6 +1004,17 @@ export class Builder<T = Record<string, unknown>> {
             : { operator: operator as Operator, value };
 
         return this.#push({ type: 'basic', column: column as string, operator: resolved.operator, value: resolved.value, conjunction, not });
+    }
+
+    /**
+     * Add a constraint comparing two columns, allowing the operator to be left implicit.
+     */
+    #compared(conjunction: Conjunction, column: Key<T>, operator: Operator | string, other?: string): this {
+        const resolved: { operator: Operator; other: string } = other === undefined
+            ? { operator: '=', other: operator }
+            : { operator: operator as Operator, other };
+
+        return this.#push({ type: 'column', column, operator: resolved.operator, other: resolved.other, conjunction, not: false });
     }
 
     /**

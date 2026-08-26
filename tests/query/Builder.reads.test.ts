@@ -626,3 +626,69 @@ describe('Builder index driven extremes', (): void => {
         expect(await connection.table('empties').max('score')).toBeNull();
     });
 });
+
+describe('Builder disjunctive constraints', (): void => {
+    test('accepts a disjunctive list', async (): Promise<void> => {
+        const found: string[] = await names(users().where('name', 'Alice').orWhereIn('role', ['owner']));
+
+        expect(found.sort()).toEqual(['Alice', 'Carol']);
+    });
+
+    test('accepts a disjunctive excluded list', async (): Promise<void> => {
+        const found: string[] = await names(users().where('name', 'Alice').orWhereNotIn('role', ['member', 'admin']));
+
+        expect(found.sort()).toEqual(['Alice', 'Carol']);
+    });
+
+    test('accepts a disjunctive null', async (): Promise<void> => {
+        const found: string[] = await names(users().where('name', 'Alice').orWhereNull('age'));
+
+        expect(found.sort()).toEqual(['Alice', 'Dave']);
+    });
+
+    test('accepts a disjunctive not null', async (): Promise<void> => {
+        const found: string[] = await names(users().where('name', 'Nobody').orWhereNotNull('age'));
+
+        expect(found.sort()).toEqual(['Alice', 'Bob', 'Carol', 'Erin']);
+    });
+
+    test('accepts a disjunctive range', async (): Promise<void> => {
+        const found: string[] = await names(users().where('name', 'Dave').orWhereBetween('age', [34, 36]));
+
+        expect(found.sort()).toEqual(['Carol', 'Dave']);
+    });
+
+    test('accepts a disjunctive excluded range', async (): Promise<void> => {
+        const found: string[] = await names(users().where('name', 'Dave').orWhereNotBetween('age', [25, 30]));
+
+        expect(found.sort()).toEqual(['Carol', 'Dave']);
+    });
+
+    test('accepts a disjunctive pattern', async (): Promise<void> => {
+        const found: string[] = await names(users().where('name', 'Bob').orWhereLike('name', 'A%'));
+
+        expect(found.sort()).toEqual(['Alice', 'Bob']);
+    });
+
+    test('accepts a disjunctive negated pattern', async (): Promise<void> => {
+        const found: string[] = await names(users().where('name', 'Alice').orWhereNotLike('name', '%o%'));
+
+        expect(found.sort()).toEqual(['Alice', 'Dave', 'Erin']);
+    });
+
+    test('accepts a disjunctive column comparison', async (): Promise<void> => {
+        const found: string[] = await names(users().where('name', 'Alice').orWhereColumn('name', '=', 'role'));
+
+        expect(found).toEqual(['Alice']);
+    });
+
+    test('reads the same as a nested group would', async (): Promise<void> => {
+        const chained: string[] = await names(users().where('name', 'Alice').orWhereNull('age'));
+
+        const nested: string[] = await names(users().where((query: Builder<User>): void => {
+            query.where('name', 'Alice').orWhereNull('age');
+        }));
+
+        expect(chained.sort()).toEqual(nested.sort());
+    });
+});
