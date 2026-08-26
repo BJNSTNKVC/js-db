@@ -49,6 +49,14 @@ export interface Projection {
     alias: string;
 }
 
+export interface Paginated<T> {
+    data: T[];
+    total: number;
+    perPage: number;
+    currentPage: number;
+    lastPage: number;
+}
+
 export type Aggregation =
     | { count: '*' | (string & {}) }
     | { sum: string }

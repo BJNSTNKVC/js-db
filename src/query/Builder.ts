@@ -13,7 +13,7 @@ import { Predicate } from './Predicate';
 import { Signature } from './Signature';
 import type { Connection } from '../database/Connection';
 import type { ColumnSchema, IndexSchema, TableSchema } from '../schema/types';
-import type { Conjunction, Constraint, Direction, JoinClause, JoinType, Key, Operator, Order, Plan, Projection } from './types';
+import type { Conjunction, Constraint, Direction, JoinClause, JoinType, Key, Operator, Order, Paginated, Plan, Projection } from './types';
 
 type Nested<T> = (query: Builder<T>) => void;
 
@@ -621,6 +621,29 @@ export class Builder<T = Record<string, unknown>> {
         return schema.indexes.find((index: IndexSchema): boolean => index.columns.length === 1
             && index.columns[0] === column
             && !index.multiEntry) ?? null;
+    }
+
+    /**
+     * Get a single page of records, alongside the totals a pager needs.
+     */
+    async paginate(page: number = 1, perPage: number = 15): Promise<Paginated<T>> {
+        // Counted from a copy without the paging, since the total is what the query matches rather
+        // than what this page returns.
+        const counted: Builder<T> = this.clone();
+
+        counted.#limit = null;
+        counted.#offset = 0;
+
+        const total: number = await counted.count();
+        const data: T[] = await this.clone().forPage(page, perPage).get();
+
+        return {
+            data,
+            total,
+            perPage,
+            currentPage: page,
+            lastPage   : Math.max(1, Math.ceil(total / perPage)),
+        };
     }
 
     /**
