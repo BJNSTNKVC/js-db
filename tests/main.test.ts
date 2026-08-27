@@ -4,6 +4,7 @@ import * as db from '../src/main';
 const values: string[] = [
     'Blueprint',
     'Builder',
+    'CheckConstraintViolationException',
     'ColumnDefinition',
     'Connection',
     'DB',

@@ -1,3 +1,4 @@
+export { CheckConstraintViolationException } from './CheckConstraintViolationException';
 export { ConnectionNotConfiguredException } from './ConnectionNotConfiguredException';
 export { DatabaseBlockedException } from './DatabaseBlockedException';
 export { MigrationMismatchException } from './MigrationMismatchException';

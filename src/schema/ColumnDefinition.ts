@@ -42,6 +42,11 @@ export class ColumnDefinition {
     #places: number | null = null;
 
     /**
+     * The values an enumerated column accepts.
+     */
+    #values: string[] | null = null;
+
+    /**
      * The indexes requested for the column.
      */
     readonly #requested: RequestedIndex[] = [];
@@ -73,6 +78,15 @@ export class ColumnDefinition {
      */
     scaled(places: number): this {
         this.#places = places;
+
+        return this;
+    }
+
+    /**
+     * Record the values an enumerated column accepts.
+     */
+    accepts(values: string[]): this {
+        this.#values = values;
 
         return this;
     }
@@ -167,6 +181,7 @@ export class ColumnDefinition {
             primary   : this.#primary,
             increments: this.#increments,
             places    : this.#places,
+            values    : this.#values,
         };
     }
 }

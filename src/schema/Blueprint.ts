@@ -130,6 +130,17 @@ export class Blueprint {
     }
 
     /**
+     * Add a column accepting only one of the given values.
+     */
+    enum(column: string, values: string[]): ColumnDefinition {
+        if (values.length === 0) {
+            throw new SchemaException(`Column [${column}] of table [${this.#table}] is enumerated over no values, so nothing could ever be written to it.`);
+        }
+
+        return this.#add(column, 'enum').accepts(values);
+    }
+
+    /**
      * Add nullable creation and update timestamp columns.
      */
     timestamps(): void {

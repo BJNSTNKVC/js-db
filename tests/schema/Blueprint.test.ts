@@ -44,7 +44,7 @@ describe('Blueprint column types', (): void => {
 
         expect(table.key).toEqual('id');
         expect(table.increments).toEqual(true);
-        expect(table.columns[0]).toMatchObject({ name: 'id', type: 'integer', primary: true, increments: true, places: null });
+        expect(table.columns[0]).toMatchObject({ name: 'id', type: 'integer', primary: true, increments: true, places: null, values: null });
     });
 
     test('accepts a custom name for the primary key', (): void => {
@@ -81,8 +81,8 @@ describe('Blueprint column types', (): void => {
 
         expect(table.timestamps).toEqual(true);
         expect(table.columns).toEqual([
-            { name: 'created_at', type: 'datetime', nullable: true, default: undefined, hasDefault: false, primary: false, increments: false, places: null },
-            { name: 'updated_at', type: 'datetime', nullable: true, default: undefined, hasDefault: false, primary: false, increments: false, places: null },
+            { name: 'created_at', type: 'datetime', nullable: true, default: undefined, hasDefault: false, primary: false, increments: false, places: null, values: null },
+            { name: 'updated_at', type: 'datetime', nullable: true, default: undefined, hasDefault: false, primary: false, increments: false, places: null, values: null },
         ]);
     });
 
@@ -235,9 +235,9 @@ describe('Blueprint operations in alter mode', (): void => {
         increments: true,
         timestamps: false,
         columns   : [
-            { name: 'id', type: 'integer', nullable: false, default: undefined, hasDefault: false, primary: true, increments: true, places: null },
-            { name: 'name', type: 'string', nullable: false, default: undefined, hasDefault: false, primary: false, increments: false, places: null },
-            { name: 'legacy', type: 'string', nullable: true, default: undefined, hasDefault: false, primary: false, increments: false, places: null },
+            { name: 'id', type: 'integer', nullable: false, default: undefined, hasDefault: false, primary: true, increments: true, places: null, values: null },
+            { name: 'name', type: 'string', nullable: false, default: undefined, hasDefault: false, primary: false, increments: false, places: null, values: null },
+            { name: 'legacy', type: 'string', nullable: true, default: undefined, hasDefault: false, primary: false, increments: false, places: null, values: null },
         ],
         indexes   : [
             { name: 'users_name_index', columns: ['name'], unique: false, multiEntry: false },

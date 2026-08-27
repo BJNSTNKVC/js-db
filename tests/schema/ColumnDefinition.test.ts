@@ -15,6 +15,7 @@ describe('ColumnDefinition', (): void => {
             primary   : false,
             increments: false,
             places    : null,
+            values    : null,
         } satisfies ColumnSchema);
     });
 

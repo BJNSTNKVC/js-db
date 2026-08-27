@@ -1,4 +1,4 @@
-import { NotNullConstraintViolationException } from '../exceptions';
+import { CheckConstraintViolationException, NotNullConstraintViolationException } from '../exceptions';
 import type { ColumnSchema, ColumnType, TableSchema } from './types';
 
 const FALSY: readonly string[] = ['false', '0'];
@@ -27,6 +27,9 @@ export class Coercer {
 
             case 'decimal':
                 return this.#scaled(value, strict);
+
+            case 'enum':
+                return String(value);
 
             case 'date':
             case 'datetime':
@@ -83,7 +86,7 @@ export class Coercer {
      * Coerce a single column value, enforcing nullability.
      */
     static #value(value: unknown, column: ColumnSchema, schema: TableSchema, strict: boolean): unknown {
-        const coerced: unknown = this.coerce(value, column.type, strict);
+        const coerced: unknown = this.#accepted(this.coerce(value, column.type, strict), column, schema, strict);
 
         if (coerced !== null && coerced !== undefined) {
             return coerced;
@@ -97,6 +100,22 @@ export class Coercer {
             throw new NotNullConstraintViolationException(schema.table, column.name);
         }
 
+        return null;
+    }
+
+    /**
+     * Reject a value an enumerated column does not accept.
+     */
+    static #accepted(value: unknown, column: ColumnSchema, schema: TableSchema, strict: boolean): unknown {
+        if (column.values === null || value === null || value === undefined || column.values.includes(value as string)) {
+            return value;
+        }
+
+        if (strict) {
+            throw new CheckConstraintViolationException(schema.table, column.name, value, column.values);
+        }
+
+        // Loose, an unacceptable value is treated as absent, so the nullability rules decide from here.
         return null;
     }
 

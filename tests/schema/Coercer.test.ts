@@ -15,6 +15,7 @@ const column = (name: string, type: ColumnType, overrides: Partial<ColumnSchema>
     primary   : false,
     increments: false,
     places    : null,
+    values    : null,
     ...overrides,
 });
 

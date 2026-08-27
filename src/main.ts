@@ -28,6 +28,7 @@ export {
 } from './events';
 
 export {
+    CheckConstraintViolationException,
     ConnectionNotConfiguredException,
     DatabaseBlockedException,
     MigrationMismatchException,

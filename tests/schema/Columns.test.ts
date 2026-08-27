@@ -4,13 +4,16 @@ import { Migration } from '../../src/migrations/Migration';
 import { Schema } from '../../src/schema/Schema';
 import { Blueprint } from '../../src/schema/Blueprint';
 import { Coercer } from '../../src/schema/Coercer';
+import { CheckConstraintViolationException, NotNullConstraintViolationException, SchemaException } from '../../src/exceptions';
 import type { Builder } from '../../src/query/Builder';
-import type { ColumnSchema } from '../../src/schema/types';
+import type { ColumnSchema, TableSchema } from '../../src/schema/types';
 
 interface Item {
     id: number;
     price: number;
     weight: number;
+    status: string;
+    tier: string | null;
 }
 
 class CreateItemsTable extends Migration {
@@ -22,6 +25,8 @@ class CreateItemsTable extends Migration {
             table.id();
             table.decimal('price');
             table.decimal('weight', 3).default(0);
+            table.enum('status', ['draft', 'live', 'archived']).default('draft');
+            table.enum('tier', ['free', 'paid']).nullable();
         });
     }
 }
@@ -57,17 +62,17 @@ describe('Blueprint.decimal', (): void => {
     });
 
     test('stores a whole number of the smallest unit', async (): Promise<void> => {
-        await items().insert({ price: 1999 });
+        await items().insert({ price: 1999, status: 'live' });
 
         expect(await items().value<number>('price')).toEqual(1999);
     });
 
     test('refuses a fractional value, since it would be silently lost', async (): Promise<void> => {
-        await expect(items().insert({ price: 19.99 })).rejects.toThrow(/whole number of its smallest unit/);
+        await expect(items().insert({ price: 19.99, status: 'live' })).rejects.toThrow(/whole number of its smallest unit/);
     });
 
     test('accepts a numeric string', async (): Promise<void> => {
-        await items().insert({ price: '1999' as unknown as number });
+        await items().insert({ price: '1999' as unknown as number, status: 'live' });
 
         expect(await items().value<number>('price')).toEqual(1999);
     });
@@ -90,9 +95,9 @@ describe('Blueprint.decimal', (): void => {
 
     test('orders exactly, being an integer at rest', async (): Promise<void> => {
         await items().insert([
-            { price: 1000 },
-            { price: 999 },
-            { price: 1001 },
+            { price: 1000, status: 'live' },
+            { price: 999, status: 'live' },
+            { price: 1001, status: 'live' },
         ]);
 
         expect(await items().orderBy('price').pluck<number>('price')).toEqual([999, 1000, 1001]);
@@ -100,10 +105,115 @@ describe('Blueprint.decimal', (): void => {
 
     test('sums exactly', async (): Promise<void> => {
         await items().insert([
-            { price: 1999 },
-            { price: 1 },
+            { price: 1999, status: 'live' },
+            { price: 1, status: 'live' },
         ]);
 
         expect(await items().sum('price')).toEqual(2000);
+    });
+});
+
+describe('Blueprint.enum', (): void => {
+    test('records the values it accepts', async (): Promise<void> => {
+        const status: ColumnSchema = (await connection.getColumns('items')).find((column: ColumnSchema): boolean => column.name === 'status') as ColumnSchema;
+
+        expect(status.type).toEqual('enum');
+        expect(status.values).toEqual(['draft', 'live', 'archived']);
+    });
+
+    test('accepts a declared value', async (): Promise<void> => {
+        await items().insert({ price: 1, status: 'archived' });
+
+        expect(await items().value<string>('status')).toEqual('archived');
+    });
+
+    test('rejects a value it does not accept', async (): Promise<void> => {
+        await expect(items().insert({ price: 1, status: 'pending' })).rejects.toThrow(
+            new CheckConstraintViolationException('items', 'status', 'pending', ['draft', 'live', 'archived']),
+        );
+    });
+
+    test('rejects a value it does not accept on update', async (): Promise<void> => {
+        await items().insert({ price: 1, status: 'live' });
+
+        await expect(items().update({ status: 'pending' })).rejects.toBeInstanceOf(CheckConstraintViolationException);
+    });
+
+    test('applies a declared default', async (): Promise<void> => {
+        await items().insert({ price: 1 });
+
+        expect(await items().value<string>('status')).toEqual('draft');
+    });
+
+    test('allows null on a nullable enumerated column', async (): Promise<void> => {
+        await items().insert({ price: 1, status: 'live' });
+
+        expect(await items().value<string>('tier')).toBeNull();
+    });
+
+    test('rejects an unacceptable value even on a nullable column', async (): Promise<void> => {
+        await expect(items().insert({ price: 1, status: 'live', tier: 'gold' })).rejects.toBeInstanceOf(CheckConstraintViolationException);
+    });
+
+    test('coerces a value to a string before checking it', (): void => {
+        expect(Coercer.coerce(7, 'enum', true)).toEqual('7');
+    });
+
+    test('refuses to declare an enumerated column over no values', (): void => {
+        const blueprint: Blueprint = new Blueprint('items');
+
+        expect((): unknown => blueprint.enum('status', [])).toThrow(
+            new SchemaException('Column [status] of table [items] is enumerated over no values, so nothing could ever be written to it.'),
+        );
+    });
+});
+
+describe('Enumerated columns on a loose connection', (): void => {
+    /**
+     * Build a table schema holding a single enumerated column.
+     */
+    const schema = (nullable: boolean): TableSchema => ({
+        table     : 'items',
+        key       : 'id',
+        increments: true,
+        timestamps: false,
+        columns   : [
+            {
+                name      : 'status',
+                type      : 'enum',
+                nullable,
+                default   : undefined,
+                hasDefault: false,
+                primary   : false,
+                increments: false,
+                places    : null,
+                values    : ['draft', 'live'],
+            },
+        ],
+        indexes   : [],
+    });
+
+    test('writes null in place of a value it does not accept', (): void => {
+        expect(Coercer.insertable({ status: 'pending' }, schema(true), false, new Date())).toEqual({ status: null });
+    });
+
+    test('still reports a non nullable column it had to empty', (): void => {
+        expect((): unknown => Coercer.insertable({ status: 'pending' }, schema(false), true, new Date())).toThrow(
+            CheckConstraintViolationException,
+        );
+    });
+
+    test('writes null for a non nullable column when loose', (): void => {
+        expect(Coercer.insertable({ status: 'pending' }, schema(false), false, new Date())).toEqual({ status: null });
+    });
+
+    test('leaves an accepted value alone', (): void => {
+        expect(Coercer.insertable({ status: 'live' }, schema(false), true, new Date())).toEqual({ status: 'live' });
+    });
+
+    test('reports a null in a non nullable enumerated column', (): void => {
+        expect((): unknown => Coercer.insertable({ status: null }, schema(false), true, new Date())).toThrow(
+            NotNullConstraintViolationException,
+        );
     });
 });

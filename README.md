@@ -265,6 +265,7 @@ types are recorded as metadata and enforced by this package at write time.
 | `table.uuid('id').primary()` | `keyPath: 'id'`, no autoIncrement |
 | `table.string` / `integer` / `float` / `boolean` / `date` / `datetime` / `json` | Column metadata |
 | `table.decimal('price', 2)` | Column metadata, stored as a whole number of the smallest unit |
+| `table.enum('role', ['admin', 'member'])` | Column metadata, checked at write time |
 | `.nullable()` | Metadata, enforced at write time |
 | `.default(value)` | Applied at write time, and backfilled when added to an existing table |
 | `.primary()` | Makes the column the key path. At most one per table. |
@@ -330,6 +331,52 @@ const money = (minor: number): string => (minor / 10 ** places).toFixed(places);
 ```
 
 A loose connection rounds instead of throwing, in keeping with every other coercion.
+
+#### Enumerated columns are checked on the way in
+
+`table.enum` stores a string and refuses anything outside the declared list:
+
+```ts
+await Schema.create('users', (table: Blueprint): void => {
+    table.id();
+    table.string('email').unique();
+    table.enum('role', ['admin', 'editor', 'member']).default('member');
+    table.enum('tier', ['free', 'paid']).nullable();
+});
+
+await DB.table<User>('users').insert({ email: 'john@example.com', role: 'owner' });
+```
+
+```
+CheckConstraintViolationException: Column [role] of table [users] does not accept [owner].
+It accepts [admin, editor, member].
+```
+
+The check runs on `insert`, `update` and `upsert`, and applies to a nullable column too: null is
+accepted, an undeclared value is not. A loose connection writes null instead of throwing, so a
+non-nullable enumerated column still reports the problem as
+`NotNullConstraintViolationException`.
+
+Declaring one over an empty list throws `SchemaException` at migration time, since nothing could
+ever be written to it.
+
+The declared values are metadata, so a form can read them back rather than repeating the list:
+
+```ts
+const columns: ColumnSchema[] = await Schema.getColumns('users');
+const roles: string[] = columns.find((column: ColumnSchema): boolean => column.name === 'role')!.values!;
+```
+
+TypeScript is not involved in the check. Declare the column as a union on your row type if you want
+the compiler to help as well:
+
+```ts
+interface User {
+    id: number;
+    email: string;
+    role: 'admin' | 'editor' | 'member';
+}
+```
 
 #### Schema outside a migration
 
@@ -886,10 +933,11 @@ memory, so writes inside a narrowed transaction still get their defaults.
 
 ### Exceptions
 
-`ConnectionNotConfiguredException`, `DatabaseBlockedException`, `MigrationMismatchException`,
-`MigrationTransactionClosedException`, `NotNullConstraintViolationException`,
-`QuotaExceededException`, `RecordsNotFoundException`, `ReservedTableException`, `SchemaException`,
-`TableNotFoundException`, `UniqueConstraintViolationException`.
+`CheckConstraintViolationException`, `ConnectionNotConfiguredException`,
+`DatabaseBlockedException`, `MigrationMismatchException`, `MigrationTransactionClosedException`,
+`NotNullConstraintViolationException`, `QuotaExceededException`, `RecordsNotFoundException`,
+`ReservedTableException`, `SchemaException`, `TableNotFoundException`,
+`UniqueConstraintViolationException`.
 
 ## Testing
 
