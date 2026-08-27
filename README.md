@@ -417,6 +417,22 @@ await DB.table<User>('users').max('age');
 | `count()` | `number` |
 | `sum(column)` | `number` |
 | `avg(column)` / `min(column)` / `max(column)` | `number` or `null` when nothing matched |
+| `sole()` | `T`, or throws `RecordsNotFoundException` / `MultipleRecordsFoundException` |
+| `paginate(page?, perPage?)` | `{ data, total, perPage, currentPage, lastPage }` |
+
+`min` and `max` read the answer straight off the index when the column has one and the query is
+unconstrained, so they cost one cursor rather than a full scan.
+
+`paginate` gives you the totals a pager needs, which `forPage` cannot, and counts what the query
+matches rather than what the page returns:
+
+```ts
+const page = await DB.table<User>('users').orderBy('name').paginate(2, 15);
+```
+
+```
+{ data: [ ... ], total: 132, perPage: 15, currentPage: 2, lastPage: 9 }
+```
 
 `chunk` and `each` walk the result a page at a time, and stop early when the callback returns
 `false`:

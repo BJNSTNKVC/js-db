@@ -268,3 +268,31 @@ describe('Builder.insertOrIgnore', (): void => {
     });
 });
 
+
+describe('Builder.unless', (): void => {
+    test('applies the callback when the value is falsy', async (): Promise<void> => {
+        expect(await names(users().unless(false, (query: Builder<User>): void => {
+            query.where('name', 'Alice');
+        }))).toEqual(['Alice']);
+    });
+
+    test('skips the callback when the value is truthy', async (): Promise<void> => {
+        // Counted rather than hardcoded, so the assertion does not depend on what other suites wrote.
+        const every: number = await users().count();
+
+        expect(await names(users().unless('yes', (query: Builder<User>): void => {
+            query.where('name', 'Alice');
+        }))).toHaveLength(every);
+    });
+
+    test('passes the value to the callback', async (): Promise<void> => {
+        const seen: unknown[] = [];
+
+        await users().unless(0, (_query: Builder<User>, value: unknown): void => {
+            seen.push(value);
+        }).get();
+
+        expect(seen).toEqual([0]);
+    });
+});
+

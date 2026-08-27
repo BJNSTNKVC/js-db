@@ -410,6 +410,13 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
+     * Apply the callback when the value is falsy.
+     */
+    unless(value: unknown, callback: (query: this, value: unknown) => void): this {
+        return this.when(!value, (query: this): void => callback(query, value));
+    }
+
+    /**
      * Pass the query to the callback and carry on.
      */
     tap(callback: (query: this) => void): this {
