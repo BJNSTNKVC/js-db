@@ -264,6 +264,7 @@ types are recorded as metadata and enforced by this package at write time.
 | `table.id()` | `keyPath: 'id'`, `autoIncrement: true` |
 | `table.uuid('id').primary()` | `keyPath: 'id'`, no autoIncrement |
 | `table.string` / `integer` / `float` / `boolean` / `date` / `datetime` / `json` | Column metadata |
+| `table.decimal('price', 2)` | Column metadata, stored as a whole number of the smallest unit |
 | `.nullable()` | Metadata, enforced at write time |
 | `.default(value)` | Applied at write time, and backfilled when added to an existing table |
 | `.primary()` | Makes the column the key path. At most one per table. |
@@ -286,6 +287,49 @@ await Schema.table('users', (table: Blueprint): void => {
 ```
 
 `Schema.rename` is implemented as create-copy-drop, so it is O(n) in the number of records.
+
+#### Fixed point columns hold their smallest unit
+
+`table.decimal` records a scale and stores the value as a plain integer counting the smallest unit
+that scale describes. A price with two places is written as 1999, not 19.99:
+
+```ts
+await Schema.create('products', (table: Blueprint): void => {
+    table.id();
+    table.string('name');
+    table.decimal('price');
+    table.decimal('weight', 3);
+});
+
+await DB.table<Product>('products').insert({ name: 'Keyboard', price: 1999, weight: 1250 });
+```
+
+Writing a fractional value throws, because rounding it silently is how money goes missing:
+
+```ts
+await DB.table<Product>('products').insert({ name: 'Keyboard', price: 19.99 });
+```
+
+```
+TypeError: A decimal column stores a whole number of its smallest unit, so [19.99] cannot be
+written. Scale it first, as in Math.round(19.99 * 100).
+```
+
+The reason for the integer is that JavaScript has one number type and it is a float, so 0.1 + 0.2
+is not 0.3. Every sum, every `orderBy` against an index and every `between` range would inherit
+that error. An integer number of pence has none of it, and IndexedDB orders integers exactly.
+
+Scale on the way in and format on the way out. The declared scale is metadata, so a formatter can
+read it back from `Schema.getColumns` rather than hardcoding the same 100 in two places:
+
+```ts
+const columns: ColumnSchema[] = await Schema.getColumns('products');
+const places: number = columns.find((column: ColumnSchema): boolean => column.name === 'price')!.places!;
+
+const money = (minor: number): string => (minor / 10 ** places).toFixed(places);
+```
+
+A loose connection rounds instead of throwing, in keeping with every other coercion.
 
 #### Schema outside a migration
 

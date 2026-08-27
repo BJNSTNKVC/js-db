@@ -25,6 +25,9 @@ export class Coercer {
             case 'boolean':
                 return typeof value === 'string' && FALSY.includes(value) ? false : Boolean(value);
 
+            case 'decimal':
+                return this.#scaled(value, strict);
+
             case 'date':
             case 'datetime':
                 return this.#temporal(value, strict);
@@ -95,6 +98,32 @@ export class Coercer {
         }
 
         return null;
+    }
+
+    /**
+     * Coerce a value into a whole number of a decimal column's smallest unit.
+     */
+    static #scaled(value: unknown, strict: boolean): unknown {
+        const number: number = Number(value);
+
+        if (Number.isNaN(number)) {
+            if (strict) {
+                throw new TypeError(`Unable to coerce [${String(value)}] into a number.`);
+            }
+
+            return null;
+        }
+
+        // A decimal column holds its smallest unit, so a fractional value would be silently lost.
+        if (!Number.isInteger(number)) {
+            if (strict) {
+                throw new TypeError(`A decimal column stores a whole number of its smallest unit, so [${String(value)}] cannot be written. Scale it first, as in Math.round(19.99 * 100).`);
+            }
+
+            return Math.round(number);
+        }
+
+        return number;
     }
 
     /**

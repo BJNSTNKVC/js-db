@@ -1,4 +1,4 @@
-export type ColumnType = 'string' | 'integer' | 'float' | 'boolean' | 'date' | 'datetime' | 'json';
+export type ColumnType = 'string' | 'integer' | 'float' | 'boolean' | 'date' | 'datetime' | 'json' | 'decimal';
 
 export interface ColumnSchema {
     name: string;
@@ -8,6 +8,7 @@ export interface ColumnSchema {
     hasDefault: boolean;
     primary: boolean;
     increments: boolean;
+    places: number | null;
 }
 
 export interface IndexSchema {

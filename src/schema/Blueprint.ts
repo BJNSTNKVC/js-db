@@ -123,6 +123,13 @@ export class Blueprint {
     }
 
     /**
+     * Add a fixed point column, stored as an integer number of its smallest unit.
+     */
+    decimal(column: string, places: number = 2): ColumnDefinition {
+        return this.#add(column, 'decimal').scaled(places);
+    }
+
+    /**
      * Add nullable creation and update timestamp columns.
      */
     timestamps(): void {

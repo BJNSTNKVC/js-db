@@ -37,6 +37,11 @@ export class ColumnDefinition {
     #increments: boolean = false;
 
     /**
+     * The number of decimal places a scaled column carries.
+     */
+    #places: number | null = null;
+
+    /**
      * The indexes requested for the column.
      */
     readonly #requested: RequestedIndex[] = [];
@@ -61,6 +66,15 @@ export class ColumnDefinition {
      */
     get type(): ColumnType {
         return this.#type;
+    }
+
+    /**
+     * Record the scale of a decimal column.
+     */
+    scaled(places: number): this {
+        this.#places = places;
+
+        return this;
     }
 
     /**
@@ -152,6 +166,7 @@ export class ColumnDefinition {
             hasDefault: this.#hasDefault,
             primary   : this.#primary,
             increments: this.#increments,
+            places    : this.#places,
         };
     }
 }
