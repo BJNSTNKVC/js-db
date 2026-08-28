@@ -25,10 +25,12 @@ let sequence: number = 0;
 const connections: Connection[] = [];
 const handles: IDBDatabase[] = [];
 
+type Connect = (migrations: MigrationConstructor[], database?: string) => Connection;
+
 /**
  * Build a connection against a uniquely named database.
  */
-const connect: (migrations: MigrationConstructor[], database?: string) => Connection = (migrations: MigrationConstructor[], database: string = `connection-${++sequence}`): Connection => {
+const connect: Connect = (migrations: MigrationConstructor[], database: string = `connection-${++sequence}`): Connection => {
     const connection: Connection = new Connection('app', { database, migrations });
 
     connections.push(connection);
@@ -36,10 +38,12 @@ const connect: (migrations: MigrationConstructor[], database?: string) => Connec
     return connection;
 };
 
+type MigrationFactory = (name: string, up: () => void | Promise<void>) => MigrationConstructor;
+
 /**
  * Build a migration class from an up implementation.
  */
-const migration: (name: string, up: () => void | Promise<void>) => MigrationConstructor = (name: string, up: () => void | Promise<void>): MigrationConstructor => {
+const migration: MigrationFactory = (name: string, up: () => void | Promise<void>): MigrationConstructor => {
     return class extends Migration {
         /**
          * Get the name of the migration.
@@ -81,19 +85,23 @@ const CreateTagsTable: MigrationConstructor = migration('CreateTagsTable', async
     });
 });
 
+type Records = (connection: Connection, table: string) => Promise<Record<string, unknown>[]>;
+
 /**
  * Read the records of a table directly, bypassing the query builder.
  */
-const records: (connection: Connection, table: string) => Promise<Record<string, unknown>[]> = async (connection: Connection, table: string): Promise<Record<string, unknown>[]> => {
+const records: Records = async (connection: Connection, table: string): Promise<Record<string, unknown>[]> => {
     const database: IDBDatabase = await connection.open();
 
     return Request.settle(database.transaction(table, 'readonly').objectStore(table).getAll() as IDBRequest<Record<string, unknown>[]>);
 };
 
+type Seed = (connection: Connection, table: string, rows: Record<string, unknown>[]) => Promise<void>;
+
 /**
  * Write records into a table directly, bypassing the query builder.
  */
-const seed: (connection: Connection, table: string, rows: Record<string, unknown>[]) => Promise<void> = async (connection: Connection, table: string, rows: Record<string, unknown>[]): Promise<void> => {
+const seed: Seed = async (connection: Connection, table: string, rows: Record<string, unknown>[]): Promise<void> => {
     const database: IDBDatabase = await connection.open();
     const transaction: IDBTransaction = database.transaction(table, 'readwrite');
 
@@ -641,10 +649,12 @@ describe('Schema.create', (): void => {
 });
 
 describe('Schema.table', (): void => {
+    type Altered = (callback: (table: Blueprint) => void) => Promise<Connection>;
+
     /**
      * Migrate a users table, then alter it with the given callback.
      */
-    const altered: (callback: (table: Blueprint) => void) => Promise<Connection> = async (callback: (table: Blueprint) => void): Promise<Connection> => {
+    const altered: Altered = async (callback: (table: Blueprint) => void): Promise<Connection> => {
         const database: string = `connection-${++sequence}`;
         const first: Connection = connect([CreateUsersTable], database);
 

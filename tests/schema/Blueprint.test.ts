@@ -4,10 +4,12 @@ import { SchemaException } from '../../src/exceptions';
 import type { BlueprintOperations, TableSchema } from '../../src/schema/types';
 import type { IndexSchema, ColumnSchema } from '../../src/main';
 
+type SchemaFactory = (callback: (table: Blueprint) => void) => TableSchema;
+
 /**
  * Build the schema produced by a create-mode blueprint.
  */
-const schema: (callback: (table: Blueprint) => void) => TableSchema = (callback: (table: Blueprint) => void): TableSchema => {
+const schema: SchemaFactory = (callback: (table: Blueprint) => void): TableSchema => {
     const blueprint: Blueprint = new Blueprint('users');
 
     callback(blueprint);

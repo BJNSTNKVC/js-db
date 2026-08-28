@@ -3,10 +3,12 @@ import { Coercer } from '../../src/schema/Coercer';
 import { NotNullConstraintViolationException } from '../../src/exceptions';
 import type { ColumnSchema, ColumnType, TableSchema } from '../../src/schema/types';
 
+type Column = (name: string, type: ColumnType, overrides?: Partial<ColumnSchema>) => ColumnSchema;
+
 /**
  * Build a column schema with the given overrides.
  */
-const column: (name: string, type: ColumnType, overrides?: Partial<ColumnSchema>) => ColumnSchema = (name: string, type: ColumnType, overrides: Partial<ColumnSchema> = {}): ColumnSchema => ({
+const column: Column = (name: string, type: ColumnType, overrides: Partial<ColumnSchema> = {}): ColumnSchema => ({
     name,
     type,
     nullable  : false,
@@ -19,10 +21,12 @@ const column: (name: string, type: ColumnType, overrides?: Partial<ColumnSchema>
     ...overrides,
 });
 
+type Table = (columns: ColumnSchema[], overrides?: Partial<TableSchema>) => TableSchema;
+
 /**
  * Build a table schema from the given columns.
  */
-const table: (columns: ColumnSchema[], overrides?: Partial<TableSchema>) => TableSchema = (columns: ColumnSchema[], overrides: Partial<TableSchema> = {}): TableSchema => ({
+const table: Table = (columns: ColumnSchema[], overrides: Partial<TableSchema> = {}): TableSchema => ({
     table     : 'users',
     key       : 'id',
     increments: true,

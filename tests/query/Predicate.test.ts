@@ -2,10 +2,12 @@ import { describe, expect, test } from 'vitest';
 import { Predicate } from '../../src/query/Predicate';
 import type { Conjunction, Constraint, Operator } from '../../src/query/types';
 
+type Basic = (column: string, operator: Operator, value: unknown, conjunction?: Conjunction, not?: boolean) => Constraint;
+
 /**
  * Build a basic constraint.
  */
-const basic: (column: string, operator: Operator, value: unknown, conjunction?: Conjunction, not?: boolean) => Constraint = (column: string, operator: Operator, value: unknown, conjunction: Conjunction = 'and', not: boolean = false): Constraint => ({
+const basic: Basic = (column: string, operator: Operator, value: unknown, conjunction: Conjunction = 'and', not: boolean = false): Constraint => ({
     type: 'basic',
     column,
     operator,
@@ -14,10 +16,12 @@ const basic: (column: string, operator: Operator, value: unknown, conjunction?: 
     not,
 });
 
+type Matches = (constraints: Constraint[], record: Record<string, unknown>) => boolean;
+
 /**
  * Test a record against the given constraints.
  */
-const matches: (constraints: Constraint[], record: Record<string, unknown>) => boolean = (constraints: Constraint[], record: Record<string, unknown>): boolean => Predicate.compile(constraints)(record);
+const matches: Matches = (constraints: Constraint[], record: Record<string, unknown>): boolean => Predicate.compile(constraints)(record);
 
 describe('Predicate with no constraints', (): void => {
     test('matches every record', (): void => {
@@ -370,10 +374,12 @@ describe('Predicate like patterns cannot be made to backtrack', (): void => {
 });
 
 describe('Predicate like matching', (): void => {
+    type Like = (pattern: string, subject: string) => boolean;
+
     /**
      * Determine whether a subject matches a pattern.
      */
-    const like: (pattern: string, subject: string) => boolean = (pattern: string, subject: string): boolean => matches([basic('body', 'like', pattern)], { body: subject });
+    const like: Like = (pattern: string, subject: string): boolean => matches([basic('body', 'like', pattern)], { body: subject });
 
     test.each([
         ['a.c', 'a.c', true],

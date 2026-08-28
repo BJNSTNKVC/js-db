@@ -64,10 +64,12 @@ const configure: (seeders: SeederConstructor[]) => void = (seeders: SeederConstr
     });
 };
 
+type Recorded = (types: string[], callback: () => Promise<unknown>) => Promise<string[]>;
+
 /**
  * Collect the database events dispatched while the callback runs.
  */
-const recorded: (types: string[], callback: () => Promise<unknown>) => Promise<string[]> = async (types: string[], callback: () => Promise<unknown>): Promise<string[]> => {
+const recorded: Recorded = async (types: string[], callback: () => Promise<unknown>): Promise<string[]> => {
     const seen: string[] = [];
     const listeners: [string, (event: Event) => void][] = types.map((type: string): [string, (event: Event) => void] => {
         const listener: (event: Event) => void = (event: Event): void => {

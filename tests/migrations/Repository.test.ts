@@ -5,10 +5,12 @@ import type { MigrationRecord } from '../../src/migrations/types';
 
 let sequence: number = 0;
 
+type Open = (name: string, version: number, upgrade: (database: IDBDatabase, transaction: IDBTransaction) => void) => Promise<IDBDatabase>;
+
 /**
  * Open a database, letting the callback shape it during the upgrade.
  */
-const open: (name: string, version: number, upgrade: (database: IDBDatabase, transaction: IDBTransaction) => void) => Promise<IDBDatabase> = (name: string, version: number, upgrade: (database: IDBDatabase, transaction: IDBTransaction) => void): Promise<IDBDatabase> => {
+const open: Open = (name: string, version: number, upgrade: (database: IDBDatabase, transaction: IDBTransaction) => void): Promise<IDBDatabase> => {
     return new Promise<IDBDatabase>((resolve: (value: IDBDatabase) => void, reject: (reason: unknown) => void): void => {
         const request: IDBOpenDBRequest = indexedDB.open(name, version);
 

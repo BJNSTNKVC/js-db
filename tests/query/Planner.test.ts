@@ -3,10 +3,12 @@ import { Planner } from '../../src/query/Planner';
 import type { Conjunction, Constraint, Operator, Order, Plan } from '../../src/query/types';
 import type { ColumnSchema, TableSchema } from '../../src/schema/types';
 
+type Column = (name: string, overrides?: Partial<ColumnSchema>) => ColumnSchema;
+
 /**
  * Build a column schema with the given overrides.
  */
-const column: (name: string, overrides?: Partial<ColumnSchema>) => ColumnSchema = (name: string, overrides: Partial<ColumnSchema> = {}): ColumnSchema => ({
+const column: Column = (name: string, overrides: Partial<ColumnSchema> = {}): ColumnSchema => ({
     name,
     type      : 'integer',
     nullable  : false,
@@ -39,10 +41,12 @@ const users: TableSchema = {
     ],
 };
 
+type Basic = (col: string, operator: Operator, value: unknown, conjunction?: Conjunction, not?: boolean) => Constraint;
+
 /**
  * Build a basic constraint.
  */
-const basic: (col: string, operator: Operator, value: unknown, conjunction?: Conjunction, not?: boolean) => Constraint = (col: string, operator: Operator, value: unknown, conjunction: Conjunction = 'and', not: boolean = false): Constraint => ({
+const basic: Basic = (col: string, operator: Operator, value: unknown, conjunction: Conjunction = 'and', not: boolean = false): Constraint => ({
     type: 'basic',
     column: col,
     operator,
@@ -51,10 +55,12 @@ const basic: (col: string, operator: Operator, value: unknown, conjunction?: Con
     not,
 });
 
+type OrderFactory = (col: string, direction?: "asc" | "desc") => Order;
+
 /**
  * Build an order.
  */
-const order: (col: string, direction?: "asc" | "desc") => Order = (col: string, direction: 'asc' | 'desc' = 'asc'): Order => ({ column: col, direction });
+const order: OrderFactory = (col: string, direction: 'asc' | 'desc' = 'asc'): Order => ({ column: col, direction });
 
 describe('Planner key ranges', (): void => {
     test('drives an equality on the key path from the key', (): void => {
