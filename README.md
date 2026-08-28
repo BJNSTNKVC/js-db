@@ -1,6 +1,8 @@
 # DB
 
-TypeScript equivalent of the [Laravel database layer](https://laravel.com/docs/12.x/database) over IndexedDB: a `DB` class, a fluent query builder, a schema builder and forward-only migrations that run when your app boots.
+A database layer for IndexedDB, with an API modelled on [Laravel's](https://laravel.com/docs/12.x/database): a `DB` class, a fluent query builder, a schema builder and forward-only migrations that run when your app boots.
+
+The method names and their semantics follow Laravel closely enough that the docs are worth reading side by side, and each section below links the page it draws from. It is not a port: IndexedDB is a key-value store with no query language, so the places where behaviour has to differ are called out where they arise. This project is not affiliated with the Laravel project.
 
 ## Contents
 
@@ -116,6 +118,8 @@ await DB.migrate('reporting');
 
 ### Migrations
 
+*Laravel: [Migrations](https://laravel.com/docs/12.x/migrations)*
+
 A migration declares `up()` and nothing else:
 
 ```ts
@@ -192,6 +196,8 @@ see what is pending.
 
 ### Seeding
 
+*Laravel: [Database: Seeding](https://laravel.com/docs/12.x/seeding)*
+
 Seeding is a separate step from migrating, and deliberately so. A migration runs inside the version
 change transaction and therefore cannot await a `fetch`. A seeder runs outside it, so it can await
 anything at all, which makes it the right home for any seed data that comes off the network.
@@ -231,7 +237,7 @@ guaranteed to exist. The connection name is required for the same reason it is o
 For the duration of the run, the connection being seeded **stands in as the default**. So a seeder
 registered on `reporting` that calls `DB.table('users')` writes to `reporting`, not to the
 configured default, and the previous default is restored when the run finishes or fails. Laravel's
-`SeedCommand` does the same thing.
+[`SeedCommand`](https://laravel.com/docs/12.x/seeding#running-seeders) does the same thing.
 
 Naming a connection explicitly still wins, so a seeder may reach across:
 
@@ -246,8 +252,8 @@ that from mattering.
 #### Seeders are not recorded
 
 Unlike migrations, nothing records that a seeder ran. Every call to `DB.seed(name)` runs every
-registered seeder again, which matches Laravel and keeps the surface small. If you call it on each
-boot, write your seeders idempotently:
+registered seeder again, which matches [Laravel](https://laravel.com/docs/12.x/seeding) and keeps
+the surface small. If you call it on each boot, write your seeders idempotently:
 
 ```ts
 class UserSeeder extends Seeder {
@@ -282,7 +288,8 @@ class UserSeeder extends Seeder {
 #### Rebuilding from scratch
 
 `DB.fresh(name)` deletes the database and replays the migrations. Pass `{ seed: true }` to seed it
-afterwards as well, the way `migrate:fresh --seed` does in Laravel:
+afterwards as well, the way [`migrate:fresh --seed`](https://laravel.com/docs/12.x/migrations#refreshing-the-database)
+does in Laravel:
 
 ```ts
 await DB.fresh('app');
@@ -290,6 +297,8 @@ await DB.fresh('app', { seed: true });
 ```
 
 ### Defining a schema
+
+*Laravel: [Migrations: Tables](https://laravel.com/docs/12.x/migrations#tables)*
 
 IndexedDB stores whole objects and enforces only a key path, `autoIncrement` and indexes. Column
 types are recorded as metadata and enforced by this package at write time.
@@ -423,7 +432,8 @@ interface User {
 
 `Schema.create`, `Schema.table`, `Schema.drop`, `Schema.dropIfExists` and `Schema.rename` need the
 version-change transaction, so they only run **inside a migration** and throw `SchemaException`
-anywhere else. This is a real divergence from Laravel, where `Schema::create()` works from anywhere.
+anywhere else. This is a real divergence from Laravel, where
+[`Schema::create()`](https://laravel.com/docs/12.x/migrations#creating-tables) works from anywhere.
 
 The read side works anywhere:
 
@@ -437,6 +447,8 @@ await Schema.connection('reporting').hasTable('reports');
 ```
 
 ### Querying
+
+*Laravel: [Database: Query Builder](https://laravel.com/docs/12.x/queries)*
 
 Chaining is synchronous; terminals return promises.
 
@@ -610,6 +622,8 @@ need a defined order.
 
 ### Joins
 
+*Laravel: [Query Builder: Joins](https://laravel.com/docs/12.x/queries#joins)*
+
 ```ts
 const rows = await DB.table('users')
     .join('posts', 'users.id', '=', 'posts.user_id')
@@ -714,8 +728,11 @@ await DB.table('users').whereColumn('updated_at', '>', 'created_at').get();
 
 ### Grouping
 
-Laravel spells aggregates as raw SQL, which has nothing to hand a string to here. So the aggregates
-are named in an object instead, and the alias becomes the key:
+*Laravel: [Query Builder: Grouping](https://laravel.com/docs/12.x/queries#groupby-having)*
+
+Laravel spells aggregates as [raw SQL](https://laravel.com/docs/12.x/queries#raw-methods), which has
+nothing to hand a string to here. So the aggregates are named in an object instead, and the alias
+becomes the key:
 
 ```ts
 const rows = await DB.table<User>('users')
@@ -811,6 +828,8 @@ Each resolves to a description of the plan chosen:
 
 ### Transactions
 
+*Laravel: [Database: Transactions](https://laravel.com/docs/12.x/database#database-transactions)*
+
 ```ts
 await DB.transaction(async (transaction: Transaction): Promise<void> => {
     const id: IDBValidKey = await transaction.table<User>('users').insertGetId({ name: 'John' });
@@ -839,6 +858,8 @@ offering a trap. The same rule as migrations applies here: the callback may only
 from this package.
 
 ### Events and the query log
+
+*Laravel: [Database: Listening for Query Events](https://laravel.com/docs/12.x/database#listening-for-query-events)*
 
 ```ts
 DB.onQueryExecuted((event: QueryExecuted): void => {
@@ -902,6 +923,8 @@ IndexedDB is shared across tabs, which produces two situations worth handling:
   the database and reports `MigrationMismatchException`, so reload the page.
 
 ### Connections
+
+*Laravel: [Database: Multiple Connections](https://laravel.com/docs/12.x/database#using-multiple-database-connections)*
 
 ```ts
 DB.connection();
