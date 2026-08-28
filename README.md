@@ -197,6 +197,11 @@ see what is pending.
 
 ### Seeding
 
+> **Use this for development, demos and tests, not for state your app ships and users edit.** A
+> seeder cannot tell a row the user deleted from a row it never wrote, so re-running one puts back
+> data the user removed on purpose. Recording that a seeder ran does not fix it. See
+> [why seeding fits development better](#why-seeding-fits-development-better) for what to do instead.
+
 Seeding is a separate step from migrating, and deliberately so. A migration runs inside the version
 change transaction and therefore cannot await a `fetch`. A seeder runs outside it, so it can await
 anything at all, which makes it the right home for any seed data that comes off the network.
@@ -252,7 +257,38 @@ that from mattering.
 
 Unlike migrations, nothing records that a seeder ran. Every call to `DB.seed(name)` runs every
 registered seeder again, which matches [Laravel](https://laravel.com/docs/12.x/seeding) and keeps
-the surface small. If you call it on each boot, write your seeders idempotently:
+the surface small.
+
+This is the one place where a browser differs from a server in a way that bites. On a server
+`db:seed` is a command someone runs. In an app, boot happens on every refresh. Migrations are safe
+there, since the database is already at the version its migrations ask for and nothing runs. Seeding
+has no such guard, so a seeder inserting two rows leaves four after the second refresh and six after
+the third.
+
+There are two ways to handle it, and they answer different questions.
+
+**Seed only a database that has never been migrated.** `DB.status` reads the stored version without
+migrating, so it can be asked before `DB.migrate` whether this is a first run:
+
+```ts
+const status: MigrationStatus[] = await DB.status('app');
+const fresh: boolean = status.every((entry: MigrationStatus): boolean => !entry.ran);
+
+await DB.migrate('app');
+
+if (fresh) {
+    await DB.seed('app');
+}
+```
+
+Do not use `DB.migrate`'s return value for this. It reports the migrations that call ran, so it is
+non-empty for an existing user whenever you add a table, and they would be seeded again. Note also
+that this seeds a new database only, so a seeder you add later never reaches anyone who already has
+the app.
+
+**Or write seeders that do not care how often they run.** This is the better answer for reference
+data, and it keeps working when you add a seeder later. `upsert` against a unique index, or
+`insertOrIgnore`, makes a second run a no-op:
 
 ```ts
 class UserSeeder extends Seeder {
@@ -283,6 +319,89 @@ class UserSeeder extends Seeder {
     }
 }
 ```
+
+#### Why seeding fits development better
+
+Everything above makes a seeder safe to run repeatedly. None of it makes a seeder safe to run
+against data a user owns, and that limit is structural rather than a gap in this package.
+
+A seeder cannot distinguish a row the user deleted from a row it never wrote, because both are
+simply absent. An idempotent seeder therefore puts back whatever the user removed. Suppose it
+installs default settings keyed by name, and records a digest of them so it re-runs only when the
+defaults actually change:
+
+```ts
+class ConfigSeeder extends Seeder {
+    /**
+     * Seed the database.
+     */
+    override async run(): Promise<void> {
+        const seen: Seed | null = await DB.table<Seed>('seeds').find('ConfigSeeder');
+
+        if (seen !== null && seen.digest === DIGEST) {
+            return;
+        }
+
+        await DB.table<Setting>('settings').upsert(DEFAULTS, 'key');
+        await DB.table<Seed>('seeds').upsert([{ seeder: 'ConfigSeeder', digest: DIGEST }], 'seeder');
+    }
+}
+```
+
+That holds up until the next time the defaults change:
+
+```
+boot 1, seeder v1     ['locale', 'theme']
+boot 2, unchanged     ['locale', 'theme']
+user deletes locale   ['theme']
+boot 3, seeder v2     ['currency', 'locale', 'theme']
+```
+
+Adding `currency` re-ran the seeder, and `locale` came back with it. A ledger only defers the
+problem to the next release, which is why this package does not ship one.
+
+There are two ways out, and neither of them is a seeder.
+
+**Keep the defaults in code.** Store only what the user changed, and merge when reading:
+
+```ts
+const DEFAULTS: Record<string, string> = { theme: 'dark', locale: 'en', currency: 'GBP' };
+
+async function settings(): Promise<Record<string, string>> {
+    const overrides: Record<string, string> = await DB.table<Setting>('settings').pluck<string>('value', 'key');
+
+    return { ...DEFAULTS, ...overrides };
+}
+```
+
+Deleting is then an explicit override rather than an absent row, so nothing can resurrect it, and a
+new default ships with the app instead of needing a data migration. The cost is that defaults are
+not rows, so a query cannot filter or join across them.
+
+**Or record what the user dismissed.** Keep the rows in the table, and have the seeder skip anything
+the user removed on purpose:
+
+```ts
+class ConfigSeeder extends Seeder {
+    /**
+     * Seed the database.
+     */
+    override async run(): Promise<void> {
+        const dismissed: string[] = await DB.table<Dismissed>('dismissed').pluck<string>('key');
+        const wanted: Setting[] = DEFAULTS.filter((row: Setting): boolean => !dismissed.includes(row.key));
+
+        await DB.table<Setting>('settings').upsert(wanted, 'key');
+    }
+}
+```
+
+Your delete handler writes to `dismissed` as well as removing the row. The seeder is then free to
+run on every boot, because the user's intent is recorded rather than inferred. A `source` column
+marking which rows the seeder owns pairs well with this, so a seeder never overwrites something the
+user authored.
+
+Seeding stays the right tool where nobody has edited the data yet: fixtures in tests, demo data
+behind a developer menu, and one-shot imports where deleting a row carries no meaning.
 
 #### Rebuilding from scratch
 
