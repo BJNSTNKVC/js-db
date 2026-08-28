@@ -425,3 +425,29 @@ describe('Grouping inference', (): void => {
         expect(grouping).toBeDefined();
     });
 });
+
+describe('Grouping over values holding the signature separator', (): void => {
+    test('keeps two groups apart rather than merging them', async (): Promise<void> => {
+        const separator: string = String.fromCharCode(1);
+        const isolated: Connection = new Connection('app', { database: 'grouping-separator', migrations: [CreateUsersTable] });
+
+        await isolated.migrate();
+
+        // Before the segments were length prefixed these two rows encoded to the same group key, so
+        // groupBy reported one group of two rather than two groups of one.
+        await isolated.table<User>('users').insert([
+            { name: 'A', role: `a${separator}s:b`, team: 'c', age: 1, visits: 1 },
+            { name: 'B', role: 'a', team: `b${separator}s:c`, age: 1, visits: 1 },
+        ]);
+
+        const rows = await isolated.table<User>('users')
+            .groupBy('role', 'team')
+            .aggregate({ total: { count: '*' } })
+            .get();
+
+        expect(rows).toHaveLength(2);
+        expect(rows.map((row): number => row.total)).toEqual([1, 1]);
+
+        isolated.disconnect();
+    });
+});

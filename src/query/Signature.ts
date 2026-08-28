@@ -7,15 +7,25 @@ export class Signature {
     static of(record: Record<string, unknown>): string {
         return Object.keys(record)
             .sort()
-            .map((column: string): string => `${column}=${this.value(record[column])}`)
-            .join(SEPARATOR);
+            .map((column: string): string => this.#segment(column) + this.#segment(this.value(record[column])))
+            .join('');
     }
 
     /**
      * Build a signature identifying an ordered list of values.
      */
     static ofValues(values: unknown[]): string {
-        return values.map((value: unknown): string => this.value(value)).join(SEPARATOR);
+        return values.map((value: unknown): string => this.#segment(this.value(value))).join('');
+    }
+
+    /**
+     * Encode one part of a signature so that its own content cannot be read as a boundary.
+     */
+    static #segment(part: string): string {
+        // Joining on a separator alone let a value containing that separator forge a boundary, so two
+        // different group keys could encode identically and their groups would silently merge. The
+        // length says how far the part reaches, which leaves no way to fake the end of one.
+        return `${part.length}${SEPARATOR}${part}`;
     }
 
     /**
