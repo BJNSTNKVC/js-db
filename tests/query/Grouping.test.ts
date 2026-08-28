@@ -55,7 +55,7 @@ beforeAll(async (): Promise<void> => {
 
 describe('Builder.groupBy', (): void => {
     test('groups by one column and counts each group', async (): Promise<void> => {
-        const rows = await users()
+        const rows: { role: string; total: number }[] = await users()
             .groupBy('role')
             .aggregate({ total: { count: '*' } })
             .orderBy('role')
@@ -69,7 +69,7 @@ describe('Builder.groupBy', (): void => {
     });
 
     test('groups by several columns', async (): Promise<void> => {
-        const rows = await users()
+        const rows: { role: string; team: string; total: number }[] = await users()
             .groupBy('team', 'role')
             .aggregate({ total: { count: '*' } })
             .orderBy('team')
@@ -85,19 +85,19 @@ describe('Builder.groupBy', (): void => {
     });
 
     test('carries the grouped column value onto the row', async (): Promise<void> => {
-        const rows = await users().groupBy('team').aggregate({ total: { count: '*' } }).orderBy('team').get();
+        const rows: { team: string; total: number }[] = await users().groupBy('team').aggregate({ total: { count: '*' } }).orderBy('team').get();
 
         expect(rows.map((row): string => row.team)).toEqual(['core', 'ops']);
     });
 
     test('groups without any aggregation, behaving like distinct', async (): Promise<void> => {
-        const rows = await users().groupBy('team').orderBy('team').get();
+        const rows: { team: string }[] = await users().groupBy('team').orderBy('team').get();
 
         expect(rows).toEqual([{ team: 'core' }, { team: 'ops' }]);
     });
 
     test('honours the constraints of the query it was opened from', async (): Promise<void> => {
-        const rows = await users()
+        const rows: { role: string; total: number }[] = await users()
             .where('team', 'core')
             .groupBy('role')
             .aggregate({ total: { count: '*' } })
@@ -111,7 +111,7 @@ describe('Builder.groupBy', (): void => {
     });
 
     test('ignores the ordering and paging of the query it was opened from', async (): Promise<void> => {
-        const rows = await users()
+        const rows: { role: string; total: number }[] = await users()
             .orderBy('name')
             .limit(2)
             .offset(1)
@@ -125,43 +125,43 @@ describe('Builder.groupBy', (): void => {
 
 describe('Grouping aggregations', (): void => {
     test('counts every member of the group', async (): Promise<void> => {
-        const rows = await users().groupBy('team').aggregate({ total: { count: '*' } }).orderBy('team').get();
+        const rows: { team: string; total: number }[] = await users().groupBy('team').aggregate({ total: { count: '*' } }).orderBy('team').get();
 
         expect(rows.map((row): number => row.total)).toEqual([3, 2]);
     });
 
     test('counts only the non null values of a column', async (): Promise<void> => {
-        const rows = await users().groupBy('team').aggregate({ ages: { count: 'age' } }).orderBy('team').get();
+        const rows: { team: string; ages: number }[] = await users().groupBy('team').aggregate({ ages: { count: 'age' } }).orderBy('team').get();
 
         expect(rows.map((row): number => row.ages)).toEqual([3, 1]);
     });
 
     test('sums a column', async (): Promise<void> => {
-        const rows = await users().groupBy('team').aggregate({ visits: { sum: 'visits' } }).orderBy('team').get();
+        const rows: { team: string; visits: number | null }[] = await users().groupBy('team').aggregate({ visits: { sum: 'visits' } }).orderBy('team').get();
 
         expect(rows.map((row): number | null => row.visits)).toEqual([20, 9]);
     });
 
     test('sums a group with no values as zero', async (): Promise<void> => {
-        const rows = await users().where('name', 'Dave').groupBy('team').aggregate({ ages: { sum: 'age' } }).get();
+        const rows: { team: string; ages: number | null }[] = await users().where('name', 'Dave').groupBy('team').aggregate({ ages: { sum: 'age' } }).get();
 
         expect(rows[0]?.ages).toEqual(0);
     });
 
     test('averages a column', async (): Promise<void> => {
-        const rows = await users().groupBy('team').aggregate({ age: { avg: 'age' } }).orderBy('team').get();
+        const rows: { team: string; age: number | null }[] = await users().groupBy('team').aggregate({ age: { avg: 'age' } }).orderBy('team').get();
 
         expect(rows.map((row): number | null => row.age)).toEqual([30, 41]);
     });
 
     test('finds the smallest value of a column', async (): Promise<void> => {
-        const rows = await users().groupBy('team').aggregate({ youngest: { min: 'age' } }).orderBy('team').get();
+        const rows: { team: string; youngest: number | null }[] = await users().groupBy('team').aggregate({ youngest: { min: 'age' } }).orderBy('team').get();
 
         expect(rows.map((row): number | null => row.youngest)).toEqual([25, 41]);
     });
 
     test('finds the largest value of a column', async (): Promise<void> => {
-        const rows = await users().groupBy('team').aggregate({ oldest: { max: 'age' } }).orderBy('team').get();
+        const rows: { team: string; oldest: number | null }[] = await users().groupBy('team').aggregate({ oldest: { max: 'age' } }).orderBy('team').get();
 
         expect(rows.map((row): number | null => row.oldest)).toEqual([35, 41]);
     });
@@ -171,13 +171,13 @@ describe('Grouping aggregations', (): void => {
         ['min', { age: { min: 'age' } }],
         ['max', { age: { max: 'age' } }],
     ] as const)('yields null from %s when the group holds no values', async (_name: string, aggregations): Promise<void> => {
-        const rows = await users().where('name', 'Dave').groupBy('team').aggregate(aggregations).get();
+        const rows: { team: string; age: number | null }[] = await users().where('name', 'Dave').groupBy('team').aggregate(aggregations).get();
 
         expect(rows[0]?.age).toBeNull();
     });
 
     test('computes several aggregates at once', async (): Promise<void> => {
-        const rows = await users()
+        const rows: { team: string; total: number; oldest: number | null; visited: number | null }[] = await users()
             .groupBy('team')
             .aggregate({
                 total  : { count: '*' },
@@ -191,7 +191,7 @@ describe('Grouping aggregations', (): void => {
     });
 
     test('replaces the aggregations when called twice', async (): Promise<void> => {
-        const rows = await users()
+        const rows: { team: string; oldest: number | null }[] = await users()
             .groupBy('team')
             .aggregate({ total: { count: '*' } })
             .aggregate({ oldest: { max: 'age' } })
@@ -202,7 +202,7 @@ describe('Grouping aggregations', (): void => {
     });
 
     test('carries the constraints and paging across an aggregate call', async (): Promise<void> => {
-        const rows = await users()
+        const rows: { team: string; total: number }[] = await users()
             .groupBy('team')
             .orderBy('team', 'desc')
             .limit(1)
@@ -215,7 +215,7 @@ describe('Grouping aggregations', (): void => {
 
 describe('Grouping having', (): void => {
     test('filters the groups by an aggregate', async (): Promise<void> => {
-        const rows = await users()
+        const rows: { role: string; total: number }[] = await users()
             .groupBy('role')
             .aggregate({ total: { count: '*' } })
             .having('total', '>', 1)
@@ -225,7 +225,7 @@ describe('Grouping having', (): void => {
     });
 
     test('filters with an implicit equals', async (): Promise<void> => {
-        const rows = await users()
+        const rows: { role: string; total: number }[] = await users()
             .groupBy('role')
             .aggregate({ total: { count: '*' } })
             .having('total', 3)
@@ -235,7 +235,7 @@ describe('Grouping having', (): void => {
     });
 
     test('filters by a grouped column', async (): Promise<void> => {
-        const rows = await users()
+        const rows: { role: string; total: number }[] = await users()
             .groupBy('role')
             .aggregate({ total: { count: '*' } })
             .having('role', 'owner')
@@ -245,7 +245,7 @@ describe('Grouping having', (): void => {
     });
 
     test('accepts a disjunctive constraint', async (): Promise<void> => {
-        const rows = await users()
+        const rows: { role: string; total: number }[] = await users()
             .groupBy('role')
             .aggregate({ total: { count: '*' } })
             .having('role', 'admin')
@@ -260,7 +260,7 @@ describe('Grouping having', (): void => {
     });
 
     test('yields nothing when no group matches', async (): Promise<void> => {
-        const rows = await users()
+        const rows: { role: string; total: number }[] = await users()
             .groupBy('role')
             .aggregate({ total: { count: '*' } })
             .having('total', '>', 99)
@@ -272,7 +272,7 @@ describe('Grouping having', (): void => {
 
 describe('Grouping shaping', (): void => {
     test('sorts the groups by an aggregate, descending', async (): Promise<void> => {
-        const rows = await users()
+        const rows: { role: string; total: number }[] = await users()
             .groupBy('role')
             .aggregate({ total: { count: '*' } })
             .orderBy('total', 'desc')
@@ -282,7 +282,7 @@ describe('Grouping shaping', (): void => {
     });
 
     test('breaks ties with a second order', async (): Promise<void> => {
-        const rows = await users()
+        const rows: { role: string; total: number }[] = await users()
             .groupBy('role')
             .aggregate({ total: { count: '*' } })
             .orderBy('total', 'desc')
@@ -293,7 +293,7 @@ describe('Grouping shaping', (): void => {
     });
 
     test('sorts nulls lowest', async (): Promise<void> => {
-        const rows = await users()
+        const rows: { team: string; youngest: number | null }[] = await users()
             .groupBy('team')
             .aggregate({ youngest: { min: 'age' } })
             .orderBy('youngest')
@@ -303,7 +303,7 @@ describe('Grouping shaping', (): void => {
     });
 
     test('leaves groups tied on every order alone', async (): Promise<void> => {
-        const rows = await users()
+        const rows: { role: string; total: number }[] = await users()
             .groupBy('role')
             .aggregate({ total: { count: '*' } })
             .orderBy('total')
@@ -313,13 +313,13 @@ describe('Grouping shaping', (): void => {
     });
 
     test('returns groups unsorted when no order is given', async (): Promise<void> => {
-        const rows = await users().groupBy('role').aggregate({ total: { count: '*' } }).get();
+        const rows: { role: string; total: number }[] = await users().groupBy('role').aggregate({ total: { count: '*' } }).get();
 
         expect(rows).toHaveLength(3);
     });
 
     test('limits the groups', async (): Promise<void> => {
-        const rows = await users()
+        const rows: { role: string; total: number }[] = await users()
             .groupBy('role')
             .aggregate({ total: { count: '*' } })
             .orderBy('role')
@@ -330,7 +330,7 @@ describe('Grouping shaping', (): void => {
     });
 
     test('offsets the groups', async (): Promise<void> => {
-        const rows = await users()
+        const rows: { role: string; total: number }[] = await users()
             .groupBy('role')
             .aggregate({ total: { count: '*' } })
             .orderBy('role')
@@ -341,7 +341,7 @@ describe('Grouping shaping', (): void => {
     });
 
     test('pages the groups', async (): Promise<void> => {
-        const rows = await users()
+        const rows: { role: string; total: number }[] = await users()
             .groupBy('role')
             .aggregate({ total: { count: '*' } })
             .orderBy('role')
@@ -355,7 +355,7 @@ describe('Grouping shaping', (): void => {
 
 describe('Grouping terminals', (): void => {
     test('gets the first group', async (): Promise<void> => {
-        const row = await users()
+        const row: { role: string; total: number } | null = await users()
             .groupBy('role')
             .aggregate({ total: { count: '*' } })
             .orderBy('total', 'desc')
@@ -365,7 +365,7 @@ describe('Grouping terminals', (): void => {
     });
 
     test('gets null when no group matches', async (): Promise<void> => {
-        const row = await users()
+        const row: { role: string; total: number } | null = await users()
             .groupBy('role')
             .aggregate({ total: { count: '*' } })
             .having('total', '>', 99)
@@ -396,12 +396,12 @@ describe('Grouping terminals', (): void => {
 
 describe('Grouping inference', (): void => {
     test('types a count as a number and a max as nullable', async (): Promise<void> => {
-        const rows = await users()
+        const rows: { role: string; total: number; oldest: number | null }[] = await users()
             .groupBy('role')
             .aggregate({ total: { count: '*' }, oldest: { max: 'age' } })
             .get();
 
-        const row = rows[0] as { role: string; total: number; oldest: number | null };
+        const row: { role: string; total: number; oldest: number | null } = rows[0] as { role: string; total: number; oldest: number | null };
 
         // @ts-expect-error a count is a number, never a string
         const wrong: string = rows[0]!.total;
@@ -420,7 +420,7 @@ describe('Grouping inference', (): void => {
 
     test('rejects grouping by a column the record type does not have', (): void => {
         // @ts-expect-error 'missing' is not a key of User
-        const grouping = users().groupBy('missing');
+        const grouping: Grouping<User, ("name" | "role" | "id" | "team" | "age" | "visits")[], Record<string, never>> = users().groupBy('missing');
 
         expect(grouping).toBeDefined();
     });
@@ -440,7 +440,7 @@ describe('Grouping over values holding the signature separator', (): void => {
             { name: 'B', role: 'a', team: `b${separator}s:c`, age: 1, visits: 1 },
         ]);
 
-        const rows = await isolated.table<User>('users')
+        const rows: { role: string; team: string; total: number }[] = await isolated.table<User>('users')
             .groupBy('role', 'team')
             .aggregate({ total: { count: '*' } })
             .get();

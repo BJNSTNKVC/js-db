@@ -325,7 +325,7 @@ describe('DB.listen', (): void => {
     ])('registers a listener through %s', (method: string, event: string): void => {
         const seen: string[] = [];
 
-        const register = (DB as unknown as Record<string, (listener: (received: Event) => void, options?: unknown) => void>)[method] as (listener: (received: Event) => void, options?: unknown) => void;
+        const register: (listener: (received: Event) => void, options?: unknown) => void = (DB as unknown as Record<string, (listener: (received: Event) => void, options?: unknown) => void>)[method] as (listener: (received: Event) => void, options?: unknown) => void;
 
         register.call(DB, (received: Event): void => {
             seen.push(received.type);

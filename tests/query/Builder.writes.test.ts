@@ -11,6 +11,7 @@ import {
 } from '../../src/exceptions';
 import type { Builder } from '../../src/query/Builder';
 import type { QueryExecuted } from '../../src/events';
+import type { MockInstance } from 'vitest';
 
 interface User {
     id: number;
@@ -456,7 +457,7 @@ describe('Builder unattributable constraint violations', (): void => {
         await users().insert({ name: 'Alice', email: 'alice@example.com' });
 
         // Report every index as holding nothing, so the violation cannot be attributed.
-        const empty = vi.spyOn(IDBIndex.prototype, 'count').mockImplementation(function (this: IDBIndex): IDBRequest<number> {
+        const empty: MockInstance = vi.spyOn(IDBIndex.prototype, 'count').mockImplementation(function (this: IDBIndex): IDBRequest<number> {
             const request: Partial<IDBRequest<number>> = { result: 0 };
 
             setTimeout((): void => {

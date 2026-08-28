@@ -16,6 +16,8 @@ import {
 } from '../../src/exceptions';
 import type { MigrationConstructor, MigrationStatus } from '../../src/migrations/types';
 import type { ColumnSchema, TableSchema } from '../../src/schema/types';
+import type { MockInstance } from 'vitest';
+import type { MigrationContext } from '../../src/migrations/Migrator';
 
 let sequence: number = 0;
 
@@ -440,7 +442,7 @@ describe('Connection platform failures', (): void => {
     test('surfaces a failure to open at the stored version', async (): Promise<void> => {
         const connection: Connection = connect([CreateUsersTable]);
         const error: Error = new Error('The database could not be opened.');
-        const spy = vi.spyOn(indexedDB, 'open').mockImplementation((): IDBOpenDBRequest => failing(error));
+        const spy: MockInstance = vi.spyOn(indexedDB, 'open').mockImplementation((): IDBOpenDBRequest => failing(error));
 
         await expect(connection.status()).rejects.toBe(error);
 
@@ -453,7 +455,7 @@ describe('Connection platform failures', (): void => {
         await connection.migrate();
 
         const error: Error = new Error('The database could not be deleted.');
-        const spy = vi.spyOn(indexedDB, 'deleteDatabase').mockImplementation((): IDBOpenDBRequest => failing(error));
+        const spy: MockInstance = vi.spyOn(indexedDB, 'deleteDatabase').mockImplementation((): IDBOpenDBRequest => failing(error));
 
         await expect(connection.fresh()).rejects.toBe(error);
 
@@ -463,7 +465,7 @@ describe('Connection platform failures', (): void => {
     test('surfaces an open failure that is not a version conflict', async (): Promise<void> => {
         const connection: Connection = connect([CreateUsersTable]);
         const error: Error = new Error('Quota exceeded.');
-        const spy = vi.spyOn(indexedDB, 'open').mockImplementation((): IDBOpenDBRequest => failing(error));
+        const spy: MockInstance = vi.spyOn(indexedDB, 'open').mockImplementation((): IDBOpenDBRequest => failing(error));
 
         await expect(connection.open()).rejects.toBe(error);
 
@@ -523,7 +525,7 @@ describe('Migration failures', (): void => {
                 table.uuid('id').primary();
             });
 
-            const context = Migrator.alive();
+            const context: MigrationContext = Migrator.alive();
             const store: IDBObjectStore = context.transaction.objectStore('duplicates');
 
             store.add({ id: 'same' });

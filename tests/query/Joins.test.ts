@@ -94,13 +94,13 @@ beforeAll(async (): Promise<void> => {
 
 describe('Builder.join', (): void => {
     test('keeps only the rows that match', async (): Promise<void> => {
-        const rows = await users().join<Row>('posts', 'users.id', '=', 'posts.user_id').orderBy('posts.title').get();
+        const rows: Row[] = await users().join<Row>('posts', 'users.id', '=', 'posts.user_id').orderBy('posts.title').get();
 
         expect(rows.map((row): string => row.title)).toEqual(['First', 'Second', 'Third']);
     });
 
     test('flattens the row, letting the joined table win a collision', async (): Promise<void> => {
-        const row = await users()
+        const row: Row = await users()
             .join<Row>('posts', 'users.id', '=', 'posts.user_id')
             .where('posts.title', 'Third')
             .firstOrFail();
@@ -110,19 +110,19 @@ describe('Builder.join', (): void => {
     });
 
     test('accepts an implicit equals', async (): Promise<void> => {
-        const rows = await users().join<Row>('posts', 'users.id', 'posts.user_id').get();
+        const rows: Row[] = await users().join<Row>('posts', 'users.id', 'posts.user_id').get();
 
         expect(rows).toHaveLength(3);
     });
 
     test('drops the rows of this table that match nothing', async (): Promise<void> => {
-        const rows = await users().join<Row>('posts', 'users.id', '=', 'posts.user_id').get();
+        const rows: Row[] = await users().join<Row>('posts', 'users.id', '=', 'posts.user_id').get();
 
         expect(rows.map((row): string => row.name)).not.toContain('Carol');
     });
 
     test('joins several tables in turn', async (): Promise<void> => {
-        const rows = await users()
+        const rows: Record<string, unknown>[] = await users()
             .join('posts', 'users.id', '=', 'posts.user_id')
             .join('teams', 'users.team_id', '=', 'teams.id')
             .orderBy('posts.title')
@@ -147,14 +147,14 @@ describe('Builder.join', (): void => {
 
 describe('Builder.leftJoin', (): void => {
     test('keeps every row of this table', async (): Promise<void> => {
-        const rows = await users().leftJoin<Row>('posts', 'users.id', '=', 'posts.user_id').get();
+        const rows: Row[] = await users().leftJoin<Row>('posts', 'users.id', '=', 'posts.user_id').get();
 
         expect(rows).toHaveLength(4);
         expect(rows.map((row): string => row.name)).toContain('Carol');
     });
 
     test('nulls every column of the missing side, as SQL does', async (): Promise<void> => {
-        const row = await users()
+        const row: Row = await users()
             .leftJoin<Row>('posts', 'users.id', '=', 'posts.user_id')
             .where('users.name', 'Carol')
             .firstOrFail();
@@ -163,7 +163,7 @@ describe('Builder.leftJoin', (): void => {
     });
 
     test('is filterable on the null side', async (): Promise<void> => {
-        const rows = await users()
+        const rows: Row[] = await users()
             .leftJoin<Row>('posts', 'users.id', '=', 'posts.user_id')
             .whereNull('posts.id')
             .get();
@@ -174,7 +174,7 @@ describe('Builder.leftJoin', (): void => {
 
 describe('Builder.rightJoin', (): void => {
     test('keeps every row of the joined table', async (): Promise<void> => {
-        const rows = await connection.table<Post>('posts')
+        const rows: Row[] = await connection.table<Post>('posts')
             .rightJoin<Row>('users', 'posts.user_id', '=', 'users.id')
             .get();
 
@@ -185,7 +185,7 @@ describe('Builder.rightJoin', (): void => {
 
 describe('Builder.crossJoin', (): void => {
     test('pairs every row with every row', async (): Promise<void> => {
-        const rows = await users().crossJoin<Row>('teams').get();
+        const rows: Row[] = await users().crossJoin<Row>('teams').get();
 
         expect(rows).toHaveLength(3);
         expect(rows.every((row): boolean => row.label === 'core')).toEqual(true);
@@ -194,7 +194,7 @@ describe('Builder.crossJoin', (): void => {
 
 describe('Join conditions through a closure', (): void => {
     test('joins on a single condition', async (): Promise<void> => {
-        const rows = await users()
+        const rows: Row[] = await users()
             .join<Row>('posts', (join: Join): void => {
                 join.on('users.id', '=', 'posts.user_id');
             })
@@ -204,7 +204,7 @@ describe('Join conditions through a closure', (): void => {
     });
 
     test('joins on several conditions', async (): Promise<void> => {
-        const rows = await users()
+        const rows: Row[] = await users()
             .join<Row>('posts', (join: Join): void => {
                 join.on('users.id', '=', 'posts.user_id').on('posts.title', '!=', 'users.name');
             })
@@ -214,7 +214,7 @@ describe('Join conditions through a closure', (): void => {
     });
 
     test('narrows through a second condition', async (): Promise<void> => {
-        const rows = await users()
+        const rows: Row[] = await users()
             .join<Row>('posts', (join: Join): void => {
                 join.on('users.id', '=', 'posts.user_id').on('posts.id', '<', 'users.id');
             })
@@ -224,7 +224,7 @@ describe('Join conditions through a closure', (): void => {
     });
 
     test('widens through a disjunctive condition', async (): Promise<void> => {
-        const rows = await users()
+        const rows: Row[] = await users()
             .join<Row>('posts', (join: Join): void => {
                 join.on('users.id', '=', 'posts.user_id').orOn('posts.id', '=', 'users.id');
             })
@@ -234,7 +234,7 @@ describe('Join conditions through a closure', (): void => {
     });
 
     test('accepts an implicit equals in a closure', async (): Promise<void> => {
-        const rows = await users()
+        const rows: Row[] = await users()
             .join<Row>('posts', (join: Join): void => {
                 join.on('users.id', 'posts.user_id');
             })
@@ -276,7 +276,7 @@ describe('Constraints on a joined query', (): void => {
     });
 
     test('filters through a nested group', async (): Promise<void> => {
-        const rows = await users()
+        const rows: Row[] = await users()
             .join<Row>('posts', 'users.id', '=', 'posts.user_id')
             .where((query): void => {
                 query.where('posts.title', 'First').orWhere('posts.title', 'Third');
@@ -288,7 +288,7 @@ describe('Constraints on a joined query', (): void => {
     });
 
     test('compares two columns of the joined row', async (): Promise<void> => {
-        const rows = await users()
+        const rows: Row[] = await users()
             .join<Row>('posts', 'users.id', '=', 'posts.user_id')
             .whereColumn('posts.user_id', '=', 'users.id')
             .get();
@@ -297,7 +297,7 @@ describe('Constraints on a joined query', (): void => {
     });
 
     test('compares two columns with an implicit equals', async (): Promise<void> => {
-        const rows = await users()
+        const rows: Row[] = await users()
             .join<Row>('posts', 'users.id', '=', 'posts.user_id')
             .whereColumn('posts.user_id', 'users.id')
             .get();
@@ -306,7 +306,7 @@ describe('Constraints on a joined query', (): void => {
     });
 
     test('yields nothing when a compared column is null', async (): Promise<void> => {
-        const rows = await users()
+        const rows: Row[] = await users()
             .leftJoin<Row>('posts', 'users.id', '=', 'posts.user_id')
             .whereColumn('posts.user_id', '=', 'users.team_id')
             .get();
@@ -329,7 +329,7 @@ describe('Shaping a joined query', (): void => {
     });
 
     test('projects the selected columns', async (): Promise<void> => {
-        const rows = await users()
+        const rows: Record<string, unknown>[] = await users()
             .join('posts', 'users.id', '=', 'posts.user_id')
             .select('users.name', 'posts.title')
             .orderBy('posts.title')
@@ -339,7 +339,7 @@ describe('Shaping a joined query', (): void => {
     });
 
     test('aliases a selected column, which is how both sides of a collision survive', async (): Promise<void> => {
-        const rows = await users()
+        const rows: Record<string, unknown>[] = await users()
             .join('posts', 'users.id', '=', 'posts.user_id')
             .select('users.id as user_id', 'posts.id as post_id')
             .orderBy('posts.id')
@@ -359,7 +359,7 @@ describe('Terminals on a joined query', (): void => {
     });
 
     test('gets the first joined row', async (): Promise<void> => {
-        const row = await users().join<Row>('posts', 'users.id', '=', 'posts.user_id').orderBy('posts.title').first();
+        const row: Row | null = await users().join<Row>('posts', 'users.id', '=', 'posts.user_id').orderBy('posts.title').first();
 
         expect(row?.title).toEqual('First');
     });
@@ -391,7 +391,7 @@ describe('Terminals on a joined query', (): void => {
     });
 
     test('groups the joined rows', async (): Promise<void> => {
-        const rows = await users()
+        const rows: { name: unknown; posts: number }[] = await users()
             .join('posts', 'users.id', '=', 'posts.user_id')
             .groupBy('name')
             .aggregate({ posts: { count: '*' } })
@@ -445,7 +445,7 @@ describe('Joined chunking and column comparison edges', (): void => {
 
     test('yields nothing when the column compared against is null', async (): Promise<void> => {
         // Carol has a name but, through the left join, no title to compare it with.
-        const rows = await users()
+        const rows: Row[] = await users()
             .leftJoin<Row>('posts', 'users.id', '=', 'posts.user_id')
             .whereColumn('users.name', '=', 'posts.title')
             .get();

@@ -24,7 +24,7 @@ import type { MigrationStatus } from '../migrations/types';
 import type { ColumnSchema, IndexSchema } from '../schema/types';
 import type { Builder } from '../query/Builder';
 import type { Transaction } from './Transaction';
-import type { DatabaseConfig, FreshOptions, ListenOptions, QueryLogEntry, TransactionOptions } from './types';
+import type { ConnectionConfig, DatabaseConfig, FreshOptions, ListenOptions, QueryLogEntry, TransactionOptions } from './types';
 
 export class DatabaseManager {
     /**
@@ -78,7 +78,7 @@ export class DatabaseManager {
             return cached;
         }
 
-        const entry = config.connections[resolved];
+        const entry: ConnectionConfig | undefined = config.connections[resolved];
 
         if (entry === undefined) {
             throw new ConnectionNotConfiguredException(resolved);

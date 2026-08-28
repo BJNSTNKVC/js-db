@@ -240,7 +240,7 @@ describe('Blueprint.enum over an enum or a constant object', (): void => {
     });
 
     test('takes the values of a constant object', (): void => {
-        const Status = { Draft: 'draft', Live: 'live' } as const;
+        const Status: { readonly Draft: "draft"; readonly Live: "live" } = { Draft: 'draft', Live: 'live' } as const;
 
         expect(accepted(Status)).toEqual(['draft', 'live']);
     });
@@ -250,7 +250,7 @@ describe('Blueprint.enum over an enum or a constant object', (): void => {
     });
 
     test('takes a readonly array', (): void => {
-        const values = ['draft', 'live'] as const;
+        const values: readonly ["draft", "live"] = ['draft', 'live'] as const;
 
         expect(accepted(values)).toEqual(['draft', 'live']);
     });

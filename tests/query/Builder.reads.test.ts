@@ -7,6 +7,7 @@ import { Dispatcher } from '../../src/events/Dispatcher';
 import { RecordsNotFoundException, TableNotFoundException } from '../../src/exceptions';
 import type { Builder } from '../../src/query/Builder';
 import type { QueryExecuted } from '../../src/events';
+import type { MockInstance } from 'vitest';
 
 interface User {
     id: number;
@@ -270,7 +271,7 @@ describe('Builder shaping', (): void => {
     });
 
     test('dumps its state', async (): Promise<void> => {
-        const log = vi.spyOn(console, 'log').mockImplementation((): void => {});
+        const log: MockInstance = vi.spyOn(console, 'log').mockImplementation((): void => {});
         const query: Builder<User> = users().where('name', 'Alice');
 
         expect(query.dump()).toBe(query);
@@ -349,7 +350,7 @@ describe('Builder terminals', (): void => {
 
     test('counts an indexed range without reading records', async (): Promise<void> => {
         const database: IDBDatabase = await connection.open();
-        const opened = vi.spyOn(IDBObjectStore.prototype, 'openCursor');
+        const opened: MockInstance = vi.spyOn(IDBObjectStore.prototype, 'openCursor');
 
         expect(await users().where('age', '>=', 30).count()).toEqual(2);
         expect(opened).not.toHaveBeenCalled();
@@ -495,7 +496,7 @@ describe('Builder plans', (): void => {
 
     test('announces every query it runs', async (): Promise<void> => {
         const seen: QueryExecuted[] = [];
-        const listener = ((event: QueryExecuted): void => {
+        const listener: (event: Event) => void = ((event: QueryExecuted): void => {
             seen.push(event);
         }) as (event: Event) => void;
 
@@ -584,14 +585,14 @@ describe('Builder in memory sorting of dates', (): void => {
 
 describe('Builder index driven extremes', (): void => {
     test('reads the smallest value from the index rather than the records', async (): Promise<void> => {
-        const opened = vi.spyOn(IDBObjectStore.prototype, 'openCursor');
+        const opened: MockInstance = vi.spyOn(IDBObjectStore.prototype, 'openCursor');
 
         expect(await users().min('age')).toEqual(25);
         expect(opened).not.toHaveBeenCalled();
     });
 
     test('reads the largest value from the index rather than the records', async (): Promise<void> => {
-        const opened = vi.spyOn(IDBObjectStore.prototype, 'openCursor');
+        const opened: MockInstance = vi.spyOn(IDBObjectStore.prototype, 'openCursor');
 
         expect(await users().max('age')).toEqual(35);
         expect(opened).not.toHaveBeenCalled();
