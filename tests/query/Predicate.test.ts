@@ -2,26 +2,26 @@ import { describe, expect, test } from 'vitest';
 import { Predicate } from '../../src/query/Predicate';
 import type { Conjunction, Constraint, Operator } from '../../src/query/types';
 
-type Basic = (column: string, operator: Operator, value: unknown, conjunction?: Conjunction, not?: boolean) => Constraint;
-
 /**
  * Build a basic constraint.
  */
-const basic: Basic = (column: string, operator: Operator, value: unknown, conjunction: Conjunction = 'and', not: boolean = false): Constraint => ({
-    type: 'basic',
-    column,
-    operator,
-    value,
-    conjunction,
-    not,
-});
-
-type Matches = (constraints: Constraint[], record: Record<string, unknown>) => boolean;
+function basic(column: string, operator: Operator, value: unknown, conjunction: Conjunction = 'and', not: boolean = false): Constraint {
+    return {
+        type: 'basic',
+        column,
+        operator,
+        value,
+        conjunction,
+        not,
+    };
+}
 
 /**
  * Test a record against the given constraints.
  */
-const matches: Matches = (constraints: Constraint[], record: Record<string, unknown>): boolean => Predicate.compile(constraints)(record);
+function matches(constraints: Constraint[], record: Record<string, unknown>): boolean {
+    return Predicate.compile(constraints)(record);
+}
 
 describe('Predicate with no constraints', (): void => {
     test('matches every record', (): void => {
@@ -349,13 +349,13 @@ describe('Predicate like patterns cannot be made to backtrack', (): void => {
     /**
      * Time a single like comparison in milliseconds.
      */
-    const elapsed: (pattern: string, subject: string) => number = (pattern: string, subject: string): number => {
+    function elapsed(pattern: string, subject: string): number {
         const started: number = performance.now();
 
         matches([basic('body', 'like', pattern)], { body: subject });
 
         return performance.now() - started;
-    };
+    }
 
     test('stays fast for a run of wildcards that cannot match', (): void => {
         // The regular expression this replaced compiled these into .*.*.*.*.* and took 17 seconds.
@@ -374,12 +374,12 @@ describe('Predicate like patterns cannot be made to backtrack', (): void => {
 });
 
 describe('Predicate like matching', (): void => {
-    type Like = (pattern: string, subject: string) => boolean;
-
-    /**
+        /**
      * Determine whether a subject matches a pattern.
      */
-    const like: Like = (pattern: string, subject: string): boolean => matches([basic('body', 'like', pattern)], { body: subject });
+    function like(pattern: string, subject: string): boolean {
+        return matches([basic('body', 'like', pattern)], { body: subject });
+    }
 
     test.each([
         ['a.c', 'a.c', true],

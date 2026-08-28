@@ -65,14 +65,16 @@ let connection: Connection;
 /**
  * Begin a query against the users table.
  */
-const users: () => Builder<User> = (): Builder<User> => connection.table<User>('users');
-
-type Titles = (query: Builder<Row>) => Promise<(string | undefined)[]>;
+function users(): Builder<User> {
+    return connection.table<User>('users');
+}
 
 /**
  * Get the titles a joined query returns.
  */
-const titles: Titles = async (query: Builder<Row>): Promise<(string | undefined)[]> => (await query.get()).map((row: Row): string | undefined => row.title);
+async function titles(query: Builder<Row>): Promise<(string | undefined)[]> {
+    return (await query.get()).map((row: Row): string | undefined => row.title);
+}
 
 beforeAll(async (): Promise<void> => {
     connection = new Connection('app', { database: 'joins', migrations: [CreateTables] });

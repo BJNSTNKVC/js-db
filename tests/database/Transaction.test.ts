@@ -47,17 +47,15 @@ class CreateTables extends Migration {
 let connection: Connection;
 let sequence: number = 0;
 
-type Recorded = (types: string[], callback: () => Promise<unknown>) => Promise<string[]>;
-
 /**
  * Collect the database events dispatched while the callback runs.
  */
-const recorded: Recorded = async (types: string[], callback: () => Promise<unknown>): Promise<string[]> => {
+async function recorded(types: string[], callback: () => Promise<unknown>): Promise<string[]> {
     const seen: string[] = [];
     const listeners: [string, (event: Event) => void][] = types.map((type: string): [string, (event: Event) => void] => {
-        const listener: (event: Event) => void = (event: Event): void => {
+        function listener(event: Event): void {
             seen.push(event.type);
-        };
+        }
 
         Dispatcher.listen(type, listener);
 
@@ -75,7 +73,7 @@ const recorded: Recorded = async (types: string[], callback: () => Promise<unkno
     }
 
     return seen;
-};
+}
 
 beforeEach(async (): Promise<void> => {
     connection?.disconnect();

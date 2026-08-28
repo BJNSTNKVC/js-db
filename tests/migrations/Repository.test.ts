@@ -5,12 +5,10 @@ import type { MigrationRecord } from '../../src/migrations/types';
 
 let sequence: number = 0;
 
-type Open = (name: string, version: number, upgrade: (database: IDBDatabase, transaction: IDBTransaction) => void) => Promise<IDBDatabase>;
-
 /**
  * Open a database, letting the callback shape it during the upgrade.
  */
-const open: Open = (name: string, version: number, upgrade: (database: IDBDatabase, transaction: IDBTransaction) => void): Promise<IDBDatabase> => {
+function open(name: string, version: number, upgrade: (database: IDBDatabase, transaction: IDBTransaction) => void): Promise<IDBDatabase> {
     return new Promise<IDBDatabase>((resolve: (value: IDBDatabase) => void, reject: (reason: unknown) => void): void => {
         const request: IDBOpenDBRequest = indexedDB.open(name, version);
 
@@ -18,14 +16,14 @@ const open: Open = (name: string, version: number, upgrade: (database: IDBDataba
         request.onsuccess = (): void => resolve(request.result);
         request.onerror = (): void => reject(request.error);
     });
-};
+}
 
 const opened: IDBDatabase[] = [];
 
 /**
  * Open a uniquely named database with the migrations store present.
  */
-const repository: () => Promise<IDBDatabase> = async (): Promise<IDBDatabase> => {
+async function repository(): Promise<IDBDatabase> {
     const database: IDBDatabase = await open(`repository-${++sequence}`, 1, (database: IDBDatabase): void => {
         Repository.create(database);
     });
@@ -33,7 +31,7 @@ const repository: () => Promise<IDBDatabase> = async (): Promise<IDBDatabase> =>
     opened.push(database);
 
     return database;
-};
+}
 
 afterEach((): void => {
     for (const database of opened.splice(0)) {

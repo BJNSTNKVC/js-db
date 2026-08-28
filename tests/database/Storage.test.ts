@@ -75,7 +75,7 @@ describe('A write that exceeds the quota', (): void => {
     /**
      * Fail the next store write with the given platform error.
      */
-    const failing: (name: string) => void = (name: string): void => {
+    function failing(name: string): void {
         vi.spyOn(IDBObjectStore.prototype, 'add').mockImplementation(function (this: IDBObjectStore): IDBRequest<IDBValidKey> {
             const request: Partial<IDBRequest<IDBValidKey>> = { error: new DOMException('boom', name) };
 
@@ -85,7 +85,7 @@ describe('A write that exceeds the quota', (): void => {
 
             return request as IDBRequest<IDBValidKey>;
         });
-    };
+    }
 
     test('reports the quota rather than a bare platform error', async (): Promise<void> => {
         await DB.migrate('app');

@@ -70,14 +70,16 @@ let connection: Connection;
 /**
  * Begin a query against the seeded users table.
  */
-const users: () => Builder<User> = (): Builder<User> => connection.table<User>('users');
-
-type Names = (query: Builder<User>) => Promise<string[]>;
+function users(): Builder<User> {
+    return connection.table<User>('users');
+}
 
 /**
  * Get the names of the records a query returns.
  */
-const names: Names = async (query: Builder<User>): Promise<string[]> => (await query.get()).map((user: User): string => user.name);
+async function names(query: Builder<User>): Promise<string[]> {
+    return (await query.get()).map((user: User): string => user.name);
+}
 
 beforeAll(async (): Promise<void> => {
     connection = new Connection('app', { database: 'builder-reads', migrations: [CreateUsersTable] });

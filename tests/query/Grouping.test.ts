@@ -46,7 +46,9 @@ let connection: Connection;
 /**
  * Begin a query against the seeded users table.
  */
-const users: () => Builder<User> = (): Builder<User> => connection.table<User>('users');
+function users(): Builder<User> {
+    return connection.table<User>('users');
+}
 
 beforeAll(async (): Promise<void> => {
     connection = new Connection('app', { database: 'grouping', migrations: [CreateUsersTable] });

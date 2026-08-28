@@ -37,7 +37,9 @@ let sequence: number = 0;
 /**
  * Begin a query against the items table.
  */
-const items: () => Builder<Item> = (): Builder<Item> => connection.table<Item>('items');
+function items(): Builder<Item> {
+    return connection.table<Item>('items');
+}
 
 beforeEach(async (): Promise<void> => {
     connection?.disconnect();
@@ -172,26 +174,28 @@ describe('Enumerated columns on a loose connection', (): void => {
     /**
      * Build a table schema holding a single enumerated column.
      */
-    const schema: (nullable: boolean) => TableSchema = (nullable: boolean): TableSchema => ({
-        table     : 'items',
-        key       : 'id',
-        increments: true,
-        timestamps: false,
-        columns   : [
-            {
-                name      : 'status',
-                type      : 'enum',
-                nullable,
-                default   : undefined,
-                hasDefault: false,
-                primary   : false,
-                increments: false,
-                places    : null,
-                values    : ['draft', 'live'],
-            },
-        ],
-        indexes   : [],
-    });
+    function schema(nullable: boolean): TableSchema {
+        return {
+            table     : 'items',
+            key       : 'id',
+            increments: true,
+            timestamps: false,
+            columns   : [
+                {
+                    name      : 'status',
+                    type      : 'enum',
+                    nullable,
+                    default   : undefined,
+                    hasDefault: false,
+                    primary   : false,
+                    increments: false,
+                    places    : null,
+                    values    : ['draft', 'live'],
+                },
+            ],
+            indexes   : [],
+        };
+    }
 
     test('writes null in place of a value it does not accept', (): void => {
         expect(Coercer.insertable({ status: 'pending' }, schema(true), false, new Date())).toEqual({ status: null });
@@ -222,13 +226,13 @@ describe('Blueprint.enum over an enum or a constant object', (): void => {
     /**
      * Get the values a declared enumerated column accepts.
      */
-    const accepted: (values: Enumerable) => string[] | null = (values: Enumerable): string[] | null => {
+    function accepted(values: Enumerable): string[] | null {
         const blueprint: Blueprint = new Blueprint('items');
 
         blueprint.enum('status', values);
 
         return blueprint.toSchema().columns[0]!.values;
-    };
+    }
 
     test('takes the values of a string enum, not its keys', (): void => {
         enum Status {

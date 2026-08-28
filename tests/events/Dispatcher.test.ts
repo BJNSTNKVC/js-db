@@ -4,9 +4,9 @@ import { Dispatcher } from '../../src/events/Dispatcher';
 describe('Dispatcher', (): void => {
     test('delivers an event to a listener', (): void => {
         const seen: string[] = [];
-        const listener: (event: Event) => void = (event: Event): void => {
+        function listener(event: Event): void {
             seen.push(event.type);
-        };
+        }
 
         Dispatcher.listen('db:test-delivered', listener);
         Dispatcher.dispatch(new Event('db:test-delivered'));
@@ -17,9 +17,9 @@ describe('Dispatcher', (): void => {
 
     test('keeps a listener registered across events', (): void => {
         let count: number = 0;
-        const listener: () => void = (): void => {
+        function listener(): void {
             count++;
-        };
+        }
 
         Dispatcher.listen('db:test-persistent', listener);
         Dispatcher.dispatch(new Event('db:test-persistent'));
@@ -44,9 +44,9 @@ describe('Dispatcher', (): void => {
 
     test('stops delivering to a forgotten listener', (): void => {
         let count: number = 0;
-        const listener: () => void = (): void => {
+        function listener(): void {
             count++;
-        };
+        }
 
         Dispatcher.listen('db:test-forgotten', listener);
         Dispatcher.forget('db:test-forgotten', listener);

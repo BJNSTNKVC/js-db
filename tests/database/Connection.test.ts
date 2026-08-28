@@ -25,25 +25,21 @@ let sequence: number = 0;
 const connections: Connection[] = [];
 const handles: IDBDatabase[] = [];
 
-type Connect = (migrations: MigrationConstructor[], database?: string) => Connection;
-
 /**
  * Build a connection against a uniquely named database.
  */
-const connect: Connect = (migrations: MigrationConstructor[], database: string = `connection-${++sequence}`): Connection => {
+function connect(migrations: MigrationConstructor[], database: string = `connection-${++sequence}`): Connection {
     const connection: Connection = new Connection('app', { database, migrations });
 
     connections.push(connection);
 
     return connection;
-};
-
-type MigrationFactory = (name: string, up: () => void | Promise<void>) => MigrationConstructor;
+}
 
 /**
  * Build a migration class from an up implementation.
  */
-const migration: MigrationFactory = (name: string, up: () => void | Promise<void>): MigrationConstructor => {
+function migration(name: string, up: () => void | Promise<void>): MigrationConstructor {
     return class extends Migration {
         /**
          * Get the name of the migration.
@@ -59,7 +55,7 @@ const migration: MigrationFactory = (name: string, up: () => void | Promise<void
             await up();
         }
     };
-};
+}
 
 const CreateUsersTable: MigrationConstructor = migration('CreateUsersTable', async (): Promise<void> => {
     await Schema.create('users', (table: Blueprint): void => {
@@ -85,23 +81,19 @@ const CreateTagsTable: MigrationConstructor = migration('CreateTagsTable', async
     });
 });
 
-type Records = (connection: Connection, table: string) => Promise<Record<string, unknown>[]>;
-
 /**
  * Read the records of a table directly, bypassing the query builder.
  */
-const records: Records = async (connection: Connection, table: string): Promise<Record<string, unknown>[]> => {
+async function records(connection: Connection, table: string): Promise<Record<string, unknown>[]> {
     const database: IDBDatabase = await connection.open();
 
     return Request.settle(database.transaction(table, 'readonly').objectStore(table).getAll() as IDBRequest<Record<string, unknown>[]>);
-};
-
-type Seed = (connection: Connection, table: string, rows: Record<string, unknown>[]) => Promise<void>;
+}
 
 /**
  * Write records into a table directly, bypassing the query builder.
  */
-const seed: Seed = async (connection: Connection, table: string, rows: Record<string, unknown>[]): Promise<void> => {
+async function seed(connection: Connection, table: string, rows: Record<string, unknown>[]): Promise<void> {
     const database: IDBDatabase = await connection.open();
     const transaction: IDBTransaction = database.transaction(table, 'readwrite');
 
@@ -113,7 +105,7 @@ const seed: Seed = async (connection: Connection, table: string, rows: Record<st
         transaction.oncomplete = (): void => resolve();
         transaction.onerror = (): void => reject(transaction.error);
     });
-};
+}
 
 afterEach((): void => {
     for (const connection of connections.splice(0)) {
@@ -438,7 +430,7 @@ describe('Connection platform failures', (): void => {
     /**
      * Build a request that fails on the next tick with the given error.
      */
-    const failing: (error: Error) => IDBOpenDBRequest = (error: Error): IDBOpenDBRequest => {
+    function failing(error: Error): IDBOpenDBRequest {
         const request: Partial<IDBOpenDBRequest> = { error: error as unknown as DOMException };
 
         setTimeout((): void => {
@@ -446,7 +438,7 @@ describe('Connection platform failures', (): void => {
         }, 0);
 
         return request as IDBOpenDBRequest;
-    };
+    }
 
     test('surfaces a failure to open at the stored version', async (): Promise<void> => {
         const connection: Connection = connect([CreateUsersTable]);
@@ -649,12 +641,10 @@ describe('Schema.create', (): void => {
 });
 
 describe('Schema.table', (): void => {
-    type Altered = (callback: (table: Blueprint) => void) => Promise<Connection>;
-
-    /**
+        /**
      * Migrate a users table, then alter it with the given callback.
      */
-    const altered: Altered = async (callback: (table: Blueprint) => void): Promise<Connection> => {
+    async function altered(callback: (table: Blueprint) => void): Promise<Connection> {
         const database: string = `connection-${++sequence}`;
         const first: Connection = connect([CreateUsersTable], database);
 
@@ -673,7 +663,7 @@ describe('Schema.table', (): void => {
         await second.migrate();
 
         return second;
-    };
+    }
 
     test('adds a column and backfills its default', async (): Promise<void> => {
         const connection: Connection = await altered((table: Blueprint): void => {

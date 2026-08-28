@@ -3,38 +3,38 @@ import { Coercer } from '../../src/schema/Coercer';
 import { NotNullConstraintViolationException } from '../../src/exceptions';
 import type { ColumnSchema, ColumnType, TableSchema } from '../../src/schema/types';
 
-type Column = (name: string, type: ColumnType, overrides?: Partial<ColumnSchema>) => ColumnSchema;
-
 /**
  * Build a column schema with the given overrides.
  */
-const column: Column = (name: string, type: ColumnType, overrides: Partial<ColumnSchema> = {}): ColumnSchema => ({
-    name,
-    type,
-    nullable  : false,
-    default   : undefined,
-    hasDefault: false,
-    primary   : false,
-    increments: false,
-    places    : null,
-    values    : null,
-    ...overrides,
-});
-
-type Table = (columns: ColumnSchema[], overrides?: Partial<TableSchema>) => TableSchema;
+function column(name: string, type: ColumnType, overrides: Partial<ColumnSchema> = {}): ColumnSchema {
+    return {
+        name,
+        type,
+        nullable  : false,
+        default   : undefined,
+        hasDefault: false,
+        primary   : false,
+        increments: false,
+        places    : null,
+        values    : null,
+        ...overrides,
+    };
+}
 
 /**
  * Build a table schema from the given columns.
  */
-const table: Table = (columns: ColumnSchema[], overrides: Partial<TableSchema> = {}): TableSchema => ({
-    table     : 'users',
-    key       : 'id',
-    increments: true,
-    timestamps: false,
-    columns,
-    indexes   : [],
-    ...overrides,
-});
+function table(columns: ColumnSchema[], overrides: Partial<TableSchema> = {}): TableSchema {
+    return {
+        table     : 'users',
+        key       : 'id',
+        increments: true,
+        timestamps: false,
+        columns,
+        indexes   : [],
+        ...overrides,
+    };
+}
 
 const at: Date = new Date('2026-08-27T21:00:00.000Z');
 

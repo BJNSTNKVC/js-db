@@ -48,7 +48,7 @@ let sequence: number = 0;
 /**
  * Register a configuration against uniquely named databases.
  */
-const configure: () => void = (): void => {
+function configure(): void {
     const suffix: number = ++sequence;
 
     DB.configure({
@@ -58,7 +58,7 @@ const configure: () => void = (): void => {
             reporting: { database: `manager-reporting-${suffix}`, migrations: [CreateReportsTable] },
         },
     });
-};
+}
 
 beforeEach((): void => {
     configure();
@@ -268,9 +268,9 @@ describe('DB.disconnect and DB.purge', (): void => {
 describe('DB.listen', (): void => {
     test('keeps a listener registered across events', async (): Promise<void> => {
         const seen: string[] = [];
-        const listener: (event: QueryExecuted) => void = (event: QueryExecuted): void => {
+        function listener(event: QueryExecuted): void {
             seen.push(event.plan);
-        };
+        }
 
         DB.listen('query', listener);
 
@@ -299,9 +299,9 @@ describe('DB.listen', (): void => {
 
     test('stops delivering to a forgotten listener', async (): Promise<void> => {
         let count: number = 0;
-        const listener: () => void = (): void => {
+        function listener(): void {
             count++;
-        };
+        }
 
         DB.listen('query', listener);
         DB.forget('query', listener);
