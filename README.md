@@ -118,8 +118,6 @@ await DB.migrate('reporting');
 
 ### Migrations
 
-*Laravel: [Migrations](https://laravel.com/docs/12.x/migrations)*
-
 A migration declares `up()` and nothing else:
 
 ```ts
@@ -194,9 +192,10 @@ Resolves to one entry per registered migration:
 `DB.status(name)` never migrates as a side effect, so you can call it before `DB.migrate(name)` to
 see what is pending.
 
-### Seeding
+> Modelled on Laravel's [Migrations](https://laravel.com/docs/12.x/migrations). These only run
+> forward, and they are registered in the connection config rather than discovered from a directory.
 
-*Laravel: [Database: Seeding](https://laravel.com/docs/12.x/seeding)*
+### Seeding
 
 Seeding is a separate step from migrating, and deliberately so. A migration runs inside the version
 change transaction and therefore cannot await a `fetch`. A seeder runs outside it, so it can await
@@ -296,9 +295,10 @@ await DB.fresh('app');
 await DB.fresh('app', { seed: true });
 ```
 
-### Defining a schema
+> Modelled on Laravel's [Database: Seeding](https://laravel.com/docs/12.x/seeding), down to the
+> seeded connection standing in as the default for the duration of the run.
 
-*Laravel: [Migrations: Tables](https://laravel.com/docs/12.x/migrations#tables)*
+### Defining a schema
 
 IndexedDB stores whole objects and enforces only a key path, `autoIncrement` and indexes. Column
 types are recorded as metadata and enforced by this package at write time.
@@ -482,11 +482,13 @@ await Schema.getIndexes('users');
 await Schema.connection('reporting').hasTable('reports');
 ```
 
+> Modelled on Laravel's [Migrations: Tables](https://laravel.com/docs/12.x/migrations#tables).
+> Column types are metadata this package enforces at write time, since IndexedDB stores whole objects
+> and checks nothing itself.
+
 ### Querying
 
-*Laravel: [Database: Query Builder](https://laravel.com/docs/12.x/queries)*
-
-Chaining is synchronous; terminals return promises.
+Every chained method returns the builder straight away. Only a terminal returns a promise.
 
 ```ts
 const users: User[] = await DB.table<User>('users')
@@ -656,9 +658,10 @@ The key path may not be updated, so `update`, `upsert` and `increment` all refus
 when an index drives the query and key order otherwise. Pair them with an indexed `orderBy` if you
 need a defined order.
 
-### Joins
+> Modelled on Laravel's [Database: Query Builder](https://laravel.com/docs/12.x/queries). The method
+> names and their semantics match, and every terminal is asynchronous because IndexedDB is.
 
-*Laravel: [Query Builder: Joins](https://laravel.com/docs/12.x/queries#joins)*
+### Joins
 
 ```ts
 const rows = await DB.table('users')
@@ -747,7 +750,7 @@ await DB.table('users')
 #### What joins cost, and what they do not support
 
 IndexedDB has no join, so every one is performed in memory. A single equality condition uses a hash
-join; anything else falls back to a nested loop. The `where` clauses still narrow each table through
+join, and anything else falls back to a nested loop. The `where` clauses still narrow each table through
 the planner, but the join itself reads both sides in full, so memory is proportional to the tables
 involved. That is fine at the data volumes a browser holds, and worth knowing before joining two
 large tables.
@@ -762,9 +765,10 @@ covers it, and `chunk` slices the materialised result rather than walking keys.
 await DB.table('users').whereColumn('updated_at', '>', 'created_at').get();
 ```
 
-### Grouping
+> Modelled on Laravel's [Query Builder: Joins](https://laravel.com/docs/12.x/queries#joins). Rows
+> stay flat as they do in Laravel, and the join itself runs in memory because IndexedDB has none.
 
-*Laravel: [Query Builder: Grouping](https://laravel.com/docs/12.x/queries#groupby-having)*
+### Grouping
 
 Laravel spells aggregates as [raw SQL](https://laravel.com/docs/12.x/queries#raw-methods), which has
 nothing to hand a string to here. So the aggregates are named in an object instead, and the alias
@@ -834,6 +838,9 @@ await DB.table<User>('users')
 Grouping happens in memory after the records are fetched, so the planner still applies to the
 `where` clauses that select them, and a grouped query reports the plan of that underlying fetch.
 
+> Modelled on Laravel's [Query Builder: Grouping](https://laravel.com/docs/12.x/queries#groupby-having),
+> with the aggregates named in a typed object instead of raw SQL.
+
 ### Query plans
 
 The builder does not fetch everything and filter in memory. It compiles your constraints into an
@@ -864,8 +871,6 @@ Each resolves to a description of the plan chosen:
 
 ### Transactions
 
-*Laravel: [Database: Transactions](https://laravel.com/docs/12.x/database#database-transactions)*
-
 ```ts
 await DB.transaction(async (transaction: Transaction): Promise<void> => {
     const id: IDBValidKey = await transaction.table<User>('users').insertGetId({ name: 'John' });
@@ -893,9 +898,11 @@ commits behind your back the first time you await anything outside it, so offeri
 offering a trap. The same rule as migrations applies here: the callback may only await operations
 from this package.
 
-### Events and the query log
+> Modelled on Laravel's [Database: Transactions](https://laravel.com/docs/12.x/database#database-transactions).
+> The tables have to be declared up front, because an IndexedDB transaction fixes its scope when it
+> opens.
 
-*Laravel: [Database: Listening for Query Events](https://laravel.com/docs/12.x/database#listening-for-query-events)*
+### Events and the query log
 
 ```ts
 DB.onQueryExecuted((event: QueryExecuted): void => {
@@ -947,6 +954,9 @@ DB.disableQueryLog();
 
 `DB.logging()` then returns `false`, and `DB.getQueryLog()` an empty array.
 
+> Modelled on Laravel's [Database: Listening for Query Events](https://laravel.com/docs/12.x/database#listening-for-query-events),
+> with the same enable, get and flush surface, dispatched as a browser event.
+
 ### Multiple tabs
 
 IndexedDB is shared across tabs, which produces two situations worth handling:
@@ -959,8 +969,6 @@ IndexedDB is shared across tabs, which produces two situations worth handling:
   the database and reports `MigrationMismatchException`, so reload the page.
 
 ### Connections
-
-*Laravel: [Database: Multiple Connections](https://laravel.com/docs/12.x/database#using-multiple-database-connections)*
 
 ```ts
 DB.connection();
@@ -975,6 +983,9 @@ DB.purge('app');
 | `connection(name)` | A named connection, cached after the first resolve |
 | `disconnect(name)` | Close the handle, leaving the connection registered so the next query reopens it |
 | `purge(name)` | Close it and drop it, so the next resolve rebuilds it from configuration |
+
+> Modelled on Laravel's [Database: Multiple Connections](https://laravel.com/docs/12.x/database#using-multiple-database-connections),
+> resolved by name and cached, with one IndexedDB database behind each.
 
 ### Storage quota
 
