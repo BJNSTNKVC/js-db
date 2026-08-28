@@ -1,6 +1,6 @@
 # DB
 
-TypeScript equivalent of the [Laravel database layer](https://laravel.com/docs/12.x/database) over IndexedDB: a `DB` facade, a fluent query builder, a schema builder and forward-only migrations that run when your app boots.
+TypeScript equivalent of the [Laravel database layer](https://laravel.com/docs/12.x/database) over IndexedDB: a `DB` class, a fluent query builder, a schema builder and forward-only migrations that run when your app boots.
 
 ## Contents
 

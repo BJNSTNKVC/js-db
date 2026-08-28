@@ -70,7 +70,7 @@ export class DatabaseManager {
         }
 
         // An explicit name always wins. Otherwise a seeding run may stand in for the configured
-        // default, so a seeder reaching for the facade writes to the connection being seeded.
+        // default, so a seeder reaching for `DB` writes to the connection being seeded.
         const resolved: string = name ?? Resolver.override() ?? config.default;
         const cached: Connection | undefined = this.#connections.get(resolved);
 
