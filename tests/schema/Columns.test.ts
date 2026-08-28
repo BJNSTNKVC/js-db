@@ -6,7 +6,7 @@ import { Blueprint } from '../../src/schema/Blueprint';
 import { Coercer } from '../../src/schema/Coercer';
 import { CheckConstraintViolationException, NotNullConstraintViolationException, SchemaException } from '../../src/exceptions';
 import type { Builder } from '../../src/query/Builder';
-import type { ColumnSchema, TableSchema } from '../../src/schema/types';
+import type { ColumnSchema, Enumerable, TableSchema } from '../../src/schema/types';
 
 interface Item {
     id: number;
@@ -215,5 +215,109 @@ describe('Enumerated columns on a loose connection', (): void => {
         expect((): unknown => Coercer.insertable({ status: null }, schema(false), true, new Date())).toThrow(
             NotNullConstraintViolationException,
         );
+    });
+});
+
+describe('Blueprint.enum over an enum or a constant object', (): void => {
+    /**
+     * Get the values a declared enumerated column accepts.
+     */
+    const accepted = (values: Enumerable): string[] | null => {
+        const blueprint: Blueprint = new Blueprint('items');
+
+        blueprint.enum('status', values);
+
+        return blueprint.toSchema().columns[0]!.values;
+    };
+
+    test('takes the values of a string enum, not its keys', (): void => {
+        enum Status {
+            Draft = 'draft',
+            Live  = 'live',
+        }
+
+        expect(accepted(Status)).toEqual(['draft', 'live']);
+    });
+
+    test('takes the values of a constant object', (): void => {
+        const Status = { Draft: 'draft', Live: 'live' } as const;
+
+        expect(accepted(Status)).toEqual(['draft', 'live']);
+    });
+
+    test('still takes a plain array', (): void => {
+        expect(accepted(['draft', 'live'])).toEqual(['draft', 'live']);
+    });
+
+    test('takes a readonly array', (): void => {
+        const values = ['draft', 'live'] as const;
+
+        expect(accepted(values)).toEqual(['draft', 'live']);
+    });
+
+    test('collapses two members sharing a value', (): void => {
+        enum Status {
+            Draft   = 'draft',
+            Pending = 'draft',
+        }
+
+        expect(accepted(Status)).toEqual(['draft']);
+    });
+
+    test('refuses a numeric enum, whose reverse mapping has no value worth storing', (): void => {
+        enum Status {
+            Draft,
+            Live,
+        }
+
+        expect((): unknown => accepted(Status)).toThrow(
+            new SchemaException('Column [status] of table [items] is enumerated over a numeric enum, which has no string form to store. Give the enum string values, or use integer() instead.'),
+        );
+    });
+
+    test('refuses a heterogeneous enum', (): void => {
+        enum Status {
+            Draft = 'draft',
+            Live  = 1,
+        }
+
+        expect((): unknown => accepted(Status)).toThrow(SchemaException);
+    });
+
+    test('refuses an empty constant object', (): void => {
+        expect((): unknown => accepted({})).toThrow(
+            new SchemaException('Column [status] of table [items] is enumerated over no values, so nothing could ever be written to it.'),
+        );
+    });
+
+    test('enforces the values a string enum declared', async (): Promise<void> => {
+        enum Role {
+            Admin  = 'admin',
+            Member = 'member',
+        }
+
+        class CreatePeopleTable extends Migration {
+            /**
+             * Run the migration.
+             */
+            override async up(): Promise<void> {
+                await Schema.create('people', (table: Blueprint): void => {
+                    table.id();
+                    table.enum('role', Role).default(Role.Member);
+                });
+            }
+        }
+
+        const people: Connection = new Connection('app', { database: `roles-${++sequence}`, migrations: [CreatePeopleTable] });
+
+        await people.migrate();
+
+        await people.table('people').insert({});
+
+        expect(await people.table('people').value<string>('role')).toEqual('member');
+
+        await expect(people.table('people').insert({ role: 'owner' })).rejects.toBeInstanceOf(CheckConstraintViolationException);
+
+        people.disconnect();
     });
 });

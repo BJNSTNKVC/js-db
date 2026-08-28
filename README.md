@@ -309,7 +309,7 @@ types are recorded as metadata and enforced by this package at write time.
 | `table.uuid('id').primary()` | `keyPath: 'id'`, no autoIncrement |
 | `table.string` / `integer` / `float` / `boolean` / `date` / `datetime` / `json` | Column metadata |
 | `table.decimal('price', 2)` | Column metadata, stored as a whole number of the smallest unit |
-| `table.enum('role', ['admin', 'member'])` | Column metadata, checked at write time |
+| `table.enum('role', Role)` | Column metadata, checked at write time. Takes a list, an enum or a constant object |
 | `.nullable()` | Metadata, enforced at write time |
 | `.default(value)` | Applied at write time, and backfilled when added to an existing table |
 | `.primary()` | Makes the column the key path. At most one per table. |
@@ -410,6 +410,42 @@ non-nullable enumerated column still reports the problem as
 
 Declaring one over an empty list throws `SchemaException` at migration time, since nothing could
 ever be written to it.
+
+The list can come from a TypeScript string enum or an `as const` object instead, which keeps the
+values in one place and lets the compiler check them at the call site:
+
+```ts
+enum Role {
+    Admin  = 'admin',
+    Editor = 'editor',
+    Member = 'member',
+}
+
+await Schema.create('users', (table: Blueprint): void => {
+    table.enum('role', Role).default(Role.Member);
+});
+```
+
+The column stores the enum's **values**, never its keys, so `Role.Admin` is written as `admin`. Two
+members sharing a value collapse to one, since a duplicate would otherwise reach anything rendering
+the column.
+
+A **numeric** enum is refused. TypeScript compiles one to an object carrying a reverse mapping, so
+its runtime values are both the names and the numbers, and there is no string form worth storing:
+
+```ts
+enum Status {
+    Draft,
+    Live,
+}
+
+table.enum('status', Status);
+```
+
+```
+SchemaException: Column [status] of table [items] is enumerated over a numeric enum, which has no
+string form to store. Give the enum string values, or use integer() instead.
+```
 
 The declared values are metadata, so a form can read them back rather than repeating the list:
 

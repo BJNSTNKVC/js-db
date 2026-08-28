@@ -1,6 +1,6 @@
 import { SchemaException } from '../exceptions';
 import { ColumnDefinition } from './ColumnDefinition';
-import type { BlueprintOperations, ColumnSchema, ColumnType, IndexSchema, RenamedColumn, RequestedIndex, TableSchema } from './types';
+import type { BlueprintOperations, ColumnSchema, ColumnType, Enumerable, IndexSchema, RenamedColumn, RequestedIndex, TableSchema } from './types';
 
 export class Blueprint {
     /**
@@ -132,12 +132,14 @@ export class Blueprint {
     /**
      * Add a column accepting only one of the given values.
      */
-    enum(column: string, values: string[]): ColumnDefinition {
-        if (values.length === 0) {
+    enum(column: string, values: Enumerable): ColumnDefinition {
+        const accepted: string[] = this.#enumerated(column, values);
+
+        if (accepted.length === 0) {
             throw new SchemaException(`Column [${column}] of table [${this.#table}] is enumerated over no values, so nothing could ever be written to it.`);
         }
 
-        return this.#add(column, 'enum').accepts(values);
+        return this.#add(column, 'enum').accepts(accepted);
     }
 
     /**
@@ -247,6 +249,24 @@ export class Blueprint {
         this.#columns.push(definition);
 
         return definition;
+    }
+
+    /**
+     * Reduce a list, an enum or a constant object to the values a column accepts.
+     */
+    #enumerated(column: string, values: Enumerable): string[] {
+        // A TypeScript string enum and an `as const` object are both plain objects at runtime, so
+        // their values are what the column stores and their keys are only source-level names.
+        const listed: (string | number)[] = Array.isArray(values) ? [...values] : Object.values(values);
+
+        // A numeric enum also carries a reverse mapping, so its values hold both the names and the
+        // numbers. There is no string form of it worth storing, and picking one would be a guess.
+        if (listed.some((value: string | number): boolean => typeof value !== 'string')) {
+            throw new SchemaException(`Column [${column}] of table [${this.#table}] is enumerated over a numeric enum, which has no string form to store. Give the enum string values, or use integer() instead.`);
+        }
+
+        // Two members may share a value, and the duplicate would reach anything rendering the column.
+        return [...new Set(listed as string[])];
     }
 
     /**

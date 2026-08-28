@@ -1,3 +1,5 @@
+export type Enumerable = readonly string[] | Record<string, string | number>;
+
 export type ColumnType = 'string' | 'integer' | 'float' | 'boolean' | 'date' | 'datetime' | 'json' | 'decimal' | 'enum';
 
 export interface ColumnSchema {
