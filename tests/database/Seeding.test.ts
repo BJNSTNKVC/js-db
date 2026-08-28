@@ -8,6 +8,7 @@ import { Dispatcher } from '../../src/events/Dispatcher';
 import { ConnectionNotConfiguredException } from '../../src/exceptions';
 import type { SeederConstructor } from '../../src/seeders/types';
 import type { Transaction } from '../../src/database/Transaction';
+import type { SeedingEnded, SeederEnded, SeederStarted, SeedingStarted } from '../../src/main';
 
 interface User {
     id: number;
@@ -52,7 +53,7 @@ let database: string;
 /**
  * Register a configuration with the given seeders.
  */
-const configure = (seeders: SeederConstructor[]): void => {
+const configure: (seeders: SeederConstructor[]) => void = (seeders: SeederConstructor[]): void => {
     database = `seeding-${++sequence}`;
 
     DB.configure({
@@ -66,10 +67,10 @@ const configure = (seeders: SeederConstructor[]): void => {
 /**
  * Collect the database events dispatched while the callback runs.
  */
-const recorded = async (types: string[], callback: () => Promise<unknown>): Promise<string[]> => {
+const recorded: (types: string[], callback: () => Promise<unknown>) => Promise<string[]> = async (types: string[], callback: () => Promise<unknown>): Promise<string[]> => {
     const seen: string[] = [];
     const listeners: [string, (event: Event) => void][] = types.map((type: string): [string, (event: Event) => void] => {
-        const listener = (event: Event): void => {
+        const listener: (event: Event) => void = (event: Event): void => {
             seen.push(event.type);
         };
 
@@ -180,7 +181,7 @@ describe('DB.seed', (): void => {
              * Seed the database.
              */
             override async run(): Promise<void> {
-                const fetched: string[] = await new Promise<string[]>((resolve): void => {
+                const fetched: string[] = await new Promise<string[]>((resolve: (value: string[]) => void): void => {
                     setTimeout((): void => resolve(['Carol']), 5);
                 });
 
@@ -265,19 +266,19 @@ describe('Seeding events', (): void => {
         const names: string[] = [];
         const seeders: string[][] = [];
 
-        DB.onSeedingStarted((event): void => {
+        DB.onSeedingStarted((event: SeedingStarted): void => {
             seeders.push(event.seeders);
         }, { once: true });
 
-        DB.onSeederStarted((event): void => {
+        DB.onSeederStarted((event: SeederStarted): void => {
             names.push(event.seeder);
         }, { once: true });
 
-        DB.onSeederEnded((event): void => {
+        DB.onSeederEnded((event: SeederEnded): void => {
             names.push(event.seeder);
         }, { once: true });
 
-        DB.onSeedingEnded((event): void => {
+        DB.onSeedingEnded((event: SeedingEnded): void => {
             seeders.push(event.seeders);
         }, { once: true });
 
@@ -335,7 +336,7 @@ describe('Default connection while seeding', (): void => {
     /**
      * Register two connections, with the seeders on the one that is not the default.
      */
-    const pair = (seeders: SeederConstructor[]): void => {
+    const pair: (seeders: SeederConstructor[]) => void = (seeders: SeederConstructor[]): void => {
         const suffix: number = ++sequence;
 
         DB.configure({

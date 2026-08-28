@@ -39,12 +39,14 @@ const seed: Omit<User, 'id'>[] = [
     { name: 'Erin', role: 'owner', team: 'ops', age: 41, visits: 8 },
 ];
 
+type AgeAggregation = { age: { avg: 'age' } } | { age: { min: 'age' } } | { age: { max: 'age' } };
+
 let connection: Connection;
 
 /**
  * Begin a query against the seeded users table.
  */
-const users = (): Builder<User> => connection.table<User>('users');
+const users: () => Builder<User> = (): Builder<User> => connection.table<User>('users');
 
 beforeAll(async (): Promise<void> => {
     connection = new Connection('app', { database: 'grouping', migrations: [CreateUsersTable] });
@@ -87,7 +89,7 @@ describe('Builder.groupBy', (): void => {
     test('carries the grouped column value onto the row', async (): Promise<void> => {
         const rows: { team: string; total: number }[] = await users().groupBy('team').aggregate({ total: { count: '*' } }).orderBy('team').get();
 
-        expect(rows.map((row): string => row.team)).toEqual(['core', 'ops']);
+        expect(rows.map((row: { team: string; total: number }): string => row.team)).toEqual(['core', 'ops']);
     });
 
     test('groups without any aggregation, behaving like distinct', async (): Promise<void> => {
@@ -127,19 +129,19 @@ describe('Grouping aggregations', (): void => {
     test('counts every member of the group', async (): Promise<void> => {
         const rows: { team: string; total: number }[] = await users().groupBy('team').aggregate({ total: { count: '*' } }).orderBy('team').get();
 
-        expect(rows.map((row): number => row.total)).toEqual([3, 2]);
+        expect(rows.map((row: { team: string; total: number }): number => row.total)).toEqual([3, 2]);
     });
 
     test('counts only the non null values of a column', async (): Promise<void> => {
         const rows: { team: string; ages: number }[] = await users().groupBy('team').aggregate({ ages: { count: 'age' } }).orderBy('team').get();
 
-        expect(rows.map((row): number => row.ages)).toEqual([3, 1]);
+        expect(rows.map((row: { team: string; ages: number }): number => row.ages)).toEqual([3, 1]);
     });
 
     test('sums a column', async (): Promise<void> => {
         const rows: { team: string; visits: number | null }[] = await users().groupBy('team').aggregate({ visits: { sum: 'visits' } }).orderBy('team').get();
 
-        expect(rows.map((row): number | null => row.visits)).toEqual([20, 9]);
+        expect(rows.map((row: { team: string; visits: number | null }): number | null => row.visits)).toEqual([20, 9]);
     });
 
     test('sums a group with no values as zero', async (): Promise<void> => {
@@ -151,26 +153,26 @@ describe('Grouping aggregations', (): void => {
     test('averages a column', async (): Promise<void> => {
         const rows: { team: string; age: number | null }[] = await users().groupBy('team').aggregate({ age: { avg: 'age' } }).orderBy('team').get();
 
-        expect(rows.map((row): number | null => row.age)).toEqual([30, 41]);
+        expect(rows.map((row: { team: string; age: number | null }): number | null => row.age)).toEqual([30, 41]);
     });
 
     test('finds the smallest value of a column', async (): Promise<void> => {
         const rows: { team: string; youngest: number | null }[] = await users().groupBy('team').aggregate({ youngest: { min: 'age' } }).orderBy('team').get();
 
-        expect(rows.map((row): number | null => row.youngest)).toEqual([25, 41]);
+        expect(rows.map((row: { team: string; youngest: number | null }): number | null => row.youngest)).toEqual([25, 41]);
     });
 
     test('finds the largest value of a column', async (): Promise<void> => {
         const rows: { team: string; oldest: number | null }[] = await users().groupBy('team').aggregate({ oldest: { max: 'age' } }).orderBy('team').get();
 
-        expect(rows.map((row): number | null => row.oldest)).toEqual([35, 41]);
+        expect(rows.map((row: { team: string; oldest: number | null }): number | null => row.oldest)).toEqual([35, 41]);
     });
 
-    test.each([
+    test.each<[string, AgeAggregation]>([
         ['avg', { age: { avg: 'age' } }],
         ['min', { age: { min: 'age' } }],
         ['max', { age: { max: 'age' } }],
-    ] as const)('yields null from %s when the group holds no values', async (_name: string, aggregations): Promise<void> => {
+    ])('yields null from %s when the group holds no values', async (_name: string, aggregations: AgeAggregation): Promise<void> => {
         const rows: { team: string; age: number | null }[] = await users().where('name', 'Dave').groupBy('team').aggregate(aggregations).get();
 
         expect(rows[0]?.age).toBeNull();
@@ -278,7 +280,7 @@ describe('Grouping shaping', (): void => {
             .orderBy('total', 'desc')
             .get();
 
-        expect(rows.map((row): number => row.total)).toEqual([3, 1, 1]);
+        expect(rows.map((row: { role: string; total: number }): number => row.total)).toEqual([3, 1, 1]);
     });
 
     test('breaks ties with a second order', async (): Promise<void> => {
@@ -289,7 +291,7 @@ describe('Grouping shaping', (): void => {
             .orderBy('role', 'desc')
             .get();
 
-        expect(rows.map((row): string => row.role)).toEqual(['member', 'owner', 'admin']);
+        expect(rows.map((row: { role: string; total: number }): string => row.role)).toEqual(['member', 'owner', 'admin']);
     });
 
     test('sorts nulls lowest', async (): Promise<void> => {
@@ -299,7 +301,7 @@ describe('Grouping shaping', (): void => {
             .orderBy('youngest')
             .get();
 
-        expect(rows.map((row): string => row.team)).toEqual(['core', 'ops']);
+        expect(rows.map((row: { team: string; youngest: number | null }): string => row.team)).toEqual(['core', 'ops']);
     });
 
     test('leaves groups tied on every order alone', async (): Promise<void> => {
@@ -326,7 +328,7 @@ describe('Grouping shaping', (): void => {
             .limit(2)
             .get();
 
-        expect(rows.map((row): string => row.role)).toEqual(['admin', 'member']);
+        expect(rows.map((row: { role: string; total: number }): string => row.role)).toEqual(['admin', 'member']);
     });
 
     test('offsets the groups', async (): Promise<void> => {
@@ -337,7 +339,7 @@ describe('Grouping shaping', (): void => {
             .offset(2)
             .get();
 
-        expect(rows.map((row): string => row.role)).toEqual(['owner']);
+        expect(rows.map((row: { role: string; total: number }): string => row.role)).toEqual(['owner']);
     });
 
     test('pages the groups', async (): Promise<void> => {
@@ -349,7 +351,7 @@ describe('Grouping shaping', (): void => {
             .limit(1)
             .get();
 
-        expect(rows.map((row): string => row.role)).toEqual(['member']);
+        expect(rows.map((row: { role: string; total: number }): string => row.role)).toEqual(['member']);
     });
 });
 
@@ -446,7 +448,7 @@ describe('Grouping over values holding the signature separator', (): void => {
             .get();
 
         expect(rows).toHaveLength(2);
-        expect(rows.map((row): number => row.total)).toEqual([1, 1]);
+        expect(rows.map((row: { role: string; team: string; total: number }): number => row.total)).toEqual([1, 1]);
 
         isolated.disconnect();
     });

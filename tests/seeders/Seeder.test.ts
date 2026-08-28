@@ -30,7 +30,7 @@ class Asynchronous extends Seeder {
      */
     override async run(): Promise<void> {
         // A seeder runs outside the version change transaction, so it may await anything.
-        await new Promise<void>((resolve): void => {
+        await new Promise<void>((resolve: () => void): void => {
             setTimeout(resolve, 0);
         });
     }

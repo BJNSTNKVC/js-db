@@ -8,8 +8,8 @@ let sequence: number = 0;
 /**
  * Open a database, letting the callback shape it during the upgrade.
  */
-const open = (name: string, version: number, upgrade: (database: IDBDatabase, transaction: IDBTransaction) => void): Promise<IDBDatabase> => {
-    return new Promise<IDBDatabase>((resolve, reject): void => {
+const open: (name: string, version: number, upgrade: (database: IDBDatabase, transaction: IDBTransaction) => void) => Promise<IDBDatabase> = (name: string, version: number, upgrade: (database: IDBDatabase, transaction: IDBTransaction) => void): Promise<IDBDatabase> => {
+    return new Promise<IDBDatabase>((resolve: (value: IDBDatabase) => void, reject: (reason: unknown) => void): void => {
         const request: IDBOpenDBRequest = indexedDB.open(name, version);
 
         request.onupgradeneeded = (): void => upgrade(request.result, request.transaction as IDBTransaction);
@@ -23,7 +23,7 @@ const opened: IDBDatabase[] = [];
 /**
  * Open a uniquely named database with the migrations store present.
  */
-const repository = async (): Promise<IDBDatabase> => {
+const repository: () => Promise<IDBDatabase> = async (): Promise<IDBDatabase> => {
     const database: IDBDatabase = await open(`repository-${++sequence}`, 1, (database: IDBDatabase): void => {
         Repository.create(database);
     });

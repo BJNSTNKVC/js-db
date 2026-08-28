@@ -1080,7 +1080,7 @@ export class Builder<T = Record<string, unknown>> {
         let seen: number = 0;
         let affected: number = 0;
 
-        const visit = (cursor: IDBCursorWithValue): boolean => {
+        const visit: (cursor: IDBCursorWithValue) => boolean = (cursor: IDBCursorWithValue): boolean => {
             if (!matches(cursor.value as Record<string, unknown>)) {
                 return true;
             }
@@ -1353,8 +1353,8 @@ export class Builder<T = Record<string, unknown>> {
         this.#emit(Planner.describe(plan), started, paged.length);
 
         return {
-            records: paged.map((entry): T => entry.record),
-            keys   : paged.map((entry): IDBValidKey => entry.key),
+            records: paged.map((entry: { record: T; key: IDBValidKey }): T => entry.record),
+            keys   : paged.map((entry: { record: T; key: IDBValidKey }): IDBValidKey => entry.key),
         };
     }
 
@@ -1404,7 +1404,7 @@ export class Builder<T = Record<string, unknown>> {
         return Comparator.sort(
             collected,
             this.#orders,
-            (entry, column: string): unknown => (entry.record as Record<string, unknown>)[column],
+            (entry: { record: T; key: IDBValidKey }, column: string): unknown => (entry.record as Record<string, unknown>)[column],
         );
     }
 

@@ -75,7 +75,7 @@ describe('A write that exceeds the quota', (): void => {
     /**
      * Fail the next store write with the given platform error.
      */
-    const failing = (name: string): void => {
+    const failing: (name: string) => void = (name: string): void => {
         vi.spyOn(IDBObjectStore.prototype, 'add').mockImplementation(function (this: IDBObjectStore): IDBRequest<IDBValidKey> {
             const request: Partial<IDBRequest<IDBValidKey>> = { error: new DOMException('boom', name) };
 

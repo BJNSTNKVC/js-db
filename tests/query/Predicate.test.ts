@@ -5,7 +5,7 @@ import type { Conjunction, Constraint, Operator } from '../../src/query/types';
 /**
  * Build a basic constraint.
  */
-const basic = (column: string, operator: Operator, value: unknown, conjunction: Conjunction = 'and', not: boolean = false): Constraint => ({
+const basic: (column: string, operator: Operator, value: unknown, conjunction?: Conjunction, not?: boolean) => Constraint = (column: string, operator: Operator, value: unknown, conjunction: Conjunction = 'and', not: boolean = false): Constraint => ({
     type: 'basic',
     column,
     operator,
@@ -17,7 +17,7 @@ const basic = (column: string, operator: Operator, value: unknown, conjunction: 
 /**
  * Test a record against the given constraints.
  */
-const matches = (constraints: Constraint[], record: Record<string, unknown>): boolean => Predicate.compile(constraints)(record);
+const matches: (constraints: Constraint[], record: Record<string, unknown>) => boolean = (constraints: Constraint[], record: Record<string, unknown>): boolean => Predicate.compile(constraints)(record);
 
 describe('Predicate with no constraints', (): void => {
     test('matches every record', (): void => {
@@ -345,7 +345,7 @@ describe('Predicate like patterns cannot be made to backtrack', (): void => {
     /**
      * Time a single like comparison in milliseconds.
      */
-    const elapsed = (pattern: string, subject: string): number => {
+    const elapsed: (pattern: string, subject: string) => number = (pattern: string, subject: string): number => {
         const started: number = performance.now();
 
         matches([basic('body', 'like', pattern)], { body: subject });
@@ -373,7 +373,7 @@ describe('Predicate like matching', (): void => {
     /**
      * Determine whether a subject matches a pattern.
      */
-    const like = (pattern: string, subject: string): boolean => matches([basic('body', 'like', pattern)], { body: subject });
+    const like: (pattern: string, subject: string) => boolean = (pattern: string, subject: string): boolean => matches([basic('body', 'like', pattern)], { body: subject });
 
     test.each([
         ['a.c', 'a.c', true],

@@ -65,12 +65,12 @@ let connection: Connection;
 /**
  * Begin a query against the users table.
  */
-const users = (): Builder<User> => connection.table<User>('users');
+const users: () => Builder<User> = (): Builder<User> => connection.table<User>('users');
 
 /**
  * Get the titles a joined query returns.
  */
-const titles = async (query: Builder<Row>): Promise<(string | undefined)[]> => (await query.get()).map((row): string | undefined => row.title);
+const titles: (query: Builder<Row>) => Promise<(string | undefined)[]> = async (query: Builder<Row>): Promise<(string | undefined)[]> => (await query.get()).map((row: Row): string | undefined => row.title);
 
 beforeAll(async (): Promise<void> => {
     connection = new Connection('app', { database: 'joins', migrations: [CreateTables] });
@@ -96,7 +96,7 @@ describe('Builder.join', (): void => {
     test('keeps only the rows that match', async (): Promise<void> => {
         const rows: Row[] = await users().join<Row>('posts', 'users.id', '=', 'posts.user_id').orderBy('posts.title').get();
 
-        expect(rows.map((row): string => row.title)).toEqual(['First', 'Second', 'Third']);
+        expect(rows.map((row: Row): string => row.title)).toEqual(['First', 'Second', 'Third']);
     });
 
     test('flattens the row, letting the joined table win a collision', async (): Promise<void> => {
@@ -118,7 +118,7 @@ describe('Builder.join', (): void => {
     test('drops the rows of this table that match nothing', async (): Promise<void> => {
         const rows: Row[] = await users().join<Row>('posts', 'users.id', '=', 'posts.user_id').get();
 
-        expect(rows.map((row): string => row.name)).not.toContain('Carol');
+        expect(rows.map((row: Row): string => row.name)).not.toContain('Carol');
     });
 
     test('joins several tables in turn', async (): Promise<void> => {
@@ -150,7 +150,7 @@ describe('Builder.leftJoin', (): void => {
         const rows: Row[] = await users().leftJoin<Row>('posts', 'users.id', '=', 'posts.user_id').get();
 
         expect(rows).toHaveLength(4);
-        expect(rows.map((row): string => row.name)).toContain('Carol');
+        expect(rows.map((row: Row): string => row.name)).toContain('Carol');
     });
 
     test('nulls every column of the missing side, as SQL does', async (): Promise<void> => {
@@ -168,7 +168,7 @@ describe('Builder.leftJoin', (): void => {
             .whereNull('posts.id')
             .get();
 
-        expect(rows.map((row): string => row.name)).toEqual(['Carol']);
+        expect(rows.map((row: Row): string => row.name)).toEqual(['Carol']);
     });
 });
 
@@ -179,7 +179,7 @@ describe('Builder.rightJoin', (): void => {
             .get();
 
         expect(rows).toHaveLength(4);
-        expect(rows.map((row): string => row.name)).toContain('Carol');
+        expect(rows.map((row: Row): string => row.name)).toContain('Carol');
     });
 });
 
@@ -188,7 +188,7 @@ describe('Builder.crossJoin', (): void => {
         const rows: Row[] = await users().crossJoin<Row>('teams').get();
 
         expect(rows).toHaveLength(3);
-        expect(rows.every((row): boolean => row.label === 'core')).toEqual(true);
+        expect(rows.every((row: Row): boolean => row.label === 'core')).toEqual(true);
     });
 });
 
@@ -278,13 +278,13 @@ describe('Constraints on a joined query', (): void => {
     test('filters through a nested group', async (): Promise<void> => {
         const rows: Row[] = await users()
             .join<Row>('posts', 'users.id', '=', 'posts.user_id')
-            .where((query): void => {
+            .where((query: Builder<Row>): void => {
                 query.where('posts.title', 'First').orWhere('posts.title', 'Third');
             })
             .orderBy('posts.title')
             .get();
 
-        expect(rows.map((row): string => row.title)).toEqual(['First', 'Third']);
+        expect(rows.map((row: Row): string => row.title)).toEqual(['First', 'Third']);
     });
 
     test('compares two columns of the joined row', async (): Promise<void> => {
@@ -311,7 +311,7 @@ describe('Constraints on a joined query', (): void => {
             .whereColumn('posts.user_id', '=', 'users.team_id')
             .get();
 
-        expect(rows.map((row): string => row.name)).not.toContain('Carol');
+        expect(rows.map((row: Row): string => row.name)).not.toContain('Carol');
     });
 });
 
@@ -410,8 +410,8 @@ describe('Terminals on a joined query', (): void => {
         await users()
             .join<Row>('posts', 'users.id', '=', 'posts.user_id')
             .orderBy('posts.title')
-            .chunk(2, (rows): void => {
-                pages.push(rows.map((row): string => row.title));
+            .chunk(2, (rows: Row[]): void => {
+                pages.push(rows.map((row: Row): string => row.title));
             });
 
         expect(pages).toEqual([['First', 'Second'], ['Third']]);
@@ -433,8 +433,8 @@ describe('Joined chunking and column comparison edges', (): void => {
         const completed: boolean = await users()
             .join<Row>('posts', 'users.id', '=', 'posts.user_id')
             .orderBy('posts.title')
-            .chunk(2, (rows): boolean => {
-                pages.push(rows.map((row): string => row.title));
+            .chunk(2, (rows: Row[]): boolean => {
+                pages.push(rows.map((row: Row): string => row.title));
 
                 return false;
             });

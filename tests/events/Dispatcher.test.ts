@@ -4,7 +4,7 @@ import { Dispatcher } from '../../src/events/Dispatcher';
 describe('Dispatcher', (): void => {
     test('delivers an event to a listener', (): void => {
         const seen: string[] = [];
-        const listener = (event: Event): void => {
+        const listener: (event: Event) => void = (event: Event): void => {
             seen.push(event.type);
         };
 
@@ -17,7 +17,7 @@ describe('Dispatcher', (): void => {
 
     test('keeps a listener registered across events', (): void => {
         let count: number = 0;
-        const listener = (): void => {
+        const listener: () => void = (): void => {
             count++;
         };
 
@@ -44,7 +44,7 @@ describe('Dispatcher', (): void => {
 
     test('stops delivering to a forgotten listener', (): void => {
         let count: number = 0;
-        const listener = (): void => {
+        const listener: () => void = (): void => {
             count++;
         };
 

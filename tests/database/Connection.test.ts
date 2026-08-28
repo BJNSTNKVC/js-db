@@ -18,6 +18,7 @@ import type { MigrationConstructor, MigrationStatus } from '../../src/migrations
 import type { ColumnSchema, TableSchema } from '../../src/schema/types';
 import type { MockInstance } from 'vitest';
 import type { MigrationContext } from '../../src/migrations/Migrator';
+import type { IndexSchema } from '../../src/main';
 
 let sequence: number = 0;
 
@@ -27,7 +28,7 @@ const handles: IDBDatabase[] = [];
 /**
  * Build a connection against a uniquely named database.
  */
-const connect = (migrations: MigrationConstructor[], database: string = `connection-${++sequence}`): Connection => {
+const connect: (migrations: MigrationConstructor[], database?: string) => Connection = (migrations: MigrationConstructor[], database: string = `connection-${++sequence}`): Connection => {
     const connection: Connection = new Connection('app', { database, migrations });
 
     connections.push(connection);
@@ -38,7 +39,7 @@ const connect = (migrations: MigrationConstructor[], database: string = `connect
 /**
  * Build a migration class from an up implementation.
  */
-const migration = (name: string, up: () => void | Promise<void>): MigrationConstructor => {
+const migration: (name: string, up: () => void | Promise<void>) => MigrationConstructor = (name: string, up: () => void | Promise<void>): MigrationConstructor => {
     return class extends Migration {
         /**
          * Get the name of the migration.
@@ -83,7 +84,7 @@ const CreateTagsTable: MigrationConstructor = migration('CreateTagsTable', async
 /**
  * Read the records of a table directly, bypassing the query builder.
  */
-const records = async (connection: Connection, table: string): Promise<Record<string, unknown>[]> => {
+const records: (connection: Connection, table: string) => Promise<Record<string, unknown>[]> = async (connection: Connection, table: string): Promise<Record<string, unknown>[]> => {
     const database: IDBDatabase = await connection.open();
 
     return Request.settle(database.transaction(table, 'readonly').objectStore(table).getAll() as IDBRequest<Record<string, unknown>[]>);
@@ -92,7 +93,7 @@ const records = async (connection: Connection, table: string): Promise<Record<st
 /**
  * Write records into a table directly, bypassing the query builder.
  */
-const seed = async (connection: Connection, table: string, rows: Record<string, unknown>[]): Promise<void> => {
+const seed: (connection: Connection, table: string, rows: Record<string, unknown>[]) => Promise<void> = async (connection: Connection, table: string, rows: Record<string, unknown>[]): Promise<void> => {
     const database: IDBDatabase = await connection.open();
     const transaction: IDBTransaction = database.transaction(table, 'readwrite');
 
@@ -100,7 +101,7 @@ const seed = async (connection: Connection, table: string, rows: Record<string, 
         transaction.objectStore(table).add(row);
     }
 
-    await new Promise<void>((resolve, reject): void => {
+    await new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
         transaction.oncomplete = (): void => resolve();
         transaction.onerror = (): void => reject(transaction.error);
     });
@@ -269,7 +270,7 @@ describe('Connection schema cache', (): void => {
         expect(schema.increments).toEqual(true);
         expect(schema.timestamps).toEqual(true);
         expect(schema.columns.map((column: ColumnSchema): string => column.name)).toEqual(['id', 'name', 'email', 'age', 'created_at', 'updated_at']);
-        expect(schema.indexes.map((index): string => index.name).sort()).toEqual(['users_age_index', 'users_email_unique']);
+        expect(schema.indexes.map((index: IndexSchema): string => index.name).sort()).toEqual(['users_age_index', 'users_email_unique']);
     });
 
     test('fails for a table that does not exist', async (): Promise<void> => {
@@ -290,7 +291,7 @@ describe('Connection multi tab', (): void => {
     test('fails when another connection pins an older version', async (): Promise<void> => {
         const database: string = `connection-${++sequence}`;
 
-        const held: IDBDatabase = await new Promise<IDBDatabase>((resolve, reject): void => {
+        const held: IDBDatabase = await new Promise<IDBDatabase>((resolve: (value: IDBDatabase) => void, reject: (reason: unknown) => void): void => {
             const request: IDBOpenDBRequest = indexedDB.open(database, 1);
 
             request.onsuccess = (): void => resolve(request.result);
@@ -299,7 +300,7 @@ describe('Connection multi tab', (): void => {
 
         handles.push(held);
 
-        const blocked: Promise<void> = new Promise<void>((resolve): void => {
+        const blocked: Promise<void> = new Promise<void>((resolve: () => void): void => {
             Dispatcher.listen('db:database-blocked', (): void => resolve(), true);
         });
 
@@ -314,7 +315,7 @@ describe('Connection multi tab', (): void => {
         await connection.open();
 
         // The upgrade only completes if our versionchange handler closed the handle it holds.
-        await new Promise<void>((resolve, reject): void => {
+        await new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
             const request: IDBOpenDBRequest = indexedDB.open(database, 9);
 
             request.onsuccess = (): void => {
@@ -334,7 +335,7 @@ describe('Connection multi tab', (): void => {
 
         await connection.migrate();
 
-        await new Promise<void>((resolve, reject): void => {
+        await new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
             const request: IDBOpenDBRequest = indexedDB.open(database, 9);
 
             request.onsuccess = (): void => {
@@ -357,7 +358,7 @@ describe('Connection multi tab', (): void => {
         await connection.migrate();
         connection.disconnect();
 
-        await new Promise<void>((resolve, reject): void => {
+        await new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
             const request: IDBOpenDBRequest = indexedDB.open(database, 9);
 
             request.onsuccess = (): void => {
@@ -378,7 +379,7 @@ describe('Connection multi tab', (): void => {
 
         await connection.open();
 
-        await new Promise<void>((resolve, reject): void => {
+        await new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
             const request: IDBOpenDBRequest = indexedDB.deleteDatabase(database);
 
             request.onsuccess = (): void => resolve();
@@ -412,7 +413,7 @@ describe('Connection fresh when blocked', (): void => {
         await connection.migrate();
 
         // A raw handle with no versionchange handler will not step aside for the delete.
-        const held: IDBDatabase = await new Promise<IDBDatabase>((resolve, reject): void => {
+        const held: IDBDatabase = await new Promise<IDBDatabase>((resolve: (value: IDBDatabase) => void, reject: (reason: unknown) => void): void => {
             const request: IDBOpenDBRequest = indexedDB.open(database, 2);
 
             request.onsuccess = (): void => resolve(request.result);
@@ -429,7 +430,7 @@ describe('Connection platform failures', (): void => {
     /**
      * Build a request that fails on the next tick with the given error.
      */
-    const failing = (error: Error): IDBOpenDBRequest => {
+    const failing: (error: Error) => IDBOpenDBRequest = (error: Error): IDBOpenDBRequest => {
         const request: Partial<IDBOpenDBRequest> = { error: error as unknown as DOMException };
 
         setTimeout((): void => {
@@ -505,7 +506,7 @@ describe('Connection strictness', (): void => {
 describe('Migration transaction hazard', (): void => {
     test('fails when a migration awaits work outside the transaction', async (): Promise<void> => {
         const Slow: MigrationConstructor = migration('SlowMigration', async (): Promise<void> => {
-            await new Promise<void>((resolve): void => {
+            await new Promise<void>((resolve: () => void): void => {
                 setTimeout(resolve, 0);
             });
 
@@ -643,7 +644,7 @@ describe('Schema.table', (): void => {
     /**
      * Migrate a users table, then alter it with the given callback.
      */
-    const altered = async (callback: (table: Blueprint) => void): Promise<Connection> => {
+    const altered: (callback: (table: Blueprint) => void) => Promise<Connection> = async (callback: (table: Blueprint) => void): Promise<Connection> => {
         const database: string = `connection-${++sequence}`;
         const first: Connection = connect([CreateUsersTable], database);
 

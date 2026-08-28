@@ -50,10 +50,10 @@ let sequence: number = 0;
 /**
  * Collect the database events dispatched while the callback runs.
  */
-const recorded = async (types: string[], callback: () => Promise<unknown>): Promise<string[]> => {
+const recorded: (types: string[], callback: () => Promise<unknown>) => Promise<string[]> = async (types: string[], callback: () => Promise<unknown>): Promise<string[]> => {
     const seen: string[] = [];
     const listeners: [string, (event: Event) => void][] = types.map((type: string): [string, (event: Event) => void] => {
-        const listener = (event: Event): void => {
+        const listener: (event: Event) => void = (event: Event): void => {
             seen.push(event.type);
         };
 
@@ -278,7 +278,7 @@ describe('Transaction that outlives its request queue', (): void => {
                 await transaction.table<User>('users').insert({ name: 'Alice' });
 
                 // Awaiting a timer lets the transaction commit, which is the documented hazard.
-                await new Promise<void>((resolve): void => {
+                await new Promise<void>((resolve: () => void): void => {
                     setTimeout(resolve, 5);
                 });
 
@@ -293,7 +293,7 @@ describe('Transaction that outlives its request queue', (): void => {
         await expect(connection.transaction(async (transaction: Transaction): Promise<void> => {
             await transaction.table<User>('users').insert({ name: 'Alice' });
 
-            await new Promise<void>((resolve): void => {
+            await new Promise<void>((resolve: () => void): void => {
                 setTimeout(resolve, 5);
             });
 

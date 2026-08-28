@@ -6,7 +6,7 @@ import type { ColumnSchema, TableSchema } from '../../src/schema/types';
 /**
  * Build a column schema with the given overrides.
  */
-const column = (name: string, overrides: Partial<ColumnSchema> = {}): ColumnSchema => ({
+const column: (name: string, overrides?: Partial<ColumnSchema>) => ColumnSchema = (name: string, overrides: Partial<ColumnSchema> = {}): ColumnSchema => ({
     name,
     type      : 'integer',
     nullable  : false,
@@ -42,7 +42,7 @@ const users: TableSchema = {
 /**
  * Build a basic constraint.
  */
-const basic = (col: string, operator: Operator, value: unknown, conjunction: Conjunction = 'and', not: boolean = false): Constraint => ({
+const basic: (col: string, operator: Operator, value: unknown, conjunction?: Conjunction, not?: boolean) => Constraint = (col: string, operator: Operator, value: unknown, conjunction: Conjunction = 'and', not: boolean = false): Constraint => ({
     type: 'basic',
     column: col,
     operator,
@@ -54,7 +54,7 @@ const basic = (col: string, operator: Operator, value: unknown, conjunction: Con
 /**
  * Build an order.
  */
-const order = (col: string, direction: 'asc' | 'desc' = 'asc'): Order => ({ column: col, direction });
+const order: (col: string, direction?: "asc" | "desc") => Order = (col: string, direction: 'asc' | 'desc' = 'asc'): Order => ({ column: col, direction });
 
 describe('Planner key ranges', (): void => {
     test('drives an equality on the key path from the key', (): void => {

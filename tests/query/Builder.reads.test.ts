@@ -70,12 +70,12 @@ let connection: Connection;
 /**
  * Begin a query against the seeded users table.
  */
-const users = (): Builder<User> => connection.table<User>('users');
+const users: () => Builder<User> = (): Builder<User> => connection.table<User>('users');
 
 /**
  * Get the names of the records a query returns.
  */
-const names = async (query: Builder<User>): Promise<string[]> => (await query.get()).map((user: User): string => user.name);
+const names: (query: Builder<User>) => Promise<string[]> = async (query: Builder<User>): Promise<string[]> => (await query.get()).map((user: User): string => user.name);
 
 beforeAll(async (): Promise<void> => {
     connection = new Connection('app', { database: 'builder-reads', migrations: [CreateUsersTable] });
@@ -93,7 +93,7 @@ beforeAll(async (): Promise<void> => {
         transaction.objectStore('logs').add(log);
     }
 
-    await new Promise<void>((resolve, reject): void => {
+    await new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
         transaction.oncomplete = (): void => resolve();
         transaction.onerror = (): void => reject(transaction.error);
     });

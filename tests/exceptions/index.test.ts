@@ -16,7 +16,7 @@ describe('Exceptions with a default message', (): void => {
     test.each([
         [SchemaException, 'SchemaException', 'Schema operation failed.'],
         [RecordsNotFoundException, 'RecordsNotFoundException', 'No records found.'],
-    ] as const)('%o carries a default message and its own name', (Exception, name: string, message: string): void => {
+    ] as const)('%o carries a default message and its own name', (Exception: typeof SchemaException | typeof RecordsNotFoundException, name: string, message: string): void => {
         const exception: Error = new Exception();
 
         expect(exception).toBeInstanceOf(Error);
@@ -27,7 +27,7 @@ describe('Exceptions with a default message', (): void => {
     test.each([
         [SchemaException, 'SchemaException'],
         [RecordsNotFoundException, 'RecordsNotFoundException'],
-    ] as const)('%o accepts an overridden message', (Exception, name: string): void => {
+    ] as const)('%o accepts an overridden message', (Exception: typeof SchemaException | typeof RecordsNotFoundException, name: string): void => {
         const exception: Error = new Exception('Custom.');
 
         expect(exception.message).toEqual('Custom.');

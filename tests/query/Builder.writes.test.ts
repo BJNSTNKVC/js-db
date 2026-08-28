@@ -68,7 +68,7 @@ let sequence: number = 0;
 /**
  * Begin a query against the users table.
  */
-const users = (): Builder<User> => connection.table<User>('users');
+const users: () => Builder<User> = (): Builder<User> => connection.table<User>('users');
 
 beforeEach(async (): Promise<void> => {
     connection?.disconnect();
@@ -207,7 +207,7 @@ describe('Builder update', (): void => {
     test('touches the update timestamp', async (): Promise<void> => {
         const before: Date = (await users().where('name', 'Alice').firstOrFail()).updated_at as Date;
 
-        await new Promise<void>((resolve): void => {
+        await new Promise<void>((resolve: () => void): void => {
             setTimeout(resolve, 5);
         });
 

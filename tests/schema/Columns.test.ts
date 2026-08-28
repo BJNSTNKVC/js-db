@@ -37,7 +37,7 @@ let sequence: number = 0;
 /**
  * Begin a query against the items table.
  */
-const items = (): Builder<Item> => connection.table<Item>('items');
+const items: () => Builder<Item> = (): Builder<Item> => connection.table<Item>('items');
 
 beforeEach(async (): Promise<void> => {
     connection?.disconnect();
@@ -172,7 +172,7 @@ describe('Enumerated columns on a loose connection', (): void => {
     /**
      * Build a table schema holding a single enumerated column.
      */
-    const schema = (nullable: boolean): TableSchema => ({
+    const schema: (nullable: boolean) => TableSchema = (nullable: boolean): TableSchema => ({
         table     : 'items',
         key       : 'id',
         increments: true,
@@ -222,7 +222,7 @@ describe('Blueprint.enum over an enum or a constant object', (): void => {
     /**
      * Get the values a declared enumerated column accepts.
      */
-    const accepted = (values: Enumerable): string[] | null => {
+    const accepted: (values: Enumerable) => string[] | null = (values: Enumerable): string[] | null => {
         const blueprint: Blueprint = new Blueprint('items');
 
         blueprint.enum('status', values);

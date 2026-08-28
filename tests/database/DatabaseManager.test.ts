@@ -10,6 +10,7 @@ import type { QueryExecuted } from '../../src/events';
 import type { MigrationStatus } from '../../src/migrations/types';
 import type { QueryLogEntry } from '../../src/database/types';
 import type { Transaction } from '../../src/database/Transaction';
+import type { ColumnSchema } from '../../src/main';
 
 interface User {
     id: number;
@@ -47,7 +48,7 @@ let sequence: number = 0;
 /**
  * Register a configuration against uniquely named databases.
  */
-const configure = (): void => {
+const configure: () => void = (): void => {
     const suffix: number = ++sequence;
 
     DB.configure({
@@ -182,7 +183,7 @@ describe('DB schema information', (): void => {
     });
 
     test('lists the columns', async (): Promise<void> => {
-        expect((await DB.getColumns('users')).map((column): string => column.name)).toEqual(['id', 'name', 'role']);
+        expect((await DB.getColumns('users')).map((column: ColumnSchema): string => column.name)).toEqual(['id', 'name', 'role']);
     });
 
     test('lists the indexes', async (): Promise<void> => {
@@ -195,7 +196,7 @@ describe('DB schema information', (): void => {
         expect(await DB.hasTable('reports', 'reporting')).toEqual(true);
         expect(await DB.hasColumn('reports', 'title', 'reporting')).toEqual(true);
         expect(await DB.getTables('reporting')).toEqual(['reports']);
-        expect((await DB.getColumns('reports', 'reporting')).map((column): string => column.name)).toEqual(['id', 'title']);
+        expect((await DB.getColumns('reports', 'reporting')).map((column: ColumnSchema): string => column.name)).toEqual(['id', 'title']);
         expect(await DB.getIndexes('reports', 'reporting')).toEqual([]);
     });
 });
@@ -218,7 +219,7 @@ describe('Schema facade reads', (): void => {
     });
 
     test('lists the columns', async (): Promise<void> => {
-        expect((await Schema.getColumns('users')).map((column): string => column.name)).toEqual(['id', 'name', 'role']);
+        expect((await Schema.getColumns('users')).map((column: ColumnSchema): string => column.name)).toEqual(['id', 'name', 'role']);
     });
 
     test('lists the indexes', async (): Promise<void> => {
@@ -267,7 +268,7 @@ describe('DB.disconnect and DB.purge', (): void => {
 describe('DB.listen', (): void => {
     test('keeps a listener registered across events', async (): Promise<void> => {
         const seen: string[] = [];
-        const listener = (event: QueryExecuted): void => {
+        const listener: (event: QueryExecuted) => void = (event: QueryExecuted): void => {
             seen.push(event.plan);
         };
 
@@ -298,7 +299,7 @@ describe('DB.listen', (): void => {
 
     test('stops delivering to a forgotten listener', async (): Promise<void> => {
         let count: number = 0;
-        const listener = (): void => {
+        const listener: () => void = (): void => {
             count++;
         };
 

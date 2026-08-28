@@ -2,11 +2,12 @@ import { describe, expect, test } from 'vitest';
 import { Blueprint } from '../../src/schema/Blueprint';
 import { SchemaException } from '../../src/exceptions';
 import type { BlueprintOperations, TableSchema } from '../../src/schema/types';
+import type { IndexSchema, ColumnSchema } from '../../src/main';
 
 /**
  * Build the schema produced by a create-mode blueprint.
  */
-const schema = (callback: (table: Blueprint) => void): TableSchema => {
+const schema: (callback: (table: Blueprint) => void) => TableSchema = (callback: (table: Blueprint) => void): TableSchema => {
     const blueprint: Blueprint = new Blueprint('users');
 
     callback(blueprint);
@@ -26,7 +27,7 @@ describe('Blueprint column types', (): void => {
             table.json('meta');
         });
 
-        expect(table.columns.map((column): string => `${column.name}:${column.type}`)).toEqual([
+        expect(table.columns.map((column: ColumnSchema): string => `${column.name}:${column.type}`)).toEqual([
             'name:string',
             'age:integer',
             'rating:float',
@@ -220,8 +221,8 @@ describe('Blueprint operations in create mode', (): void => {
 
         const operations: BlueprintOperations = blueprint.operations();
 
-        expect(operations.added.map((column): string => column.name)).toEqual(['id', 'email']);
-        expect(operations.indexed.map((index): string => index.name)).toEqual(['users_email_unique']);
+        expect(operations.added.map((column: ColumnSchema): string => column.name)).toEqual(['id', 'email']);
+        expect(operations.indexed.map((index: IndexSchema): string => index.name)).toEqual(['users_email_unique']);
         expect(operations.dropped).toEqual([]);
         expect(operations.renamed).toEqual([]);
         expect(operations.unindexed).toEqual([]);
@@ -249,8 +250,8 @@ describe('Blueprint operations in alter mode', (): void => {
 
         blueprint.integer('age').default(0);
 
-        expect(blueprint.toSchema().columns.map((column): string => column.name)).toEqual(['id', 'name', 'legacy', 'age']);
-        expect(blueprint.operations().added.map((column): string => column.name)).toEqual(['age']);
+        expect(blueprint.toSchema().columns.map((column: ColumnSchema): string => column.name)).toEqual(['id', 'name', 'legacy', 'age']);
+        expect(blueprint.operations().added.map((column: ColumnSchema): string => column.name)).toEqual(['age']);
     });
 
     test('preserves the existing key and increments', (): void => {
@@ -265,7 +266,7 @@ describe('Blueprint operations in alter mode', (): void => {
 
         blueprint.dropColumn('legacy');
 
-        expect(blueprint.toSchema().columns.map((column): string => column.name)).toEqual(['id', 'name']);
+        expect(blueprint.toSchema().columns.map((column: ColumnSchema): string => column.name)).toEqual(['id', 'name']);
         expect(blueprint.operations().dropped).toEqual(['legacy']);
     });
 
@@ -282,7 +283,7 @@ describe('Blueprint operations in alter mode', (): void => {
 
         blueprint.renameColumn('legacy', 'archived');
 
-        expect(blueprint.toSchema().columns.map((column): string => column.name)).toEqual(['id', 'name', 'archived']);
+        expect(blueprint.toSchema().columns.map((column: ColumnSchema): string => column.name)).toEqual(['id', 'name', 'archived']);
         expect(blueprint.operations().renamed).toEqual([{ from: 'legacy', to: 'archived' }]);
     });
 
@@ -318,8 +319,8 @@ describe('Blueprint operations in alter mode', (): void => {
 
         blueprint.index(['legacy']);
 
-        expect(blueprint.toSchema().indexes.map((index): string => index.name)).toEqual(['users_name_index', 'users_legacy_index']);
-        expect(blueprint.operations().indexed.map((index): string => index.name)).toEqual(['users_legacy_index']);
+        expect(blueprint.toSchema().indexes.map((index: IndexSchema): string => index.name)).toEqual(['users_name_index', 'users_legacy_index']);
+        expect(blueprint.operations().indexed.map((index: IndexSchema): string => index.name)).toEqual(['users_legacy_index']);
     });
 
     test('rejects an added column that already exists', (): void => {
