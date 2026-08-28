@@ -47,6 +47,16 @@ Declare your connections once, at module scope, then migrate when the app boots:
 ```ts
 import { DB, Schema, Migration, type Blueprint } from '@bjnstnkvc/db';
 
+interface User {
+    id: number;
+    name: string;
+    email: string;
+    age: number | null;
+    role: string;
+    created_at: Date | null;
+    updated_at: Date | null;
+}
+
 class CreateUsersTable extends Migration {
     /**
      * Run the migration.
@@ -57,6 +67,7 @@ class CreateUsersTable extends Migration {
             table.string('name');
             table.string('email').unique();
             table.integer('age').nullable().index();
+            table.string('role').default('member').index();
             table.timestamps();
         });
     }
@@ -76,6 +87,10 @@ DB.configure({
 
 await DB.migrate('app');
 ```
+
+`User` is your own interface describing a row of the table. Nothing in this package generates it,
+and every example below passes it as `DB.table<User>('users')` so the builder can type its
+constraints, its return values and its aggregate keys.
 
 | Option | Meaning |
 | --- | --- |
@@ -315,6 +330,13 @@ await Schema.table('users', (table: Blueprint): void => {
 that scale describes. A price with two places is written as 1999, not 19.99:
 
 ```ts
+interface Product {
+    id: number;
+    name: string;
+    price: number;
+    weight: number;
+}
+
 await Schema.create('products', (table: Blueprint): void => {
     table.id();
     table.string('name');
@@ -387,13 +409,12 @@ const columns: ColumnSchema[] = await Schema.getColumns('users');
 const roles: string[] = columns.find((column: ColumnSchema): boolean => column.name === 'role')!.values!;
 ```
 
-TypeScript is not involved in the check. Declare the column as a union on your row type if you want
+TypeScript is not involved in the check. Narrow the column to a union on your row type if you want
 the compiler to help as well:
 
 ```ts
 interface User {
-    id: number;
-    email: string;
+    // ...
     role: 'admin' | 'editor' | 'member';
 }
 ```
@@ -420,14 +441,6 @@ await Schema.connection('reporting').hasTable('reports');
 Chaining is synchronous; terminals return promises.
 
 ```ts
-interface User {
-    id: number;
-    name: string;
-    email: string;
-    age: number | null;
-    role: string;
-}
-
 const users: User[] = await DB.table<User>('users')
     .where('age', '>=', 18)
     .whereIn('role', ['admin', 'owner'])
