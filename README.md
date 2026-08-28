@@ -536,6 +536,17 @@ Constraints follow SQL's three-valued logic: a comparison against `null` is unkn
 unknown leaves it unknown. So a record whose `age` is `null` satisfies neither
 `whereBetween('age', [18, 65])` nor `whereNotBetween('age', [18, 65])`. Only `whereNull` matches it.
 
+`like` and `not like` take SQL's wildcards, where `%` matches any run of characters and `_` matches
+exactly one. Both are case insensitive, both cross newlines, and a backslash escapes a wildcard so
+`'100\\%'` matches a literal percent. Everything else in the pattern is a literal, so a pattern full
+of regular expression syntax matches only itself.
+
+The pattern is matched by a direct scan rather than a regular expression, which matters if your
+patterns come from a search box. A regular expression compiled from `%%%%%` backtracks over every
+way of splitting the value between the wildcards, and that is exponential in their number. The scan
+walks the value once per wildcard instead, so a hostile or careless pattern costs time in proportion
+to its length rather than freezing the tab.
+
 #### Shaping
 
 ```ts

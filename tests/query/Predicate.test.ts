@@ -340,3 +340,86 @@ describe('Predicate nested groups', (): void => {
         expect(matches(constraints, { a: 1 })).toEqual(true);
     });
 });
+
+describe('Predicate like patterns cannot be made to backtrack', (): void => {
+    /**
+     * Time a single like comparison in milliseconds.
+     */
+    const elapsed = (pattern: string, subject: string): number => {
+        const started: number = performance.now();
+
+        matches([basic('body', 'like', pattern)], { body: subject });
+
+        return performance.now() - started;
+    };
+
+    test('stays fast for a run of wildcards that cannot match', (): void => {
+        // The regular expression this replaced compiled these into .*.*.*.*.* and took 17 seconds.
+        expect(elapsed('%%%%%z', 'a'.repeat(200))).toBeLessThan(1000);
+    });
+
+    test('stays fast for wildcards separated by single character matches', (): void => {
+        // Collapsing a run of wildcards alone would not have saved this shape.
+        expect(elapsed('%_%_%_%_%_z', 'a'.repeat(200))).toBeLessThan(1000);
+    });
+
+    test('a run of wildcards matches what a single one matches', (): void => {
+        expect(matches([basic('body', 'like', '%%%world')], { body: 'hello world' })).toEqual(true);
+        expect(matches([basic('body', 'like', '%%%world')], { body: 'hello there' })).toEqual(false);
+    });
+});
+
+describe('Predicate like matching', (): void => {
+    /**
+     * Determine whether a subject matches a pattern.
+     */
+    const like = (pattern: string, subject: string): boolean => matches([basic('body', 'like', pattern)], { body: subject });
+
+    test.each([
+        ['a.c', 'a.c', true],
+        ['a.c', 'abc', false],
+        ['.*', 'anything', false],
+        ['(a|b)', 'a', false],
+        ['[a-z]', 'a', false],
+        ['a{1,2}', 'aa', false],
+        ['a+', 'aa', false],
+        ['a$', 'a', false],
+    ] as [string, string, boolean][])('treats %s as a literal against %s', (pattern: string, subject: string, expected: boolean): void => {
+        expect(like(pattern, subject)).toEqual(expected);
+    });
+
+    test('anchors at both ends', (): void => {
+        expect(like('world', 'hello world')).toEqual(false);
+        expect(like('%world', 'hello world')).toEqual(true);
+        expect(like('hello%', 'hello world')).toEqual(true);
+    });
+
+    test('matches an underscore against exactly one character', (): void => {
+        expect(like('a_c', 'abc')).toEqual(true);
+        expect(like('a_c', 'ac')).toEqual(false);
+        expect(like('a_c', 'abbc')).toEqual(false);
+    });
+
+    test('ignores case on both sides', (): void => {
+        expect(like('HELLO%', 'hello world')).toEqual(true);
+        expect(like('%WORLD', 'HELLO WORLD')).toEqual(true);
+    });
+
+    test('matches a wildcard across a newline', (): void => {
+        expect(like('%world', 'hello\nworld')).toEqual(true);
+        expect(like('a_c', 'a\nc')).toEqual(true);
+    });
+
+    test('matches an empty subject only against wildcards', (): void => {
+        expect(like('%', '')).toEqual(true);
+        expect(like('%%%', '')).toEqual(true);
+        expect(like('_', '')).toEqual(false);
+        expect(like('', '')).toEqual(true);
+        expect(like('', 'a')).toEqual(false);
+    });
+
+    test('matches a wildcard between literals', (): void => {
+        expect(like('h%d', 'hello world')).toEqual(true);
+        expect(like('h%z', 'hello world')).toEqual(false);
+    });
+});

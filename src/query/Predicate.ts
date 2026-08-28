@@ -1,6 +1,9 @@
 import type { Constraint, DatePart, Operator } from './types';
 
-const METACHARACTERS: RegExp = /[.*+?^${}()|[\]\\]/g;
+interface LikeToken {
+    kind: 'any' | 'one' | 'literal';
+    value: string;
+}
 
 export class Predicate {
     /**
@@ -112,7 +115,7 @@ export class Predicate {
      */
     static #compare(held: unknown, operator: Operator, given: unknown): boolean {
         if (operator === 'like' || operator === 'not like') {
-            const matched: boolean = typeof held === 'string' && this.#pattern(String(given)).test(held);
+            const matched: boolean = typeof held === 'string' && this.#like(String(given), held);
 
             return operator === 'like' ? matched : !matched;
         }
@@ -157,36 +160,93 @@ export class Predicate {
     }
 
     /**
-     * Translate a like pattern into a case insensitive regular expression.
+     * Determine whether a subject matches a like pattern.
      */
-    static #pattern(pattern: string): RegExp {
-        let source: string = '';
+    static #like(pattern: string, subject: string): boolean {
+        const tokens: LikeToken[] = this.#tokens(pattern);
+
+        let token: number = 0;
+        let index: number = 0;
+        let wildcard: number = -1;
+        let resume: number = 0;
+
+        // A greedy walk carrying a single backtrack point. The regular expression this replaces
+        // compiled `%%%%%` into `.*.*.*.*.*`, and adjacent unbounded stars made the engine retry
+        // every division of the subject between them, which is exponential in the number of stars.
+        while (index < subject.length) {
+            const current: LikeToken | undefined = tokens[token];
+
+            if (current !== undefined && current.kind === 'any') {
+                wildcard = token;
+                resume = index;
+                token++;
+
+                continue;
+            }
+
+            // Lowercasing one character at a time rather than the whole subject, because a character
+            // whose lower case is longer than itself would otherwise shift every index after it.
+            if (current !== undefined && (current.kind === 'one' || current.value === (subject[index] as string).toLowerCase())) {
+                token++;
+                index++;
+
+                continue;
+            }
+
+            if (wildcard === -1) {
+                return false;
+            }
+
+            // The last wildcard gives up one more character and the walk resumes from there.
+            token = wildcard + 1;
+            resume++;
+            index = resume;
+        }
+
+        // Only trailing wildcards may be left over, since they match an empty remainder.
+        while (tokens[token]?.kind === 'any') {
+            token++;
+        }
+
+        return token === tokens.length;
+    }
+
+    /**
+     * Reduce a like pattern to the tokens it matches by.
+     */
+    static #tokens(pattern: string): LikeToken[] {
+        const tokens: LikeToken[] = [];
 
         for (let index: number = 0; index < pattern.length; index++) {
             const character: string = pattern[index] as string;
 
+            // A backslash escapes a wildcard, so a pattern can match a literal % or _.
             if (character === '\\' && (pattern[index + 1] === '%' || pattern[index + 1] === '_')) {
-                source += (pattern[index + 1] as string).replace(METACHARACTERS, '\\$&');
+                tokens.push({ kind: 'literal', value: (pattern[index + 1] as string).toLowerCase() });
                 index++;
 
                 continue;
             }
 
             if (character === '%') {
-                source += '.*';
+                // A run of wildcards matches exactly what one matches, so the extras are dropped
+                // rather than kept as backtrack points that could never change the outcome.
+                if (tokens.at(-1)?.kind !== 'any') {
+                    tokens.push({ kind: 'any', value: '' });
+                }
 
                 continue;
             }
 
             if (character === '_') {
-                source += '.';
+                tokens.push({ kind: 'one', value: '' });
 
                 continue;
             }
 
-            source += character.replace(METACHARACTERS, '\\$&');
+            tokens.push({ kind: 'literal', value: character.toLowerCase() });
         }
 
-        return new RegExp(`^${source}$`, 'i');
+        return tokens;
     }
 }
