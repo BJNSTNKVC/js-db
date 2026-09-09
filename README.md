@@ -326,9 +326,71 @@ Everything above makes a seeder safe to run repeatedly. None of it makes a seede
 against data a user owns, and that limit is structural rather than a gap in this package.
 
 A seeder cannot distinguish a row the user deleted from a row it never wrote, because both are
-simply absent. An idempotent seeder therefore puts back whatever the user removed. Suppose it
-installs default settings keyed by name, and records a digest of them so it re-runs only when the
-defaults actually change:
+simply absent. An idempotent seeder therefore puts back whatever the user removed.
+
+The examples below share these shapes. `settings` holds the configuration, `seeds` records which
+seeder last ran and what it wrote, and `dismissed` records the keys the user removed on purpose:
+
+```ts
+interface Setting {
+    id: number;
+    key: string;
+    value: string;
+}
+
+interface Seed {
+    seeder: string;
+    digest: string;
+}
+
+interface Dismissed {
+    key: string;
+}
+
+type Default = Omit<Setting, 'id'>;
+
+const DEFAULTS: Default[] = [
+    { key: 'theme', value: 'dark' },
+    { key: 'locale', value: 'en' },
+];
+
+const DIGEST: string = 'v1';
+```
+
+Those three are your tables, so a migration creates them like any other. This package creates only
+`migrations` and `schema`, which is why those two names are [reserved](#reserved-tables) and nothing
+else is made for you:
+
+```ts
+class CreateSettingsTables extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        await Schema.create('settings', (table: Blueprint): void => {
+            table.id();
+            table.string('key').unique();
+            table.string('value');
+        });
+
+        await Schema.create('seeds', (table: Blueprint): void => {
+            table.string('seeder').primary();
+            table.string('digest');
+        });
+
+        await Schema.create('dismissed', (table: Blueprint): void => {
+            table.string('key').primary();
+        });
+    }
+}
+```
+
+The indexes are not decoration. `upsert` needs its conflict target to be the key path or a unique
+index, so `key` on `settings` is unique and `seeder` and `key` are the key paths of the other two.
+Without them each `upsert` below would throw `SchemaException`.
+
+Suppose a seeder installs those defaults, and records the digest so it re-runs only when they
+actually change:
 
 ```ts
 class ConfigSeeder extends Seeder {
@@ -365,12 +427,14 @@ There are two ways out, and neither of them is a seeder.
 **Keep the defaults in code.** Store only what the user changed, and merge when reading:
 
 ```ts
-const DEFAULTS: Record<string, string> = { theme: 'dark', locale: 'en', currency: 'GBP' };
-
 async function settings(): Promise<Record<string, string>> {
+    const defaults: Record<string, string> = Object.fromEntries(
+        DEFAULTS.map((row: Default): [string, string] => [row.key, row.value]),
+    );
+
     const overrides: Record<string, string> = await DB.table<Setting>('settings').pluck<string>('value', 'key');
 
-    return { ...DEFAULTS, ...overrides };
+    return { ...defaults, ...overrides };
 }
 ```
 
@@ -388,7 +452,7 @@ class ConfigSeeder extends Seeder {
      */
     override async run(): Promise<void> {
         const dismissed: string[] = await DB.table<Dismissed>('dismissed').pluck<string>('key');
-        const wanted: Setting[] = DEFAULTS.filter((row: Setting): boolean => !dismissed.includes(row.key));
+        const wanted: Default[] = DEFAULTS.filter((row: Default): boolean => !dismissed.includes(row.key));
 
         await DB.table<Setting>('settings').upsert(wanted, 'key');
     }
