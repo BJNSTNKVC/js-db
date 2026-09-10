@@ -74,7 +74,7 @@ export class Joiner {
     static #hashable(clause: JoinClause): boolean {
         const condition: JoinCondition | undefined = clause.conditions[0];
 
-        return clause.conditions.length === 1 && condition !== undefined && condition.operator === '=';
+        return clause.conditions.length === 1 && condition?.operator === '=';
     }
 
     /**

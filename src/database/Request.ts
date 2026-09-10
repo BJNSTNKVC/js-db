@@ -56,7 +56,7 @@ export class Request {
     static translate(error: DOMException | null): unknown {
         // A full origin is the likeliest failure a browser database hits, and the platform reports
         // it with no hint that the fix is freeing space rather than changing the query.
-        if (error !== null && error.name === 'QuotaExceededError') {
+        if (error?.name === 'QuotaExceededError') {
             return new QuotaExceededException();
         }
 

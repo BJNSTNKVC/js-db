@@ -168,7 +168,7 @@ export class Planner {
 
         const column: ColumnSchema | undefined = schema.columns.find((candidate: ColumnSchema): boolean => candidate.name === order.column);
 
-        if (column !== undefined && column.nullable) {
+        if (column?.nullable) {
             return null;
         }
 

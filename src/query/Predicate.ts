@@ -176,7 +176,7 @@ export class Predicate {
         while (index < subject.length) {
             const current: LikeToken | undefined = tokens[token];
 
-            if (current !== undefined && current.kind === 'any') {
+            if (current?.kind === 'any') {
                 wildcard = token;
                 resume = index;
                 token++;
@@ -186,7 +186,7 @@ export class Predicate {
 
             // Lowercasing one character at a time rather than the whole subject, because a character
             // whose lower case is longer than itself would otherwise shift every index after it.
-            if (current !== undefined && (current.kind === 'one' || current.value === (subject[index] as string).toLowerCase())) {
+            if (current?.kind === 'one' || current?.value === (subject[index] as string).toLowerCase()) {
                 token++;
                 index++;
 
