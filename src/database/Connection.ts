@@ -1,4 +1,13 @@
-import { DatabaseBlocked, SeederEnded, SeederStarted, SeedingEnded, SeedingStarted, TransactionBeginning, TransactionCommitted, TransactionRolledBack } from '../events';
+import {
+    DatabaseBlocked,
+    SeederEnded,
+    SeederStarted,
+    SeedingEnded,
+    SeedingStarted,
+    TransactionBeginning,
+    TransactionCommitted,
+    TransactionRolledBack
+} from '../events';
 import { Dispatcher } from '../events/Dispatcher';
 import { DatabaseBlockedException, MigrationMismatchException, TableNotFoundException } from '../exceptions';
 import { Migrator } from '../migrations/Migrator';
@@ -368,20 +377,37 @@ export class Connection {
             let failure: unknown = null;
 
             request.onupgradeneeded = (event: IDBVersionChangeEvent): void => {
+                const transaction: IDBTransaction = request.transaction as IDBTransaction;
+
+                // The request keeps hold of the transaction for a tick after it finishes, so the
+                // handle alone does not say whether there is still anything to abort.
+                let live: boolean = true;
+
+                const closed: () => void = (): void => {
+                    live = false;
+                };
+
+                transaction.addEventListener('complete', closed);
+                transaction.addEventListener('abort', closed);
+
                 runner = Migrator.run(
                     this.#name,
                     request.result,
-                    request.transaction as IDBTransaction,
+                    transaction,
                     migrations,
                     Migrator.pending(event.oldVersion),
                     new Date(),
                 );
 
-                // The transaction is nulled once it finishes, so it is only ever aborted while live.
+                // Aborting is what rolls the schema back, and a finished transaction
+                // cannot be aborted. A migration that failed after the commit has
+                // nothing left to roll back.
                 runner.catch((error: unknown): void => {
                     failure = error;
 
-                    request.transaction?.abort();
+                    if (live) {
+                        transaction.abort();
+                    }
                 });
             };
 
