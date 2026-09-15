@@ -1,6 +1,6 @@
 # DB
 
-A database layer for IndexedDB, with an API modelled on [Laravel's](https://laravel.com/docs/12.x/database): a `DB` class, a fluent query builder, a schema builder and forward-only migrations that run when your app boots.
+A database layer for IndexedDB, with an API modeled on [Laravel's](https://laravel.com/docs/12.x/database): a `DB` class, a fluent query builder, a schema builder and forward-only migrations that run when your app boots.
 
 The method names and their semantics follow Laravel closely enough that the docs are worth reading side by side, and each section below links the page it draws from. It is not a port: IndexedDB is a key-value store with no query language, so the places where behaviour has to differ are called out where they arise. This project is not affiliated with the Laravel project.
 
@@ -192,7 +192,7 @@ Resolves to one entry per registered migration:
 `DB.status(name)` never migrates as a side effect, so you can call it before `DB.migrate(name)` to
 see what is pending.
 
-> Modelled on Laravel's [Migrations](https://laravel.com/docs/12.x/migrations). These only run
+> modeled on Laravel's [Migrations](https://laravel.com/docs/12.x/migrations). These only run
 > forward, and they are registered in the connection config rather than discovered from a directory.
 
 ### Seeding
@@ -478,7 +478,7 @@ await DB.fresh('app');
 await DB.fresh('app', { seed: true });
 ```
 
-> Modelled on Laravel's [Database: Seeding](https://laravel.com/docs/12.x/seeding), down to the
+> modeled on Laravel's [Database: Seeding](https://laravel.com/docs/12.x/seeding), down to the
 > seeded connection standing in as the default for the duration of the run.
 
 ### Defining a schema
@@ -665,7 +665,7 @@ await Schema.getIndexes('users');
 await Schema.connection('reporting').hasTable('reports');
 ```
 
-> Modelled on Laravel's [Migrations: Tables](https://laravel.com/docs/12.x/migrations#tables).
+> modeled on Laravel's [Migrations: Tables](https://laravel.com/docs/12.x/migrations#tables).
 > Column types are metadata this package enforces at write time, since IndexedDB stores whole objects
 > and checks nothing itself.
 
@@ -852,7 +852,7 @@ The key path may not be updated, so `update`, `upsert` and `increment` all refus
 when an index drives the query and key order otherwise. Pair them with an indexed `orderBy` if you
 need a defined order.
 
-> Modelled on Laravel's [Database: Query Builder](https://laravel.com/docs/12.x/queries). The method
+> modeled on Laravel's [Database: Query Builder](https://laravel.com/docs/12.x/queries). The method
 > names and their semantics match, and every terminal is asynchronous because IndexedDB is.
 
 ### Joins
@@ -959,7 +959,7 @@ covers it, and `chunk` slices the materialised result rather than walking keys.
 await DB.table('users').whereColumn('updated_at', '>', 'created_at').get();
 ```
 
-> Modelled on Laravel's [Query Builder: Joins](https://laravel.com/docs/12.x/queries#joins). Rows
+> modeled on Laravel's [Query Builder: Joins](https://laravel.com/docs/12.x/queries#joins). Rows
 > stay flat as they do in Laravel, and the join itself runs in memory because IndexedDB has none.
 
 ### Grouping
@@ -1032,7 +1032,7 @@ await DB.table<User>('users')
 Grouping happens in memory after the records are fetched, so the planner still applies to the
 `where` clauses that select them, and a grouped query reports the plan of that underlying fetch.
 
-> Modelled on Laravel's [Query Builder: Grouping](https://laravel.com/docs/12.x/queries#groupby-having),
+> modeled on Laravel's [Query Builder: Grouping](https://laravel.com/docs/12.x/queries#groupby-having),
 > with the aggregates named in a typed object instead of raw SQL.
 
 ### Query plans
@@ -1092,7 +1092,7 @@ commits behind your back the first time you await anything outside it, so offeri
 offering a trap. The same rule as migrations applies here: the callback may only await operations
 from this package.
 
-> Modelled on Laravel's [Database: Transactions](https://laravel.com/docs/12.x/database#database-transactions).
+> modeled on Laravel's [Database: Transactions](https://laravel.com/docs/12.x/database#database-transactions).
 > The tables have to be declared up front, because an IndexedDB transaction fixes its scope when it
 > opens.
 
@@ -1148,7 +1148,7 @@ DB.disableQueryLog();
 
 `DB.logging()` then returns `false`, and `DB.getQueryLog()` an empty array.
 
-> Modelled on Laravel's [Database: Listening for Query Events](https://laravel.com/docs/12.x/database#listening-for-query-events),
+> modeled on Laravel's [Database: Listening for Query Events](https://laravel.com/docs/12.x/database#listening-for-query-events),
 > with the same enable, get and flush surface, dispatched as a browser event.
 
 ### Multiple tabs
@@ -1178,7 +1178,7 @@ DB.purge('app');
 | `disconnect(name)` | Close the handle, leaving the connection registered so the next query reopens it |
 | `purge(name)` | Close it and drop it, so the next resolve rebuilds it from configuration |
 
-> Modelled on Laravel's [Database: Multiple Connections](https://laravel.com/docs/12.x/database#using-multiple-database-connections),
+> modeled on Laravel's [Database: Multiple Connections](https://laravel.com/docs/12.x/database#using-multiple-database-connections),
 > resolved by name and cached, with one IndexedDB database behind each.
 
 ### Storage quota
