@@ -506,8 +506,14 @@ describe('Connection strictness', (): void => {
 describe('Migration transaction hazard', (): void => {
     test('fails when a migration awaits work outside the transaction', async (): Promise<void> => {
         const Slow: MigrationConstructor = migration('SlowMigration', async (): Promise<void> => {
+            const context: MigrationContext = Migrator.alive();
+
+            // A migration would really await a fetch or a timer, and the transaction commits under it
+            // either way. A timer is a race though, since it and the commit are both macrotasks, so
+            // the transaction's own event is awaited here to establish the same state exactly.
             await new Promise<void>((resolve: () => void): void => {
-                setTimeout(resolve, 0);
+                context.transaction.addEventListener('complete', (): void => resolve());
+                context.transaction.addEventListener('abort', (): void => resolve());
             });
 
             await Schema.create('slow', (table: Blueprint): void => {
