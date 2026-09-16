@@ -94,13 +94,13 @@ await DB.migrate('app');
 and every example below passes it as `DB.table<User>('users')` so the builder can type its
 constraints, its return values and its aggregate keys.
 
-| Option | Meaning |
-| --- | --- |
-| `default` | The connection used when none is named |
-| `connections[name].database` | The IndexedDB database name |
-| `connections[name].migrations` | Ordered migration classes. Their order **is** the schema version. |
-| `connections[name].seeders` | Ordered seeder classes, run by `DB.seed(name)`. See [Seeding](#seeding). |
-| `connections[name].strict` | Defaults to `true`. Nullability violations and uncoercible values throw. `false` writes `null` instead. |
+| Option                         | Meaning                                                                                                 |
+|--------------------------------|---------------------------------------------------------------------------------------------------------|
+| `default`                      | The connection used when none is named                                                                  |
+| `connections[name].database`   | The IndexedDB database name                                                                             |
+| `connections[name].migrations` | Ordered migration classes. Their order **is** the schema version.                                       |
+| `connections[name].seeders`    | Ordered seeder classes, run by `DB.seed(name)`. See [Seeding](#seeding).                                |
+| `connections[name].strict`     | Defaults to `true`. Nullability violations and uncoercible values throw. `false` writes `null` instead. |
 
 `DB.migrate(name)` is idempotent. It opens the database at the version your migrations ask for, and
 when that already matches, nothing runs. Calling it on every boot is the intended usage, and there
@@ -144,8 +144,10 @@ start over, `DB.fresh(name)` deletes the database and replays every migration.
 Migrations may only ever be **appended**. Reordering them, or removing one that already ran, throws
 `MigrationMismatchException` rather than corrupting the schema.
 
-The recorded name defaults to the class name, so a bundler that mangles class names will look like a
-reordered list. If you minify with class-name mangling, override `name()`:
+The recorded name defaults to the class name in snake case, the way Laravel names a migration file,
+so `CreateUsersTable` is recorded as `create_users_table`. Because it is derived from the class name,
+a bundler that mangles class names will look like a reordered list. If you minify with class-name
+mangling, override `name()`:
 
 ```ts
 class CreateUsersTable extends Migration {
@@ -184,15 +186,15 @@ Resolves to one entry per registered migration:
 
 ```
 [
-    { migration: 'CreateUsersTable', ran: true, at: '2026-08-27T21:00:00.000Z' },
-    { migration: 'AddRoleToUsersTable', ran: false, at: null }
+    { migration: 'create_users_table', ran: true, at: '2026-08-27T21:00:00.000Z' },
+    { migration: 'add_role_to_users_table', ran: false, at: null }
 ]
 ```
 
 `DB.status(name)` never migrates as a side effect, so you can call it before `DB.migrate(name)` to
 see what is pending.
 
-> modeled on Laravel's [Migrations](https://laravel.com/docs/12.x/migrations). These only run
+> Modeled on Laravel's [Migrations](https://laravel.com/docs/12.x/migrations). These only run
 > forward, and they are registered in the connection config rather than discovered from a directory.
 
 ### Seeding
@@ -478,7 +480,7 @@ await DB.fresh('app');
 await DB.fresh('app', { seed: true });
 ```
 
-> modeled on Laravel's [Database: Seeding](https://laravel.com/docs/12.x/seeding), down to the
+> Modeled on Laravel's [Database: Seeding](https://laravel.com/docs/12.x/seeding), down to the
 > seeded connection standing in as the default for the duration of the run.
 
 ### Defining a schema
@@ -486,21 +488,21 @@ await DB.fresh('app', { seed: true });
 IndexedDB stores whole objects and enforces only a key path, `autoIncrement` and indexes. Column
 types are recorded as metadata and enforced by this package at write time.
 
-| Blueprint | Effect |
-| --- | --- |
-| `table.id()` | `keyPath: 'id'`, `autoIncrement: true` |
-| `table.uuid('id').primary()` | `keyPath: 'id'`, no autoIncrement |
-| `table.string` / `integer` / `float` / `boolean` / `date` / `datetime` / `json` | Column metadata |
-| `table.decimal('price', 2)` | Column metadata, stored as a whole number of the smallest unit |
-| `table.enum('role', Role)` | Column metadata, checked at write time. Takes a list, an enum or a constant object |
-| `.nullable()` | Metadata, enforced at write time |
-| `.default(value)` | Applied at write time, and backfilled when added to an existing table |
-| `.primary()` | Makes the column the key path. At most one per table. |
-| `.index()` | `createIndex('users_name_index', 'name')` |
-| `.unique()` | `createIndex('users_email_unique', 'email', { unique: true })` |
-| `table.index(['a', 'b'])` | Compound index |
-| `.multiEntry()` | One index entry per array element |
-| `table.timestamps()` | Nullable `created_at` / `updated_at`, filled automatically |
+| Blueprint                                                                       | Effect                                                                             |
+|---------------------------------------------------------------------------------|------------------------------------------------------------------------------------|
+| `table.id()`                                                                    | `keyPath: 'id'`, `autoIncrement: true`                                             |
+| `table.uuid('id').primary()`                                                    | `keyPath: 'id'`, no autoIncrement                                                  |
+| `table.string` / `integer` / `float` / `boolean` / `date` / `datetime` / `json` | Column metadata                                                                    |
+| `table.decimal('price', 2)`                                                     | Column metadata, stored as a whole number of the smallest unit                     |
+| `table.enum('role', Role)`                                                      | Column metadata, checked at write time. Takes a list, an enum or a constant object |
+| `.nullable()`                                                                   | Metadata, enforced at write time                                                   |
+| `.default(value)`                                                               | Applied at write time, and backfilled when added to an existing table              |
+| `.primary()`                                                                    | Makes the column the key path. At most one per table.                              |
+| `.index()`                                                                      | `createIndex('users_name_index', 'name')`                                          |
+| `.unique()`                                                                     | `createIndex('users_email_unique', 'email', { unique: true })`                     |
+| `table.index(['a', 'b'])`                                                       | Compound index                                                                     |
+| `.multiEntry()`                                                                 | One index entry per array element                                                  |
+| `table.timestamps()`                                                            | Nullable `created_at` / `updated_at`, filled automatically                         |
 
 Altering a table also supports `dropColumn`, `renameColumn`, `dropIndex` and `Schema.rename`. The key
 path may not be dropped or renamed, because IndexedDB fixes it when the store is created.
@@ -665,7 +667,7 @@ await Schema.getIndexes('users');
 await Schema.connection('reporting').hasTable('reports');
 ```
 
-> modeled on Laravel's [Migrations: Tables](https://laravel.com/docs/12.x/migrations#tables).
+> Modeled on Laravel's [Migrations: Tables](https://laravel.com/docs/12.x/migrations#tables).
 > Column types are metadata this package enforces at write time, since IndexedDB stores whole objects
 > and checks nothing itself.
 
@@ -771,22 +773,22 @@ await DB.table<User>('users').min('age');
 await DB.table<User>('users').max('age');
 ```
 
-| Terminal | Resolves to |
-| --- | --- |
-| `get()` | `T[]` |
-| `first()` | `T` or `null` |
-| `firstOrFail()` | `T`, or throws `RecordsNotFoundException` |
-| `find(key)` | `T` or `null`, by point lookup on the key path |
-| `findOrFail(key)` | `T`, or throws `RecordsNotFoundException` |
-| `value(column)` | The column of the first matching record, or `null` |
-| `pluck(column)` | `V[]` in result order |
-| `pluck(column, key)` | `Record<string, V>`, keyed by a second column |
-| `exists()` / `doesntExist()` | `boolean` |
-| `count()` | `number` |
-| `sum(column)` | `number` |
-| `avg(column)` / `min(column)` / `max(column)` | `number` or `null` when nothing matched |
-| `sole()` | `T`, or throws `RecordsNotFoundException` / `MultipleRecordsFoundException` |
-| `paginate(page?, perPage?)` | `{ data, total, perPage, currentPage, lastPage }` |
+| Terminal                                      | Resolves to                                                                 |
+|-----------------------------------------------|-----------------------------------------------------------------------------|
+| `get()`                                       | `T[]`                                                                       |
+| `first()`                                     | `T` or `null`                                                               |
+| `firstOrFail()`                               | `T`, or throws `RecordsNotFoundException`                                   |
+| `find(key)`                                   | `T` or `null`, by point lookup on the key path                              |
+| `findOrFail(key)`                             | `T`, or throws `RecordsNotFoundException`                                   |
+| `value(column)`                               | The column of the first matching record, or `null`                          |
+| `pluck(column)`                               | `V[]` in result order                                                       |
+| `pluck(column, key)`                          | `Record<string, V>`, keyed by a second column                               |
+| `exists()` / `doesntExist()`                  | `boolean`                                                                   |
+| `count()`                                     | `number`                                                                    |
+| `sum(column)`                                 | `number`                                                                    |
+| `avg(column)` / `min(column)` / `max(column)` | `number` or `null` when nothing matched                                     |
+| `sole()`                                      | `T`, or throws `RecordsNotFoundException` / `MultipleRecordsFoundException` |
+| `paginate(page?, perPage?)`                   | `{ data, total, perPage, currentPage, lastPage }`                           |
 
 `min` and `max` read the answer straight off the index when the column has one and the query is
 unconstrained, so they cost one cursor rather than a full scan.
@@ -852,7 +854,7 @@ The key path may not be updated, so `update`, `upsert` and `increment` all refus
 when an index drives the query and key order otherwise. Pair them with an indexed `orderBy` if you
 need a defined order.
 
-> modeled on Laravel's [Database: Query Builder](https://laravel.com/docs/12.x/queries). The method
+> Modeled on Laravel's [Database: Query Builder](https://laravel.com/docs/12.x/queries). The method
 > names and their semantics match, and every terminal is asynchronous because IndexedDB is.
 
 ### Joins
@@ -959,7 +961,7 @@ covers it, and `chunk` slices the materialised result rather than walking keys.
 await DB.table('users').whereColumn('updated_at', '>', 'created_at').get();
 ```
 
-> modeled on Laravel's [Query Builder: Joins](https://laravel.com/docs/12.x/queries#joins). Rows
+> Modeled on Laravel's [Query Builder: Joins](https://laravel.com/docs/12.x/queries#joins). Rows
 > stay flat as they do in Laravel, and the join itself runs in memory because IndexedDB has none.
 
 ### Grouping
@@ -994,13 +996,13 @@ Because the alias is an object key rather than a string inside an expression, th
 inferred rather than cast. That row is typed `{ role: string; total: number; oldest: number | null }`,
 and reading a column you did not group or aggregate is a compile error.
 
-| Aggregate | Meaning |
-| --- | --- |
-| `{ count: '*' }` | The number of records in the group, always a `number` |
-| `{ count: 'column' }` | The number of records whose column is not null |
-| `{ sum: 'column' }` | The total, `0` for a group with no values |
-| `{ avg: 'column' }` | The mean, `null` for a group with no values |
-| `{ min: 'column' }` / `{ max: 'column' }` | The extreme, `null` for a group with no values |
+| Aggregate                                 | Meaning                                               |
+|-------------------------------------------|-------------------------------------------------------|
+| `{ count: '*' }`                          | The number of records in the group, always a `number` |
+| `{ count: 'column' }`                     | The number of records whose column is not null        |
+| `{ sum: 'column' }`                       | The total, `0` for a group with no values             |
+| `{ avg: 'column' }`                       | The mean, `null` for a group with no values           |
+| `{ min: 'column' }` / `{ max: 'column' }` | The extreme, `null` for a group with no values        |
 
 Group by several columns by passing several names:
 
@@ -1032,7 +1034,7 @@ await DB.table<User>('users')
 Grouping happens in memory after the records are fetched, so the planner still applies to the
 `where` clauses that select them, and a grouped query reports the plan of that underlying fetch.
 
-> modeled on Laravel's [Query Builder: Grouping](https://laravel.com/docs/12.x/queries#groupby-having),
+> Modeled on Laravel's [Query Builder: Grouping](https://laravel.com/docs/12.x/queries#groupby-having),
 > with the aggregates named in a typed object instead of raw SQL.
 
 ### Query plans
@@ -1092,7 +1094,7 @@ commits behind your back the first time you await anything outside it, so offeri
 offering a trap. The same rule as migrations applies here: the callback may only await operations
 from this package.
 
-> modeled on Laravel's [Database: Transactions](https://laravel.com/docs/12.x/database#database-transactions).
+> Modeled on Laravel's [Database: Transactions](https://laravel.com/docs/12.x/database#database-transactions).
 > The tables have to be declared up front, because an IndexedDB transaction fixes its scope when it
 > opens.
 
@@ -1115,9 +1117,6 @@ Available events: `query`, `transaction-beginning`, `transaction-committed`,
 
 A connection with no seeders announces nothing, so `seeding-started` firing always means at least
 one seeder is about to run.
-
-Listeners are **persistent by default**, with an opt-in `{ once: true }`. This is a deliberate
-departure from `@bjnstnkvc/local-storage`, where every listener fires exactly once.
 
 ```ts
 DB.enableQueryLog();
@@ -1148,7 +1147,7 @@ DB.disableQueryLog();
 
 `DB.logging()` then returns `false`, and `DB.getQueryLog()` an empty array.
 
-> modeled on Laravel's [Database: Listening for Query Events](https://laravel.com/docs/12.x/database#listening-for-query-events),
+> Modeled on Laravel's [Database: Listening for Query Events](https://laravel.com/docs/12.x/database#listening-for-query-events),
 > with the same enable, get and flush surface, dispatched as a browser event.
 
 ### Multiple tabs
@@ -1171,14 +1170,14 @@ DB.disconnect('app');
 DB.purge('app');
 ```
 
-| Call | Effect |
-| --- | --- |
-| `connection()` | The default connection |
-| `connection(name)` | A named connection, cached after the first resolve |
+| Call               | Effect                                                                           |
+|--------------------|----------------------------------------------------------------------------------|
+| `connection()`     | The default connection                                                           |
+| `connection(name)` | A named connection, cached after the first resolve                               |
 | `disconnect(name)` | Close the handle, leaving the connection registered so the next query reopens it |
-| `purge(name)` | Close it and drop it, so the next resolve rebuilds it from configuration |
+| `purge(name)`      | Close it and drop it, so the next resolve rebuilds it from configuration         |
 
-> modeled on Laravel's [Database: Multiple Connections](https://laravel.com/docs/12.x/database#using-multiple-database-connections),
+> Modeled on Laravel's [Database: Multiple Connections](https://laravel.com/docs/12.x/database#using-multiple-database-connections),
 > resolved by name and cached, with one IndexedDB database behind each.
 
 ### Storage quota
@@ -1233,21 +1232,21 @@ memory, so writes inside a narrowed transaction still get their defaults.
 Every exception extends `Error` and sets its own `name`, so `instanceof` and the stack both read
 true. All of them are exported from the package root.
 
-| Exception | Thrown when |
-| --- | --- |
-| `CheckConstraintViolationException` | A write gives an enumerated column a value it does not accept |
-| `ConnectionNotConfiguredException` | A connection is resolved under a name `DB.configure` never declared |
-| `DatabaseBlockedException` | Another tab holds the database open at an older version, so the upgrade cannot start |
-| `MigrationMismatchException` | The recorded migration list is not a prefix of the registered one, so one was removed, renamed or reordered |
-| `MigrationTransactionClosedException` | A migration awaited something outside this package, letting the versionchange transaction commit early |
-| `MultipleRecordsFoundException` | `sole()` matched more than one record |
-| `NotNullConstraintViolationException` | A non-nullable column is written as null, or is absent with no default |
-| `QuotaExceededException` | The origin's storage quota stopped the operation |
-| `RecordsNotFoundException` | `firstOrFail()`, `sole()` or `findOrFail()` matched nothing |
-| `ReservedTableException` | A migration tries to create `migrations` or `schema` |
-| `SchemaException` | A schema or query call the shape of the database cannot support |
-| `TableNotFoundException` | A query or schema read names a table the database does not have |
-| `UniqueConstraintViolationException` | A write collides with a unique index, named in the message |
+| Exception                             | Thrown when                                                                                                 |
+|---------------------------------------|-------------------------------------------------------------------------------------------------------------|
+| `CheckConstraintViolationException`   | A write gives an enumerated column a value it does not accept                                               |
+| `ConnectionNotConfiguredException`    | A connection is resolved under a name `DB.configure` never declared                                         |
+| `DatabaseBlockedException`            | Another tab holds the database open at an older version, so the upgrade cannot start                        |
+| `MigrationMismatchException`          | The recorded migration list is not a prefix of the registered one, so one was removed, renamed or reordered |
+| `MigrationTransactionClosedException` | A migration awaited something outside this package, letting the versionchange transaction commit early      |
+| `MultipleRecordsFoundException`       | `sole()` matched more than one record                                                                       |
+| `NotNullConstraintViolationException` | A non-nullable column is written as null, or is absent with no default                                      |
+| `QuotaExceededException`              | The origin's storage quota stopped the operation                                                            |
+| `RecordsNotFoundException`            | `firstOrFail()`, `sole()` or `findOrFail()` matched nothing                                                 |
+| `ReservedTableException`              | A migration tries to create `migrations` or `schema`                                                        |
+| `SchemaException`                     | A schema or query call the shape of the database cannot support                                             |
+| `TableNotFoundException`              | A query or schema read names a table the database does not have                                             |
+| `UniqueConstraintViolationException`  | A write collides with a unique index, named in the message                                                  |
 
 `SchemaException` is the broad one, so here is every case that raises it:
 

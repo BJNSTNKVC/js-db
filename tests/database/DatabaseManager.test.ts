@@ -130,12 +130,12 @@ describe('DB delegation', (): void => {
     });
 
     test('migrates only the connection it was named', async (): Promise<void> => {
-        expect(await DB.migrate('app')).toEqual(['CreateUsersTable']);
-        expect(await DB.status('reporting')).toEqual([{ migration: 'CreateReportsTable', ran: false, at: null }]);
+        expect(await DB.migrate('app')).toEqual(['create_users_table']);
+        expect(await DB.status('reporting')).toEqual([{ migration: 'create_reports_table', ran: false, at: null }]);
     });
 
     test('migrates a second connection when named', async (): Promise<void> => {
-        expect(await DB.migrate('reporting')).toEqual(['CreateReportsTable']);
+        expect(await DB.migrate('reporting')).toEqual(['create_reports_table']);
     });
 
     test('declares the connection name as required', (): void => {
@@ -151,14 +151,14 @@ describe('DB delegation', (): void => {
 
         const status: MigrationStatus[] = await DB.status('app');
 
-        expect(status.map((entry: MigrationStatus): string => entry.migration)).toEqual(['CreateUsersTable']);
+        expect(status.map((entry: MigrationStatus): string => entry.migration)).toEqual(['create_users_table']);
     });
 
     test('refreshes the default connection', async (): Promise<void> => {
         await DB.migrate('app');
         await DB.table<User>('users').insert({ name: 'Alice' });
 
-        expect(await DB.fresh('app')).toEqual(['CreateUsersTable']);
+        expect(await DB.fresh('app')).toEqual(['create_users_table']);
         expect(await DB.table<User>('users').count()).toEqual(0);
     });
 });

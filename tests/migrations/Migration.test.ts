@@ -9,6 +9,30 @@ class CreateUsersTable extends Migration {
     }
 }
 
+class AddOAuthTokensToHTTPClients extends Migration {
+    /**
+     * Run the migration.
+     */
+    override up(): void {
+    }
+}
+
+class AddV2ColumnsToUsersTable extends Migration {
+    /**
+     * Run the migration.
+     */
+    override up(): void {
+    }
+}
+
+class create_posts_table extends Migration {
+    /**
+     * Run the migration.
+     */
+    override up(): void {
+    }
+}
+
 class Renamed extends Migration {
     /**
      * Get the name of the migration.
@@ -34,8 +58,20 @@ class Asynchronous extends Migration {
 }
 
 describe('Migration', (): void => {
-    test('names itself after its class', (): void => {
-        expect(new CreateUsersTable().name()).toEqual('CreateUsersTable');
+    test('names itself after its class in snake case', (): void => {
+        expect(new CreateUsersTable().name()).toEqual('create_users_table');
+    });
+
+    test('keeps an acronym together when snake casing its class', (): void => {
+        expect(new AddOAuthTokensToHTTPClients().name()).toEqual('add_o_auth_tokens_to_http_clients');
+    });
+
+    test('keeps a digit with the word before it when snake casing its class', (): void => {
+        expect(new AddV2ColumnsToUsersTable().name()).toEqual('add_v2_columns_to_users_table');
+    });
+
+    test('leaves a class already in snake case alone', (): void => {
+        expect(new create_posts_table().name()).toEqual('create_posts_table');
     });
 
     test('honours an overridden name', (): void => {

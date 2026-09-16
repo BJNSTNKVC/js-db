@@ -313,21 +313,21 @@ describe('DB.fresh with seeding', (): void => {
     test('replays the migrations without seeding by default', async (): Promise<void> => {
         await DB.seed('app');
 
-        expect(await DB.fresh('app')).toEqual(['CreateUsersTable']);
+        expect(await DB.fresh('app')).toEqual(['create_users_table']);
         expect(await DB.table<User>('users').count()).toEqual(0);
     });
 
     test('seeds when asked to', async (): Promise<void> => {
         await DB.seed('app');
 
-        expect(await DB.fresh('app', { seed: true })).toEqual(['CreateUsersTable']);
+        expect(await DB.fresh('app', { seed: true })).toEqual(['create_users_table']);
         expect(await DB.table<User>('users').count()).toEqual(2);
     });
 
     test('seeds a connection with no seeders without complaint', async (): Promise<void> => {
         configure([]);
 
-        expect(await DB.fresh('app', { seed: true })).toEqual(['CreateUsersTable']);
+        expect(await DB.fresh('app', { seed: true })).toEqual(['create_users_table']);
         expect(await DB.table<User>('users').count()).toEqual(0);
     });
 });
