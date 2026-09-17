@@ -5,8 +5,10 @@ export class Signature {
      * Build a signature identifying a record by every column it holds.
      */
     static of(record: Record<string, unknown>): string {
+        // Compared by code unit rather than localeCompare, which can rank distinct keys as equal and
+        // leave them in insertion order. The keys of an object are unique, so none ever tie.
         return Object.keys(record)
-            .sort()
+            .sort((a: string, b: string): number => a < b ? -1 : 1)
             .map((column: string): string => this.#segment(column) + this.#segment(this.value(record[column])))
             .join('');
     }

@@ -16,7 +16,8 @@ The method names and their semantics follow Laravel closely enough that the docs
 - [Grouping](#grouping)
 - [Query plans](#query-plans)
 - [Transactions](#transactions)
-- [Events and the query log](#events-and-the-query-log)
+- [Events](#events)
+- [Query log](#query-log)
 - [Multiple tabs](#multiple-tabs)
 - [Connections](#connections)
 - [Storage quota](#storage-quota)
@@ -1098,25 +1099,48 @@ from this package.
 > The tables have to be declared up front, because an IndexedDB transaction fixes its scope when it
 > opens.
 
-### Events and the query log
+### Events
+
+Listen for an event by its key, and the listener receives an instance of the class it maps to:
 
 ```ts
-DB.onQueryExecuted((event: QueryExecuted): void => {
-    console.log(event.plan, event.duration, event.records);
-});
-
 DB.listen('migration-started', (event: MigrationStarted): void => console.log(event.migration));
 DB.listen('query', listener, { once: true });
 DB.forget('query', listener);
 ```
 
-Available events: `query`, `transaction-beginning`, `transaction-committed`,
-`transaction-rolled-back`, `migrations-started`, `migration-started`, `migration-ended`,
-`migrations-ended`, `no-pending-migrations`, `seeding-started`, `seeder-started`, `seeder-ended`,
-`seeding-ended`, `database-blocked`.
+Every event also has a shortcut named after its class, which takes the same options:
+
+```ts
+DB.onQueryExecuted((event: QueryExecuted): void => {
+    console.log(event.plan, event.duration, event.records);
+});
+```
+
+| Key                       | Class                   | Carries                                                                                |
+|---------------------------|-------------------------|----------------------------------------------------------------------------------------|
+| `query`                   | `QueryExecuted`         | `connection`, `table`, `plan`, `constraints`, `orders`, `limit`, `duration`, `records` |
+| `transaction-beginning`   | `TransactionBeginning`  | `connection`                                                                           |
+| `transaction-committed`   | `TransactionCommitted`  | `connection`                                                                           |
+| `transaction-rolled-back` | `TransactionRolledBack` | `connection`, `reason`                                                                 |
+| `migrations-started`      | `MigrationsStarted`     | `connection`, `migrations`                                                             |
+| `migration-started`       | `MigrationStarted`      | `migration`                                                                            |
+| `migration-ended`         | `MigrationEnded`        | `migration`                                                                            |
+| `migrations-ended`        | `MigrationsEnded`       | `connection`, `migrations`                                                             |
+| `no-pending-migrations`   | `NoPendingMigrations`   | `connection`                                                                           |
+| `seeding-started`         | `SeedingStarted`        | `connection`, `seeders`                                                                |
+| `seeder-started`          | `SeederStarted`         | `seeder`                                                                               |
+| `seeder-ended`            | `SeederEnded`           | `seeder`                                                                               |
+| `seeding-ended`           | `SeedingEnded`          | `connection`, `seeders`                                                                |
+| `database-blocked`        | `DatabaseBlocked`       | `database`                                                                             |
 
 A connection with no seeders announces nothing, so `seeding-started` firing always means at least
 one seeder is about to run.
+
+> Modeled on Laravel's [Migrations: Events](https://laravel.com/docs/12.x/migrations#events), with
+> each event dispatched as a browser event and listened for by key.
+
+### Query log
 
 ```ts
 DB.enableQueryLog();
@@ -1126,7 +1150,7 @@ await DB.table<User>('users').where('role', 'admin').get();
 DB.getQueryLog();
 ```
 
-Resolves to one entry per query that ran while the log was enabled:
+Resolves to one entry per `query` event dispatched while the log was enabled:
 
 ```
 [

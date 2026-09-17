@@ -1,7 +1,7 @@
 import { CheckConstraintViolationException, NotNullConstraintViolationException } from '../exceptions';
 import type { ColumnSchema, ColumnType, TableSchema } from './types';
 
-const FALSY: readonly string[] = ['false', '0'];
+const FALSY: ReadonlySet<string> = new Set<string>(['false', '0']);
 
 export class Coercer {
     /**
@@ -23,7 +23,7 @@ export class Coercer {
                 return this.#numeric(value, strict, false);
 
             case 'boolean':
-                return typeof value === 'string' && FALSY.includes(value) ? false : Boolean(value);
+                return typeof value === 'string' && FALSY.has(value) ? false : Boolean(value);
 
             case 'decimal':
                 return this.#scaled(value, strict);

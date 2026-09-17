@@ -238,6 +238,21 @@ describe('Grouping having', (): void => {
         expect(rows).toEqual([{ role: 'member', total: 3 }]);
     });
 
+    test('keeps an explicit operator when the value is undefined', async (): Promise<void> => {
+        const rows: { role: string; total: number }[] = await users()
+            .groupBy('role')
+            .aggregate({ total: { count: '*' } })
+            .having('role', '!=', undefined)
+            .orderBy('role')
+            .get();
+
+        expect(rows).toEqual([
+            { role: 'admin', total: 1 },
+            { role: 'member', total: 3 },
+            { role: 'owner', total: 1 },
+        ]);
+    });
+
     test('filters by a grouped column', async (): Promise<void> => {
         const rows: { role: string; total: number }[] = await users()
             .groupBy('role')

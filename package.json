@@ -1,6 +1,6 @@
 {
   "name": "@bjnstnkvc/db",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "TypeScript database layer for IndexedDB with an API modeled on Laravel.",
   "type": "module",
   "main": "./dist/main.cjs",
@@ -8,8 +8,14 @@
   "types": "./dist/main.d.ts",
   "exports": {
     ".": {
-      "import": { "types": "./dist/main.d.ts", "default": "./dist/main.js" },
-      "require": { "types": "./dist/main.d.cts", "default": "./dist/main.cjs" }
+      "import": {
+        "types": "./dist/main.d.ts",
+        "default": "./dist/main.js"
+      },
+      "require": {
+        "types": "./dist/main.d.cts",
+        "default": "./dist/main.cjs"
+      }
     }
   },
   "files": [

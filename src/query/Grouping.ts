@@ -67,15 +67,19 @@ export class Grouping<T, G extends (keyof T & string)[], A extends Aggregations 
     /**
      * Constrain the groups the query returns.
      */
-    having(column: Key<Grouped<T, G, A>>, operator?: Operator | unknown, value?: unknown): this {
-        return this.#constrain('and', column, operator, value);
+    having(column: Key<Grouped<T, G, A>>, value: unknown): this;
+    having(column: Key<Grouped<T, G, A>>, operator: Operator, value: unknown): this;
+    having(column: Key<Grouped<T, G, A>>, ...parameters: unknown[]): this {
+        return this.#constrain('and', column, parameters);
     }
 
     /**
      * Add a disjunctive constraint on the groups the query returns.
      */
-    orHaving(column: Key<Grouped<T, G, A>>, operator?: Operator | unknown, value?: unknown): this {
-        return this.#constrain('or', column, operator, value);
+    orHaving(column: Key<Grouped<T, G, A>>, value: unknown): this;
+    orHaving(column: Key<Grouped<T, G, A>>, operator: Operator, value: unknown): this;
+    orHaving(column: Key<Grouped<T, G, A>>, ...parameters: unknown[]): this {
+        return this.#constrain('or', column, parameters);
     }
 
     /**
@@ -228,10 +232,12 @@ export class Grouping<T, G extends (keyof T & string)[], A extends Aggregations 
     /**
      * Add a constraint on the groups the query returns.
      */
-    #constrain(conjunction: Conjunction, column: string, operator?: Operator | unknown, value?: unknown): this {
-        const resolved: { operator: Operator; value: unknown } = value === undefined
-            ? { operator: '=', value: operator }
-            : { operator: operator as Operator, value };
+    #constrain(conjunction: Conjunction, column: string, parameters: unknown[]): this {
+        // Resolved by how many arguments were passed rather than by an undefined value, so an explicit
+        // operator is kept even when the value it compares against is undefined.
+        const resolved: { operator: Operator; value: unknown } = parameters.length < 2
+            ? { operator: '=', value: parameters[0] }
+            : { operator: parameters[0] as Operator, value: parameters[1] };
 
         this.#constraints.push({ type: 'basic', column, operator: resolved.operator, value: resolved.value, conjunction, not: false });
 

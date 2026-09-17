@@ -1,7 +1,7 @@
 import type { ColumnSchema, IndexSchema, TableSchema } from '../schema/types';
 import type { Constraint, Operator, Order, Plan } from './types';
 
-const RANGEABLE: readonly Operator[] = ['=', '==', '===', '>', '>=', '<', '<='];
+const RANGEABLE: ReadonlySet<Operator> = new Set<Operator>(['=', '==', '===', '>', '>=', '<', '<=']);
 
 interface Candidate {
     constraint: Constraint;
@@ -124,7 +124,7 @@ export class Planner {
             return { constraint, ...target, range: IDBKeyRange.bound(constraint.from as IDBValidKey, constraint.to as IDBValidKey, false, false), values: null };
         }
 
-        if (!RANGEABLE.includes(constraint.operator) || !this.#keyable(constraint.value)) {
+        if (!RANGEABLE.has(constraint.operator) || !this.#keyable(constraint.value)) {
             return null;
         }
 

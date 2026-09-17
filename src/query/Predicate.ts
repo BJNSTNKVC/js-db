@@ -34,7 +34,7 @@ export class Predicate {
                 groups.push([]);
             }
 
-            groups[groups.length - 1]?.push(constraint);
+            groups.at(-1)?.push(constraint);
         }
 
         return groups;

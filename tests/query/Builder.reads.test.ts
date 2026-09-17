@@ -116,6 +116,10 @@ describe('Builder where', (): void => {
         expect((await names(users().where('age', '>=', 30))).sort()).toEqual(['Alice', 'Carol']);
     });
 
+    test('keeps an explicit operator when the value is undefined', async (): Promise<void> => {
+        expect((await names(users().where('role', '!=', undefined))).sort()).toEqual(['Alice', 'Bob', 'Carol', 'Dave', 'Erin']);
+    });
+
     test('constrains with an object', async (): Promise<void> => {
         expect(await names(users().where({ role: 'member', age: 25 }))).toEqual(['Bob', 'Erin']);
     });

@@ -91,22 +91,31 @@ export class Builder<T = Record<string, unknown>> {
     /**
      * Add a constraint to the query.
      */
-    where(column: Column<T>, operator?: Operator | unknown, value?: unknown): this {
-        return this.#constrain('and', false, column, operator, value);
+    where(column: Partial<T> | Nested<T>): this;
+    where(column: Key<T>, value: unknown): this;
+    where(column: Key<T>, operator: Operator, value: unknown): this;
+    where(column: Column<T>, ...parameters: unknown[]): this {
+        return this.#constrain('and', false, column, parameters);
     }
 
     /**
      * Add a disjunctive constraint to the query.
      */
-    orWhere(column: Column<T>, operator?: Operator | unknown, value?: unknown): this {
-        return this.#constrain('or', false, column, operator, value);
+    orWhere(column: Partial<T> | Nested<T>): this;
+    orWhere(column: Key<T>, value: unknown): this;
+    orWhere(column: Key<T>, operator: Operator, value: unknown): this;
+    orWhere(column: Column<T>, ...parameters: unknown[]): this {
+        return this.#constrain('or', false, column, parameters);
     }
 
     /**
      * Add a negated constraint to the query.
      */
-    whereNot(column: Column<T>, operator?: Operator | unknown, value?: unknown): this {
-        return this.#constrain('and', true, column, operator, value);
+    whereNot(column: Partial<T> | Nested<T>): this;
+    whereNot(column: Key<T>, value: unknown): this;
+    whereNot(column: Key<T>, operator: Operator, value: unknown): this;
+    whereNot(column: Column<T>, ...parameters: unknown[]): this {
+        return this.#constrain('and', true, column, parameters);
     }
 
     /**
@@ -259,21 +268,30 @@ export class Builder<T = Record<string, unknown>> {
     /**
      * Join another table, keeping only the rows that match.
      */
-    join<R = Record<string, unknown>>(table: string, first: string | Joining, operator?: Operator | string, second?: string): Builder<R> {
+    join<R = Record<string, unknown>>(table: string, first: Joining): Builder<R>;
+    join<R = Record<string, unknown>>(table: string, first: string, second: string): Builder<R>;
+    join<R = Record<string, unknown>>(table: string, first: string, operator: Operator, second: string): Builder<R>;
+    join<R = Record<string, unknown>>(table: string, first: string | Joining, operator?: string, second?: string): Builder<R> {
         return this.#join<R>('inner', table, first, operator, second);
     }
 
     /**
      * Join another table, keeping every row of this one.
      */
-    leftJoin<R = Record<string, unknown>>(table: string, first: string | Joining, operator?: Operator | string, second?: string): Builder<R> {
+    leftJoin<R = Record<string, unknown>>(table: string, first: Joining): Builder<R>;
+    leftJoin<R = Record<string, unknown>>(table: string, first: string, second: string): Builder<R>;
+    leftJoin<R = Record<string, unknown>>(table: string, first: string, operator: Operator, second: string): Builder<R>;
+    leftJoin<R = Record<string, unknown>>(table: string, first: string | Joining, operator?: string, second?: string): Builder<R> {
         return this.#join<R>('left', table, first, operator, second);
     }
 
     /**
      * Join another table, keeping every row of it.
      */
-    rightJoin<R = Record<string, unknown>>(table: string, first: string | Joining, operator?: Operator | string, second?: string): Builder<R> {
+    rightJoin<R = Record<string, unknown>>(table: string, first: Joining): Builder<R>;
+    rightJoin<R = Record<string, unknown>>(table: string, first: string, second: string): Builder<R>;
+    rightJoin<R = Record<string, unknown>>(table: string, first: string, operator: Operator, second: string): Builder<R>;
+    rightJoin<R = Record<string, unknown>>(table: string, first: string | Joining, operator?: string, second?: string): Builder<R> {
         return this.#join<R>('right', table, first, operator, second);
     }
 
@@ -289,14 +307,18 @@ export class Builder<T = Record<string, unknown>> {
     /**
      * Constrain a column against another column of the same row.
      */
-    whereColumn(column: Key<T>, operator: Operator | string, other?: string): this {
+    whereColumn(column: Key<T>, other: string): this;
+    whereColumn(column: Key<T>, operator: Operator, other: string): this;
+    whereColumn(column: Key<T>, operator: string, other?: string): this {
         return this.#compared('and', column, operator, other);
     }
 
     /**
      * Constrain a column against another column of the same row, disjunctively.
      */
-    orWhereColumn(column: Key<T>, operator: Operator | string, other?: string): this {
+    orWhereColumn(column: Key<T>, other: string): this;
+    orWhereColumn(column: Key<T>, operator: Operator, other: string): this;
+    orWhereColumn(column: Key<T>, operator: string, other?: string): this {
         return this.#compared('or', column, operator, other);
     }
 
@@ -1116,7 +1138,7 @@ export class Builder<T = Record<string, unknown>> {
     /**
      * Add a constraint of the given shape to the query.
      */
-    #constrain(conjunction: Conjunction, not: boolean, column: Column<T>, operator?: Operator | unknown, value?: unknown): this {
+    #constrain(conjunction: Conjunction, not: boolean, column: Column<T>, parameters: unknown[]): this {
         if (typeof column === 'function') {
             const nested: Builder<T> = new Builder<T>(this.#connection, this.#table, this.#transaction)
 
@@ -1138,9 +1160,11 @@ export class Builder<T = Record<string, unknown>> {
             return this.#push({ type: 'nested', constraints, conjunction, not });
         }
 
-        const resolved: { operator: Operator; value: unknown } = value === undefined
-            ? { operator: '=', value: operator }
-            : { operator: operator as Operator, value };
+        // Resolved by how many arguments were passed rather than by an undefined value, so an explicit
+        // operator is kept even when the value it compares against is undefined.
+        const resolved: { operator: Operator; value: unknown } = parameters.length < 2
+            ? { operator: '=', value: parameters[0] }
+            : { operator: parameters[0] as Operator, value: parameters[1] };
 
         return this.#push({ type: 'basic', column: column as string, operator: resolved.operator, value: resolved.value, conjunction, not });
     }
@@ -1155,7 +1179,7 @@ export class Builder<T = Record<string, unknown>> {
     /**
      * Add a constraint comparing two columns, allowing the operator to be left implicit.
      */
-    #compared(conjunction: Conjunction, column: Key<T>, operator: Operator | string, other?: string): this {
+    #compared(conjunction: Conjunction, column: Key<T>, operator: string, other?: string): this {
         const resolved: { operator: Operator; other: string } = other === undefined
             ? { operator: '=', other: operator }
             : { operator: operator as Operator, other };
@@ -1216,13 +1240,15 @@ export class Builder<T = Record<string, unknown>> {
     /**
      * Record a join, accepting either the column shorthand or a closure of conditions.
      */
-    #join<R>(type: JoinType, table: string, first: string | Joining, operator?: Operator | string, second?: string): Builder<R> {
+    #join<R>(type: JoinType, table: string, first: string | Joining, operator?: string, second?: string): Builder<R> {
         const clause: Join = new Join();
 
         if (typeof first === 'function') {
             first(clause);
+        } else if (second === undefined) {
+            clause.on(first, operator as string);
         } else {
-            clause.on(first, operator as Operator | string, second);
+            clause.on(first, operator as Operator, second);
         }
 
         this.#joins.push({ table, type, conditions: clause.conditions() });

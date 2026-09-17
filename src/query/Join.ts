@@ -9,14 +9,18 @@ export class Join {
     /**
      * Join on a pair of columns.
      */
-    on(first: string, operator: Operator | string, second?: string): this {
+    on(first: string, second: string): this;
+    on(first: string, operator: Operator, second: string): this;
+    on(first: string, operator: string, second?: string): this {
         return this.#condition('and', first, operator, second);
     }
 
     /**
      * Join on a pair of columns, disjunctively.
      */
-    orOn(first: string, operator: Operator | string, second?: string): this {
+    orOn(first: string, second: string): this;
+    orOn(first: string, operator: Operator, second: string): this;
+    orOn(first: string, operator: string, second?: string): this {
         return this.#condition('or', first, operator, second);
     }
 
@@ -30,7 +34,7 @@ export class Join {
     /**
      * Record a condition, allowing the operator to be left implicit.
      */
-    #condition(conjunction: Conjunction, first: string, operator: Operator | string, second?: string): this {
+    #condition(conjunction: Conjunction, first: string, operator: string, second?: string): this {
         const resolved: { operator: Operator; second: string } = second === undefined
             ? { operator: '=', second: operator }
             : { operator: operator as Operator, second };
