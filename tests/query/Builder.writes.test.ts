@@ -10,6 +10,7 @@ import {
     UniqueConstraintViolationException,
 } from '../../src/exceptions';
 import type { Builder } from '../../src/query/Builder';
+import type { Transaction } from '../../src/database/Transaction';
 import type { QueryExecuted } from '../../src/events';
 import type { MockInstance } from 'vitest';
 
@@ -429,6 +430,78 @@ describe('Builder delete', (): void => {
     });
 });
 
+describe('Builder ordered writes with a limit or offset', (): void => {
+    beforeEach(async (): Promise<void> => {
+        await users().insert([
+            { name: 'Bob', email: 'bob@example.com' },
+            { name: 'Carol', email: 'carol@example.com' },
+            { name: 'Alice', email: 'alice@example.com' },
+        ]);
+    });
+
+    test('updates the first record in the requested order', async (): Promise<void> => {
+        expect(await users().orderBy('name').limit(1).update({ role: 'owner' })).toEqual(1);
+        expect(await users().where('role', 'owner').pluck('name')).toEqual(['Alice']);
+    });
+
+    test('deletes the first record in the requested order', async (): Promise<void> => {
+        expect(await users().orderBy('name').limit(1).delete()).toEqual(1);
+        expect(await users().orderBy('name').pluck('name')).toEqual(['Bob', 'Carol']);
+    });
+
+    test('increments the first record in a descending order', async (): Promise<void> => {
+        expect(await users().orderBy('name', 'desc').limit(1).increment('visits')).toEqual(1);
+        expect(await users().where('visits', 1).pluck('name')).toEqual(['Carol']);
+    });
+
+    test('skips the offset in the requested order', async (): Promise<void> => {
+        expect(await users().orderBy('name').offset(1).delete()).toEqual(2);
+        expect(await users().pluck('name')).toEqual(['Alice']);
+    });
+
+    test('applies both the offset and the limit in the requested order', async (): Promise<void> => {
+        expect(await users().orderBy('name').offset(1).limit(1).update({ role: 'owner' })).toEqual(1);
+        expect(await users().where('role', 'owner').pluck('name')).toEqual(['Bob']);
+    });
+
+    test('honors the order among records found through point lookups', async (): Promise<void> => {
+        expect(await users().whereIn('id', [1, 3]).orderBy('name').limit(1).delete()).toEqual(1);
+        expect(await users().orderBy('name').pluck('name')).toEqual(['Bob', 'Carol']);
+    });
+
+    test('honors the order inside a transaction', async (): Promise<void> => {
+        await connection.transaction(async (transaction: Transaction): Promise<void> => {
+            expect(await transaction.table<User>('users').orderBy('name').limit(1).delete()).toEqual(1);
+        });
+
+        expect(await users().orderBy('name').pluck('name')).toEqual(['Bob', 'Carol']);
+    });
+
+    test('announces the write once with the number of records affected', async (): Promise<void> => {
+        const seen: [string, number][] = [];
+
+        Dispatcher.listen('db:query', ((event: QueryExecuted): void => {
+            seen.push([event.plan, event.records]);
+        }) as (event: Event) => void, true);
+
+        await users().orderBy('name').limit(2).delete();
+
+        expect(seen).toEqual([['scan', 2]]);
+    });
+
+    test('walks an index that serves the order', async (): Promise<void> => {
+        const seen: [string, number][] = [];
+
+        Dispatcher.listen('db:query', ((event: QueryExecuted): void => {
+            seen.push([event.plan, event.records]);
+        }) as (event: Event) => void, true);
+
+        expect(await users().orderBy('email', 'desc').limit(1).delete()).toEqual(1);
+        expect(seen).toEqual([['index:users_email_unique', 1]]);
+        expect(await users().orderBy('name').pluck('name')).toEqual(['Alice', 'Bob']);
+    });
+});
+
 describe('Builder truncate', (): void => {
     test('empties the table', async (): Promise<void> => {
         await users().insert([
@@ -495,6 +568,17 @@ describe('Builder writes through key path point lookups', (): void => {
 
         expect(await users().whereIn('id', [1, 3]).update({ role: 'owner' })).toEqual(2);
         expect(await users().where('role', 'owner').count()).toEqual(2);
+    });
+
+    test('honors a limit across several keys', async (): Promise<void> => {
+        await users().insert([
+            { name: 'Alice', email: 'alice@example.com' },
+            { name: 'Bob', email: 'bob@example.com' },
+            { name: 'Carol', email: 'carol@example.com' },
+        ]);
+
+        expect(await users().whereIn('id', [1, 2, 3]).limit(1).delete()).toEqual(1);
+        expect(await users().count()).toEqual(2);
     });
 });
 

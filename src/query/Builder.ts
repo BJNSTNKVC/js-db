@@ -1,6 +1,11 @@
 import { QueryExecuted } from '../events';
 import { Dispatcher } from '../events/Dispatcher';
-import { MultipleRecordsFoundException, RecordsNotFoundException, SchemaException, UniqueConstraintViolationException } from '../exceptions';
+import {
+    MultipleRecordsFoundException,
+    RecordsNotFoundException,
+    SchemaException,
+    UniqueConstraintViolationException
+} from '../exceptions';
 import { Request } from '../database/Request';
 import { Coercer } from '../schema/Coercer';
 import { Columns } from './Columns';
@@ -13,7 +18,20 @@ import { Predicate } from './Predicate';
 import { Signature } from './Signature';
 import type { Connection } from '../database/Connection';
 import type { ColumnSchema, IndexSchema, TableSchema } from '../schema/types';
-import type { Conjunction, Constraint, DatePart, Direction, JoinClause, JoinType, Key, Operator, Order, Paginated, Plan, Projection } from './types';
+import type {
+    Conjunction,
+    Constraint,
+    DatePart,
+    Direction,
+    JoinClause,
+    JoinType,
+    Key,
+    Operator,
+    Order,
+    Paginated,
+    Plan,
+    Projection
+} from './types';
 
 type Nested<T> = (query: Builder<T>) => void;
 
@@ -1089,7 +1107,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Apply a change to every record matching the query, in the order the plan scans them.
+     * Apply a change to every record matching the query, in the order the query asks for.
      */
     async #modify(apply: (cursor: IDBCursorWithValue) => void): Promise<number> {
         const schema: TableSchema = await this.#connection.schema(this.#table);
@@ -1099,8 +1117,28 @@ export class Builder<T = Record<string, unknown>> {
         const matches: (record: Record<string, unknown>) => boolean = Predicate.compile(plan.residual);
         const ceiling: number | null = this.#limit === null ? null : this.#offset + this.#limit;
 
+        const collects: boolean = !plan.ordered && this.#orders.length > 0 && (this.#limit !== null || this.#offset > 0);
+
         let seen: number = 0;
         let affected: number = 0;
+
+        if (collects) {
+            const collected: { record: T; key: IDBValidKey }[] = plan.values === null
+                ? await this.#cursored(store, plan, matches)
+                : await this.#points(store, plan, matches);
+
+            for (const entry of this.#paged(this.#sorted(collected))) {
+                await Request.walk(store.openCursor(IDBKeyRange.only(entry.key)), (cursor: IDBCursorWithValue): void => {
+                    apply(cursor);
+
+                    affected++;
+                });
+            }
+
+            this.#emit(Planner.describe(plan), started, affected);
+
+            return affected;
+        }
 
         const visit: (cursor: IDBCursorWithValue) => boolean = (cursor: IDBCursorWithValue): boolean => {
             if (!matches(cursor.value as Record<string, unknown>)) {
@@ -1124,6 +1162,10 @@ export class Builder<T = Record<string, unknown>> {
             await Request.walk(source.openCursor(plan.range, plan.direction), visit);
         } else {
             for (const value of plan.values) {
+                if (ceiling !== null && seen >= ceiling) {
+                    break;
+                }
+
                 const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index);
 
                 await Request.walk(source.openCursor(IDBKeyRange.only(value as IDBValidKey)), visit);

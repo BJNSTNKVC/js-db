@@ -835,6 +835,7 @@ await DB.table<User>('users').where('id', 1).increment('visits');
 await DB.table<User>('users').where('id', 1).decrement('credits', 5);
 
 await DB.table<User>('users').where('role', 'guest').delete();
+await DB.table<User>('users').oldest('created_at').limit(100).delete();
 await DB.table<User>('users').truncate();
 ```
 
@@ -851,9 +852,10 @@ enforce anything else. Any other column throws `SchemaException`.
 
 The key path may not be updated, so `update`, `upsert` and `increment` all refuse it.
 
-`update` and `delete` honour `limit` and `offset` in the order the plan scans, which is index order
-when an index drives the query and key order otherwise. Pair them with an indexed `orderBy` if you
-need a defined order.
+`update`, `delete`, `increment` and `decrement` honor `orderBy` together with `limit` and
+`offset`, so they touch the same records a read of the query would return, whether or not an index
+serves the order. Without an `orderBy`, they follow the order the plan scans, which is index order
+when an index drives the query and key order otherwise.
 
 > Modeled on Laravel's [Database: Query Builder](https://laravel.com/docs/12.x/queries). The method
 > names and their semantics match, and every terminal is asynchronous because IndexedDB is.
