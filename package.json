@@ -48,10 +48,13 @@
   },
   "homepage": "https://github.com/BJNSTNKVC/js-db#readme",
   "devDependencies": {
-    "@vitest/coverage-v8": "^1.6.0",
+    "@vitest/coverage-v8": "^5.0.2",
     "fake-indexeddb": "^6.0.0",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^1.6.0"
+    "vitest": "^5.0.2"
+  },
+  "overrides": {
+    "esbuild": "^0.28.2"
   }
 }

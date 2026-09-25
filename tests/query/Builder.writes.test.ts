@@ -144,6 +144,14 @@ describe('Builder insert', (): void => {
         );
     });
 
+    test('reports a violated unique index by name when the explicit key is free', async (): Promise<void> => {
+        await users().insert({ name: 'Alice', email: 'alice@example.com' });
+
+        await expect(users().insert({ id: 5, name: 'Bob', email: 'alice@example.com' })).rejects.toThrow(
+            new UniqueConstraintViolationException('users', 'users_email_unique'),
+        );
+    });
+
     test('reports a violated key path by name', async (): Promise<void> => {
         await connection.table('slugs').insert({ slug: 'a', label: 'A' });
 

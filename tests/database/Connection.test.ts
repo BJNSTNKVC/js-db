@@ -738,12 +738,12 @@ describe('Schema.table', (): void => {
         /**
      * Migrate a users table, then alter it with the given callback.
      */
-    async function altered(callback: (table: Blueprint) => void): Promise<Connection> {
+    async function altered(callback: (table: Blueprint) => void, record: Record<string, unknown> = {}): Promise<Connection> {
         const database: string = `connection-${++sequence}`;
         const first: Connection = connect([CreateUsersTable], database);
 
         await first.migrate();
-        await seed(first, 'users', [{ name: 'John', email: 'a@b.c', age: 30, created_at: null, updated_at: null }]);
+        await seed(first, 'users', [{ name: 'John', email: 'a@b.c', age: 30, created_at: null, updated_at: null, ...record }]);
 
         first.disconnect();
         connections.splice(connections.indexOf(first), 1);
@@ -766,6 +766,14 @@ describe('Schema.table', (): void => {
 
         expect(await records(connection, 'users')).toEqual([expect.objectContaining({ role: 'member' })]);
         expect((await connection.schema('users')).columns.map((column: ColumnSchema): string => column.name)).toContain('role');
+    });
+
+    test('adds a column with a default and keeps a value a record already holds under its name', async (): Promise<void> => {
+        const connection: Connection = await altered((table: Blueprint): void => {
+            table.string('role').default('member');
+        }, { role: 'admin' });
+
+        expect(await records(connection, 'users')).toEqual([expect.objectContaining({ role: 'admin' })]);
     });
 
     test('adds a column without a default and leaves records untouched', async (): Promise<void> => {

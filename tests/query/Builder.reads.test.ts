@@ -571,6 +571,12 @@ describe('Builder point lookups on the key path', (): void => {
 
         expect(found.map((user: User): string => user.name).sort()).toEqual(['Alice', 'Carol']);
     });
+
+    test('drops the records the remaining constraints reject', async (): Promise<void> => {
+        const found: User[] = await users().whereIn('id', [1, 2, 3]).where('role', 'member').get();
+
+        expect(found.map((user: User): string => user.name)).toEqual(['Bob']);
+    });
 });
 
 describe('Builder in memory sorting of dates', (): void => {

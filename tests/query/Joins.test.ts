@@ -456,4 +456,28 @@ describe('Joined chunking and column comparison edges', (): void => {
 
         expect(rows).toEqual([]);
     });
+
+    test('leaves out a column the stored record does not hold', async (): Promise<void> => {
+        const sparse: Connection = new Connection('app', { database: 'joins-sparse', migrations: [CreateTables] });
+
+        await sparse.migrate();
+
+        const database: IDBDatabase = await sparse.open();
+        const transaction: IDBTransaction = database.transaction(['users', 'posts'], 'readwrite');
+
+        // Written without team_id, as a record stored before that column was added would be.
+        transaction.objectStore('users').add({ name: 'Dave' });
+        transaction.objectStore('posts').add({ user_id: 1, title: 'Fourth' });
+
+        await new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
+            transaction.oncomplete = (): void => resolve();
+            transaction.onerror = (): void => reject(transaction.error);
+        });
+
+        const rows: Row[] = await sparse.table<User>('users').join<Row>('posts', 'users.id', '=', 'posts.user_id').get();
+
+        sparse.disconnect();
+
+        expect(rows).toStrictEqual([{ id: 1, name: 'Dave', user_id: 1, title: 'Fourth' }]);
+    });
 });
