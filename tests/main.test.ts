@@ -10,6 +10,7 @@ const values: string[] = [
     'DB',
     'DatabaseBlocked',
     'DatabaseBlockedException',
+    'DatabaseVersionChanged',
     'DatabaseManager',
     'Grouping',
     'Join',

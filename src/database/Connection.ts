@@ -1,5 +1,6 @@
 import {
     DatabaseBlocked,
+    DatabaseVersionChanged,
     SeederEnded,
     SeederStarted,
     SeedingEnded,
@@ -483,7 +484,11 @@ export class Connection {
         this.#schemas = new Map<string, TableSchema>(registry.map((schema: TableSchema): [string, TableSchema] => [schema.table, schema]));
         this.#database = database;
 
-        database.onversionchange = (): void => this.disconnect();
+        database.onversionchange = (event: IDBVersionChangeEvent): void => {
+            this.disconnect();
+
+            Dispatcher.dispatch(new DatabaseVersionChanged(this.#config.database, event.newVersion));
+        };
 
         return database;
     }

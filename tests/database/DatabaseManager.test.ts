@@ -323,6 +323,7 @@ describe('DB.listen', (): void => {
         ['onMigrationsEnded', 'migrations-ended'],
         ['onNoPendingMigrations', 'no-pending-migrations'],
         ['onDatabaseBlocked', 'database-blocked'],
+        ['onDatabaseVersionChanged', 'database-version-changed'],
     ])('registers a listener through %s', (method: string, event: string): void => {
         const seen: string[] = [];
 

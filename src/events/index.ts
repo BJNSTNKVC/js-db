@@ -1,4 +1,5 @@
 import type { DatabaseBlocked } from './DatabaseBlocked';
+import type { DatabaseVersionChanged } from './DatabaseVersionChanged';
 import type { MigrationEnded } from './MigrationEnded';
 import type { MigrationsEnded } from './MigrationsEnded';
 import type { MigrationsStarted } from './MigrationsStarted';
@@ -14,6 +15,7 @@ import type { TransactionCommitted } from './TransactionCommitted';
 import type { TransactionRolledBack } from './TransactionRolledBack';
 
 export { DatabaseBlocked } from './DatabaseBlocked';
+export { DatabaseVersionChanged } from './DatabaseVersionChanged';
 export { MigrationEnded } from './MigrationEnded';
 export { MigrationsEnded } from './MigrationsEnded';
 export { MigrationsStarted } from './MigrationsStarted';
@@ -29,20 +31,21 @@ export { TransactionCommitted } from './TransactionCommitted';
 export { TransactionRolledBack } from './TransactionRolledBack';
 
 export type DatabaseEvent = {
-    'database-blocked'       : DatabaseBlocked;
-    'migration-ended'        : MigrationEnded;
-    'migration-started'      : MigrationStarted;
-    'migrations-ended'       : MigrationsEnded;
-    'migrations-started'     : MigrationsStarted;
-    'no-pending-migrations'  : NoPendingMigrations;
-    'query'                  : QueryExecuted;
-    'seeder-ended'           : SeederEnded;
-    'seeder-started'         : SeederStarted;
-    'seeding-ended'          : SeedingEnded;
-    'seeding-started'        : SeedingStarted;
-    'transaction-beginning'  : TransactionBeginning;
-    'transaction-committed'  : TransactionCommitted;
-    'transaction-rolled-back': TransactionRolledBack;
+    'database-blocked'        : DatabaseBlocked;
+    'database-version-changed': DatabaseVersionChanged;
+    'migration-ended'         : MigrationEnded;
+    'migration-started'       : MigrationStarted;
+    'migrations-ended'        : MigrationsEnded;
+    'migrations-started'      : MigrationsStarted;
+    'no-pending-migrations'   : NoPendingMigrations;
+    'query'                   : QueryExecuted;
+    'seeder-ended'            : SeederEnded;
+    'seeder-started'          : SeederStarted;
+    'seeding-ended'           : SeedingEnded;
+    'seeding-started'         : SeedingStarted;
+    'transaction-beginning'   : TransactionBeginning;
+    'transaction-committed'   : TransactionCommitted;
+    'transaction-rolled-back' : TransactionRolledBack;
 };
 
 export type DatabaseEventListener<K extends keyof DatabaseEvent> = (event: DatabaseEvent[K]) => void;

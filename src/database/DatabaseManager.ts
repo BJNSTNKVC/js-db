@@ -4,6 +4,7 @@ import { Connection } from './Connection';
 import { Resolver } from './Resolver';
 import type {
     DatabaseBlocked,
+    DatabaseVersionChanged,
     DatabaseEvent,
     DatabaseEventListener,
     MigrationEnded,
@@ -313,6 +314,13 @@ export class DatabaseManager {
      */
     static onDatabaseBlocked(listener: (event: DatabaseBlocked) => void, options?: ListenOptions): void {
         this.listen('database-blocked', listener, options);
+    }
+
+    /**
+     * Register a listener on the "database-version-changed" event.
+     */
+    static onDatabaseVersionChanged(listener: (event: DatabaseVersionChanged) => void, options?: ListenOptions): void {
+        this.listen('database-version-changed', listener, options);
     }
 
     /**

@@ -6,6 +6,7 @@ import { Schema } from '../../src/schema/Schema';
 import { Blueprint } from '../../src/schema/Blueprint';
 import { Request } from '../../src/database/Request';
 import { Dispatcher } from '../../src/events/Dispatcher';
+import { DB } from '../../src/main';
 import {
     DatabaseBlockedException,
     MigrationMismatchException,
@@ -18,12 +19,13 @@ import type { MigrationConstructor, MigrationStatus } from '../../src/migrations
 import type { ColumnSchema, TableSchema } from '../../src/schema/types';
 import type { MockInstance } from 'vitest';
 import type { MigrationContext } from '../../src/migrations/Migrator';
-import type { IndexSchema } from '../../src/main';
+import type { DatabaseVersionChanged, IndexSchema } from '../../src/main';
 
 let sequence: number = 0;
 
 const connections: Connection[] = [];
 const handles: IDBDatabase[] = [];
+const listeners: ((event: Event) => void)[] = [];
 
 /**
  * Build a connection against a uniquely named database.
@@ -107,6 +109,24 @@ async function seed(connection: Connection, table: string, rows: Record<string, 
     });
 }
 
+/**
+ * Collect the version changes dispatched for a database.
+ */
+function versionChanges(database: string): DatabaseVersionChanged[] {
+    const events: DatabaseVersionChanged[] = [];
+
+    const listener: (event: Event) => void = (event: Event): void => {
+        if ((event as DatabaseVersionChanged).database === database) {
+            events.push(event as DatabaseVersionChanged);
+        }
+    };
+
+    Dispatcher.listen('db:database-version-changed', listener);
+    listeners.push(listener);
+
+    return events;
+}
+
 afterEach((): void => {
     for (const connection of connections.splice(0)) {
         connection.disconnect();
@@ -114,6 +134,10 @@ afterEach((): void => {
 
     for (const handle of handles.splice(0)) {
         handle.close();
+    }
+
+    for (const listener of listeners.splice(0)) {
+        Dispatcher.forget('db:database-version-changed', listener);
     }
 });
 
@@ -389,6 +413,70 @@ describe('Connection multi tab', (): void => {
 
         expect(await connection.migrate()).toEqual(['CreateUsersTable']);
         expect(await connection.tables()).toEqual(['users']);
+    });
+});
+
+describe('Connection version change event', (): void => {
+    test('reports the version another tab upgrades to, after which the next query fails', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+        const first: Connection = connect([CreateUsersTable], database);
+
+        await first.migrate();
+
+        const events: DatabaseVersionChanged[] = versionChanges(database);
+
+        await connect([CreateUsersTable, CreatePostsTable], database).migrate();
+
+        expect(events.map((event: DatabaseVersionChanged): number | null => event.version)).toEqual([3]);
+        await expect(first.table('users').count()).rejects.toBeInstanceOf(MigrationMismatchException);
+    });
+
+    test('reports a null version when another tab deletes the database', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+        const connection: Connection = connect([CreateUsersTable], database);
+
+        await connection.open();
+
+        const events: DatabaseVersionChanged[] = versionChanges(database);
+
+        await new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
+            const request: IDBOpenDBRequest = indexedDB.deleteDatabase(database);
+
+            request.onsuccess = (): void => resolve();
+            request.onerror = (): void => reject(request.error);
+        });
+
+        expect(events.map((event: DatabaseVersionChanged): number | null => event.version)).toEqual([null]);
+    });
+
+    test('is not dispatched when the connection runs fresh itself', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+        const connection: Connection = connect([CreateUsersTable], database);
+
+        await connection.migrate();
+
+        const events: DatabaseVersionChanged[] = versionChanges(database);
+
+        await connection.fresh();
+
+        expect(events).toEqual([]);
+    });
+
+    test('reaches a listener registered through the manager', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+
+        await connect([CreateUsersTable], database).migrate();
+
+        const received: Promise<DatabaseVersionChanged> = new Promise<DatabaseVersionChanged>((resolve: (event: DatabaseVersionChanged) => void): void => {
+            DB.onDatabaseVersionChanged(resolve, { once: true });
+        });
+
+        await connect([CreateUsersTable, CreatePostsTable], database).migrate();
+
+        const event: DatabaseVersionChanged = await received;
+
+        expect(event.database).toEqual(database);
+        expect(event.version).toEqual(3);
     });
 });
 

@@ -12,6 +12,7 @@ export { Transaction } from './database/Transaction';
 
 export {
     DatabaseBlocked,
+    DatabaseVersionChanged,
     MigrationEnded,
     MigrationsEnded,
     MigrationsStarted,

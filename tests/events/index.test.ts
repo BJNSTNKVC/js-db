@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import {
     DatabaseBlocked,
+    DatabaseVersionChanged,
     MigrationEnded,
     MigrationsEnded,
     MigrationsStarted,
@@ -123,6 +124,21 @@ describe('DatabaseBlocked', (): void => {
 
         expect(event.type).toEqual('db:database-blocked');
         expect(event.database).toEqual('app');
+    });
+});
+
+describe('DatabaseVersionChanged', (): void => {
+    test('exposes the database and the version being opened', (): void => {
+        const event: DatabaseVersionChanged = new DatabaseVersionChanged('app', 3);
+
+        expect(event).toBeInstanceOf(Event);
+        expect(event.type).toEqual('db:database-version-changed');
+        expect(event.database).toEqual('app');
+        expect(event.version).toEqual(3);
+    });
+
+    test('carries a null version when the database is being deleted', (): void => {
+        expect(new DatabaseVersionChanged('app', null).version).toBeNull();
     });
 });
 
