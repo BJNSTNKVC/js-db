@@ -74,6 +74,13 @@ export class Predicate {
             return this.#negate(constraint.not, this.#part(held, constraint.part) === constraint.value);
         }
 
+        if (constraint.type === 'time') {
+            const time: string | null = this.#time(held);
+
+            // A value that holds no date has no time of day, which is unknown rather than unequal.
+            return time !== null && this.#negate(constraint.not, this.#compare(time, constraint.operator, constraint.value));
+        }
+
         if (constraint.type === 'in') {
             return this.#negate(constraint.not, constraint.values.some((value: unknown): boolean => this.#compare(held, '==', value)));
         }
@@ -89,9 +96,9 @@ export class Predicate {
      * Read one part of a value that should hold a date.
      */
     static #part(held: unknown, part: DatePart): number | null {
-        const date: Date = held instanceof Date ? held : new Date(held as string | number);
+        const date: Date | null = this.#date(held);
 
-        if (Number.isNaN(date.getTime())) {
+        if (date === null) {
             return null;
         }
 
@@ -101,6 +108,30 @@ export class Predicate {
 
         // Numbered from one, as SQL does, rather than from zero as JavaScript does.
         return part === 'month' ? date.getMonth() + 1 : date.getDate();
+    }
+
+    /**
+     * Read the time of day of a value that should hold a date, as a zero padded HH:MM:SS string.
+     */
+    static #time(held: unknown): string | null {
+        const date: Date | null = this.#date(held);
+
+        if (date === null) {
+            return null;
+        }
+
+        return [date.getHours(), date.getMinutes(), date.getSeconds()]
+            .map((part: number): string => String(part).padStart(2, '0'))
+            .join(':');
+    }
+
+    /**
+     * Read a value that should hold a date, or null when it does not.
+     */
+    static #date(held: unknown): Date | null {
+        const date: Date = held instanceof Date ? held : new Date(held as string | number);
+
+        return Number.isNaN(date.getTime()) ? null : date;
     }
 
     /**

@@ -52,6 +52,11 @@ export class Builder<T = Record<string, unknown>> {
     #orders: Order[] = [];
 
     /**
+     * Whether the query returns its records in a random order, setting its orders aside.
+     */
+    #random: boolean = false;
+
+    /**
      * The maximum number of records the query returns.
      */
     #limit: number | null = null;
@@ -270,6 +275,49 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
+     * Constrain the time of day of a date column, given as HH:MM:SS or HH:MM.
+     */
+    whereTime(column: Key<T>, value: string): this;
+    whereTime(column: Key<T>, operator: Operator, value: string): this;
+    whereTime(column: Key<T>, operator: string, value?: string): this {
+        const resolved: { operator: Operator; value: string } = value === undefined
+            ? { operator: '=', value: operator }
+            : { operator: operator as Operator, value };
+
+        // Times compare as strings, so one given without seconds is padded to the stored shape.
+        const time: string = /^\d{2}:\d{2}$/.test(resolved.value) ? `${resolved.value}:00` : resolved.value;
+
+        return this.#push({ type: 'time', column, operator: resolved.operator, value: time, conjunction: 'and', not: false });
+    }
+
+    /**
+     * Constrain the query to records where any of the columns meets the comparison.
+     */
+    whereAny(columns: Key<T>[], value: unknown): this;
+    whereAny(columns: Key<T>[], operator: Operator, value: unknown): this;
+    whereAny(columns: Key<T>[], ...parameters: unknown[]): this {
+        return this.#across('or', false, columns, parameters);
+    }
+
+    /**
+     * Constrain the query to records where every one of the columns meets the comparison.
+     */
+    whereAll(columns: Key<T>[], value: unknown): this;
+    whereAll(columns: Key<T>[], operator: Operator, value: unknown): this;
+    whereAll(columns: Key<T>[], ...parameters: unknown[]): this {
+        return this.#across('and', false, columns, parameters);
+    }
+
+    /**
+     * Constrain the query to records where none of the columns meets the comparison.
+     */
+    whereNone(columns: Key<T>[], value: unknown): this;
+    whereNone(columns: Key<T>[], operator: Operator, value: unknown): this;
+    whereNone(columns: Key<T>[], ...parameters: unknown[]): this {
+        return this.#across('or', true, columns, parameters);
+    }
+
+    /**
      * Join another table, keeping only the rows that match.
      */
     join<R = Record<string, unknown>>(table: string, first: Joining): Builder<R>;
@@ -353,6 +401,7 @@ export class Builder<T = Record<string, unknown>> {
         const records: Builder<T> = this.clone();
 
         records.#orders = [];
+        records.#random = false;
         records.#limit = null;
         records.#offset = 0;
 
@@ -383,6 +432,25 @@ export class Builder<T = Record<string, unknown>> {
      */
     oldest(column: Key<T> = 'created_at'): this {
         return this.orderBy(column, 'asc');
+    }
+
+    /**
+     * Return the records in a random order, setting aside any other order until reordered.
+     */
+    inRandomOrder(): this {
+        this.#random = true;
+
+        return this;
+    }
+
+    /**
+     * Clear every order, including a random one, and sort by a column when one is given.
+     */
+    reorder(column?: Key<T>, direction: Direction = 'asc'): this {
+        this.#orders = [];
+        this.#random = false;
+
+        return column === undefined ? this : this.orderBy(column, direction);
     }
 
     /**
@@ -459,6 +527,7 @@ export class Builder<T = Record<string, unknown>> {
 
         clone.#constraints = [...this.#constraints];
         clone.#orders = [...this.#orders];
+        clone.#random = this.#random;
         clone.#limit = this.#limit;
         clone.#offset = this.#offset;
         clone.#columns = this.#columns === null ? null : [...this.#columns];
@@ -841,6 +910,7 @@ export class Builder<T = Record<string, unknown>> {
             transaction: this.#transaction,
             constraints: this.#constraints,
             orders     : this.#orders,
+            random     : this.#random,
             limit      : this.#limit,
             offset     : this.#offset,
             columns    : this.#columns,
@@ -888,6 +958,19 @@ export class Builder<T = Record<string, unknown>> {
             : { operator: parameters[0] as Operator, value: parameters[1] };
 
         return this.#push({ type: 'basic', column: column as string, operator: resolved.operator, value: resolved.value, conjunction, not });
+    }
+
+    /**
+     * Add a nested group applying the same comparison to each of the columns.
+     */
+    #across(joiner: Conjunction, not: boolean, columns: Key<T>[], parameters: unknown[]): this {
+        const nested: Builder<T> = new Builder<T>(this.#connection, this.#table, this.#transaction);
+
+        for (const column of columns) {
+            nested.#constrain(joiner, false, column, parameters);
+        }
+
+        return this.#push({ type: 'nested', constraints: nested.#constraints, conjunction: 'and', not });
     }
 
     /**

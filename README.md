@@ -715,6 +715,38 @@ Every one of these has an `or` form too: `orWhere`, `orWhereIn`, `orWhereNotIn`,
 `orWhereNotNull`, `orWhereBetween`, `orWhereNotBetween`, `orWhereLike`, `orWhereNotLike` and
 `orWhereColumn`, so a disjunction no longer needs a nested closure.
 
+`whereAny`, `whereAll` and `whereNone` apply one comparison to several columns at once, as a nested
+group joined to the rest of the query with `and`:
+
+```ts
+DB.table<User>('users')
+    .where('active', true)
+    .whereAny(['name', 'email'], 'like', '%john%')
+    .whereAll(['email', 'backup_email'], '!=', '')
+    .whereNone(['role', 'status'], 'banned');
+```
+
+| Method      | A record matches when                   |
+|-------------|-----------------------------------------|
+| `whereAny`  | Any of the columns meets the comparison |
+| `whereAll`  | Every one of the columns meets it       |
+| `whereNone` | None of the columns meets it            |
+
+Date columns can be constrained by their parts, read in local time:
+
+```ts
+DB.table<Post>('posts')
+    .whereDate('published_at', '2026-02-01')
+    .whereYear('published_at', 2026)
+    .whereMonth('published_at', 2)
+    .whereDay('published_at', 1)
+    .whereTime('published_at', '>=', '09:30');
+```
+
+`whereTime` compares zero padded `HH:MM:SS` strings, and pads `HH:MM` with `:00`, so `'09:30'`
+means `09:30:00`. `whereDate` becomes a range and can be served by an index. The other parts, and
+`whereTime`, are checked against every record the query reads. None of them has an `or` form.
+
 Operators: `=`, `==`, `===`, `!=`, `<>`, `!==`, `<`, `>`, `<=`, `>=`, `like`, `not like`. `==` is
 loose and `===` is strict.
 
@@ -742,6 +774,8 @@ DB.table<User>('users')
     .orderBy('name')
     .latest('created_at')
     .oldest('created_at')
+    .reorder('email', 'desc')
+    .inRandomOrder()
     .limit(10)
     .offset(20)
     .forPage(2, 15)
@@ -753,6 +787,24 @@ DB.table<User>('users')
 
 `select()` projects in memory after the fetch. IndexedDB always returns whole records, so it shapes
 the result rather than saving any work.
+
+| Method                        | Effect                                                                        |
+|-------------------------------|-------------------------------------------------------------------------------|
+| `reorder()`                   | Clears every order, including a random one                                    |
+| `reorder(column, direction?)` | Replaces every order with one, ascending unless told otherwise                |
+| `inRandomOrder()`             | Returns the records shuffled, setting any other order aside until `reorder()` |
+
+`reorder` suits a shared base query that already sorts, such as one ending in `latest()`:
+
+```ts
+const recent: Builder<Post> = DB.table<Post>('posts').where('published', true).latest();
+
+const alphabetical: Post[] = await recent.clone().reorder('title').get();
+```
+
+`inRandomOrder` shuffles every matching record before applying `limit` and `offset`, so a random
+`first()` still reads the whole match, and no index is used for the order. `chunk`, `each` and
+`lazy` walk the match in the shuffled order.
 
 #### Terminals
 
@@ -862,7 +914,9 @@ The key path may not be updated, so `update`, `upsert` and `increment` all refus
 `update`, `delete`, `increment` and `decrement` honor `orderBy` together with `limit` and
 `offset`, so they touch the same records a read of the query would return, whether or not an index
 serves the order. Without an `orderBy`, they follow the order the plan scans, which is index order
-when an index drives the query and key order otherwise.
+when an index drives the query and key order otherwise. With `inRandomOrder()`, a `limit` or
+`offset` picks the records from the shuffled match, so
+`where('role', 'guest').inRandomOrder().limit(10).delete()` removes ten guests at random.
 
 > Modeled on Laravel's [Database: Query Builder](https://laravel.com/docs/12.x/queries). The method
 > names and their semantics match, and every terminal is asynchronous because IndexedDB is.

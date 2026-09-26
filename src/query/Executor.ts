@@ -40,7 +40,7 @@ export class Executor<T> {
     async explain(): Promise<string> {
         const schema: TableSchema = await this.#connection.schema(this.#query.table);
 
-        return Planner.describe(Planner.plan(this.#query.constraints, this.#query.orders, schema));
+        return Planner.describe(Planner.plan(this.#query.constraints, this.#orders(), schema));
     }
 
     /**
@@ -94,7 +94,7 @@ export class Executor<T> {
      */
     async count(): Promise<number> {
         const schema: TableSchema = await this.#connection.schema(this.#query.table);
-        const plan: Plan = Planner.plan(this.#query.constraints, this.#query.orders, schema);
+        const plan: Plan = Planner.plan(this.#query.constraints, this.#orders(), schema);
 
         if (plan.residual.length > 0 || plan.values !== null) {
             return (await this.records()).length;
@@ -217,7 +217,7 @@ export class Executor<T> {
      */
     async modify(apply: (cursor: IDBCursorWithValue) => void): Promise<number> {
         const schema: TableSchema = await this.#connection.schema(this.#query.table);
-        const plan: Plan = Planner.plan(this.#query.constraints, this.#query.orders, schema);
+        const plan: Plan = Planner.plan(this.#query.constraints, this.#orders(), schema);
         const store: IDBObjectStore = await this.#store('readwrite');
         const started: number = performance.now();
         const matches: (record: Record<string, unknown>) => boolean = Predicate.compile(plan.residual);
@@ -225,7 +225,8 @@ export class Executor<T> {
         const offset: number = this.#query.offset;
         const ceiling: number | null = limit === null ? null : offset + limit;
 
-        const collects: boolean = !plan.ordered && this.#query.orders.length > 0 && (limit !== null || offset > 0);
+        const arranged: boolean = this.#query.random || this.#query.orders.length > 0;
+        const collects: boolean = !plan.ordered && arranged && (limit !== null || offset > 0);
 
         let seen: number = 0;
         let affected: number = 0;
@@ -374,7 +375,7 @@ export class Executor<T> {
         }
 
         const schema: TableSchema = await this.#connection.schema(this.#query.table);
-        const plan: Plan = Planner.plan(this.#query.constraints, this.#query.orders, schema);
+        const plan: Plan = Planner.plan(this.#query.constraints, this.#orders(), schema);
         const store: IDBObjectStore = await this.#store('readonly');
         const started: number = performance.now();
         const matches: (record: Record<string, unknown>) => boolean = Predicate.compile(plan.residual);
@@ -434,14 +435,41 @@ export class Executor<T> {
     }
 
     /**
-     * Sort the collected records by the requested orders.
+     * Sort the collected records by the requested orders, or shuffle them when the order is random.
      */
     #sorted(collected: Entry<T>[]): Entry<T>[] {
+        if (this.#query.random) {
+            return this.#shuffled(collected);
+        }
+
         return Comparator.sort(
             collected,
             this.#query.orders,
             (entry: Entry<T>, column: string): unknown => (entry.record as Record<string, unknown>)[column],
         );
+    }
+
+    /**
+     * Get a copy of the collected records in a random order.
+     */
+    #shuffled<R>(collected: R[]): R[] {
+        const shuffled: R[] = [...collected];
+
+        // Fisher and Yates, which gives every permutation the same chance.
+        for (let index: number = shuffled.length - 1; index > 0; index--) {
+            const other: number = Math.floor(Math.random() * (index + 1));
+
+            [shuffled[index], shuffled[other]] = [shuffled[other] as R, shuffled[index] as R];
+        }
+
+        return shuffled;
+    }
+
+    /**
+     * Get the orders the query sorts by, which a random order sets aside.
+     */
+    #orders(): readonly Order[] {
+        return this.#query.random ? [] : this.#query.orders;
     }
 
     /**
@@ -495,7 +523,9 @@ export class Executor<T> {
         const matches: (row: Record<string, unknown>) => boolean = Predicate.compile(constraints);
 
         const kept: Record<string, unknown>[] = rows.filter(matches);
-        const sorted: Record<string, unknown>[] = Comparator.sort(kept, orders, (row: Record<string, unknown>, column: string): unknown => row[column]);
+        const sorted: Record<string, unknown>[] = this.#query.random
+            ? this.#shuffled(kept)
+            : Comparator.sort(kept, orders, (row: Record<string, unknown>, column: string): unknown => row[column]);
         const paged: Record<string, unknown>[] = this.#paged(sorted);
 
         this.#emit('join', started, paged.length);
@@ -512,7 +542,7 @@ export class Executor<T> {
             this.#query.table,
             plan,
             this.#query.constraints as Constraint[],
-            this.#query.orders as Order[],
+            this.#orders() as Order[],
             this.#query.limit,
             performance.now() - started,
             records,

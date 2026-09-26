@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { Connection } from '../../src/database/Connection';
 import { Migration } from '../../src/migrations/Migration';
 import { Schema } from '../../src/schema/Schema';
@@ -507,6 +507,47 @@ describe('Builder ordered writes with a limit or offset', (): void => {
         expect(await users().orderBy('email', 'desc').limit(1).delete()).toEqual(1);
         expect(seen).toEqual([['index:users_email_unique', 1]]);
         expect(await users().orderBy('name').pluck('name')).toEqual(['Alice', 'Bob']);
+    });
+});
+
+describe('Builder writes in a random order', (): void => {
+    beforeEach(async (): Promise<void> => {
+        await users().insert([
+            { name: 'Bob', email: 'bob@example.com' },
+            { name: 'Carol', email: 'carol@example.com' },
+            { name: 'Alice', email: 'alice@example.com' },
+        ]);
+
+        // Fisher and Yates always drawing the first position turns Bob, Carol, Alice into Carol,
+        // Alice, Bob, which is neither key order nor name order.
+        vi.spyOn(Math, 'random').mockReturnValue(0);
+    });
+
+    afterEach((): void => {
+        vi.restoreAllMocks();
+    });
+
+    test('deletes a record chosen from the shuffled match', async (): Promise<void> => {
+        expect(await users().orderBy('name').inRandomOrder().limit(1).delete()).toEqual(1);
+        expect(await users().reorder().pluck('name')).toEqual(['Bob', 'Alice']);
+    });
+
+    test('skips the offset in the shuffled match', async (): Promise<void> => {
+        expect(await users().inRandomOrder().offset(1).update({ role: 'owner' })).toEqual(2);
+        expect(await users().where('role', 'owner').pluck('name')).toEqual(['Bob', 'Alice']);
+    });
+
+    test('shuffles inside a transaction', async (): Promise<void> => {
+        await connection.transaction(async (transaction: Transaction): Promise<void> => {
+            expect(await transaction.table<User>('users').inRandomOrder().limit(1).increment('visits')).toEqual(1);
+        });
+
+        expect(await users().where('visits', 1).pluck('name')).toEqual(['Carol']);
+    });
+
+    test('touches every match without shuffling when nothing limits the write', async (): Promise<void> => {
+        expect(await users().inRandomOrder().update({ role: 'owner' })).toEqual(3);
+        expect(Math.random).not.toHaveBeenCalled();
     });
 });
 

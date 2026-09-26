@@ -15,6 +15,7 @@ export type Constraint =
     | { type: 'between'; column: string; from: unknown; to: unknown; conjunction: Conjunction; not: boolean }
     | { type: 'column'; column: string; operator: Operator; other: string; conjunction: Conjunction; not: boolean }
     | { type: 'part'; column: string; part: DatePart; value: number; conjunction: Conjunction; not: boolean }
+    | { type: 'time'; column: string; operator: Operator; value: string; conjunction: Conjunction; not: boolean }
     | { type: 'nested'; constraints: Constraint[]; conjunction: Conjunction; not: boolean };
 
 export interface Order {
@@ -37,6 +38,7 @@ export interface Query {
     readonly transaction: IDBTransaction | null;
     readonly constraints: readonly Constraint[];
     readonly orders: readonly Order[];
+    readonly random: boolean;
     readonly limit: number | null;
     readonly offset: number;
     readonly columns: readonly string[] | null;

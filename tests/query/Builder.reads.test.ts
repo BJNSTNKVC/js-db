@@ -41,6 +41,12 @@ class CreateUsersTable extends Migration {
             table.integer('weight').nullable();
             table.datetime('seen_at').nullable();
         });
+
+        await Schema.create('visits', (table: Blueprint): void => {
+            table.id();
+            table.string('label');
+            table.datetime('at').nullable().index();
+        });
     }
 }
 
@@ -55,6 +61,21 @@ const logs: Omit<Log, 'id'>[] = [
     { level: 'info', weight: null, seen_at: new Date('2026-03-01T00:00:00.000Z') },
     { level: 'info', weight: null, seen_at: new Date('2026-01-01T00:00:00.000Z') },
     { level: 'warn', weight: 1, seen_at: new Date('2026-02-01T00:00:00.000Z') },
+];
+
+interface Visit {
+    id: number;
+    label: string;
+    at: Date | string | null;
+}
+
+// Built from local parts, since a time of day is read in local time.
+const visits: Omit<Visit, 'id'>[] = [
+    { label: 'morning', at: new Date(2026, 0, 5, 9, 30, 0) },
+    { label: 'later', at: new Date(2026, 1, 10, 9, 30, 15) },
+    { label: 'evening', at: new Date(2026, 2, 1, 18, 45, 0) },
+    { label: 'never', at: null },
+    { label: 'garbled', at: 'not a date' },
 ];
 
 const seed: Omit<User, 'id'>[] = [
@@ -87,7 +108,7 @@ beforeAll(async (): Promise<void> => {
     await connection.migrate();
 
     const database: IDBDatabase = await connection.open();
-    const transaction: IDBTransaction = database.transaction(['users', 'logs'], 'readwrite');
+    const transaction: IDBTransaction = database.transaction(['users', 'logs', 'visits'], 'readwrite');
 
     for (const user of seed) {
         transaction.objectStore('users').add(user);
@@ -95,6 +116,10 @@ beforeAll(async (): Promise<void> => {
 
     for (const log of logs) {
         transaction.objectStore('logs').add(log);
+    }
+
+    for (const visit of visits) {
+        transaction.objectStore('visits').add(visit);
     }
 
     await new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
@@ -284,6 +309,14 @@ describe('Builder shaping', (): void => {
 
         expect(query.dump()).toBe(query);
         expect(log).toHaveBeenCalledWith(expect.objectContaining({ table: 'users' }));
+    });
+
+    test('dumps its random order', async (): Promise<void> => {
+        const log: MockInstance = vi.spyOn(console, 'log').mockImplementation((): void => {});
+
+        users().inRandomOrder().dump();
+
+        expect(log).toHaveBeenCalledWith(expect.objectContaining({ random: true }));
     });
 
     test('dumps its joins', async (): Promise<void> => {
@@ -715,5 +748,204 @@ describe('Builder disjunctive constraints', (): void => {
         }));
 
         expect(chained.sort()).toEqual(nested.sort());
+    });
+});
+
+describe('Builder.reorder', (): void => {
+    test('clears every order', async (): Promise<void> => {
+        expect(await names(users().orderBy('name', 'desc').reorder())).toEqual(['Alice', 'Bob', 'Carol', 'Dave', 'Erin']);
+    });
+
+    test('replaces the orders with the one given', async (): Promise<void> => {
+        expect(await names(users().orderBy('age').orderBy('role').reorder('name', 'desc'))).toEqual(['Erin', 'Dave', 'Carol', 'Bob', 'Alice']);
+    });
+
+    test('sorts ascending by default', async (): Promise<void> => {
+        expect(await names(users().latest('name').reorder('name'))).toEqual(['Alice', 'Bob', 'Carol', 'Dave', 'Erin']);
+    });
+
+    test('clears a random order', async (): Promise<void> => {
+        const random: MockInstance = vi.spyOn(Math, 'random').mockReturnValue(0);
+
+        expect(await names(users().inRandomOrder().reorder('name'))).toEqual(['Alice', 'Bob', 'Carol', 'Dave', 'Erin']);
+        expect(random).not.toHaveBeenCalled();
+    });
+
+    test('lets an index serve the new order', async (): Promise<void> => {
+        expect(await users().orderBy('role').reorder('name').explain()).toEqual('index:users_name_index');
+    });
+});
+
+describe('Builder.inRandomOrder', (): void => {
+    test('returns every matching record', async (): Promise<void> => {
+        expect((await names(users().inRandomOrder())).sort()).toEqual(['Alice', 'Bob', 'Carol', 'Dave', 'Erin']);
+    });
+
+    test('shuffles the records', async (): Promise<void> => {
+        vi.spyOn(Math, 'random').mockReturnValue(0);
+
+        // Fisher and Yates always drawing the first position rotates the list by one.
+        expect(await names(users().inRandomOrder())).toEqual(['Bob', 'Carol', 'Dave', 'Erin', 'Alice']);
+    });
+
+    test('ignores any other order', async (): Promise<void> => {
+        vi.spyOn(Math, 'random').mockReturnValue(0.999);
+
+        expect(await names(users().orderBy('name', 'desc').inRandomOrder().latest('age'))).toEqual(['Alice', 'Bob', 'Carol', 'Dave', 'Erin']);
+    });
+
+    test('never cursors an index for the order', async (): Promise<void> => {
+        expect(await users().orderBy('name').inRandomOrder().explain()).toEqual('scan');
+    });
+
+    test('shuffles the whole match before the limit and offset', async (): Promise<void> => {
+        vi.spyOn(Math, 'random').mockReturnValue(0);
+
+        expect(await names(users().orderBy('name').inRandomOrder().limit(2))).toEqual(['Bob', 'Carol']);
+        expect(await names(users().orderBy('name').inRandomOrder().offset(1).limit(2))).toEqual(['Carol', 'Dave']);
+    });
+
+    test('shuffles the whole match for the first record', async (): Promise<void> => {
+        vi.spyOn(Math, 'random').mockReturnValue(0);
+
+        expect((await users().orderBy('name').inRandomOrder().first())?.name).toEqual('Bob');
+    });
+
+    test('honors the constraints of the query', async (): Promise<void> => {
+        vi.spyOn(Math, 'random').mockReturnValue(0);
+
+        expect(await names(users().where('role', 'member').inRandomOrder())).toEqual(['Dave', 'Erin', 'Bob']);
+    });
+
+    test('shuffles the keys chunk walks', async (): Promise<void> => {
+        vi.spyOn(Math, 'random').mockReturnValue(0);
+
+        const pages: string[][] = [];
+
+        await users().inRandomOrder().chunk(2, (records: User[]): void => {
+            pages.push(records.map((user: User): string => user.name));
+        });
+
+        expect(pages).toEqual([['Bob', 'Carol'], ['Dave', 'Erin'], ['Alice']]);
+    });
+
+    test('shuffles the keys lazy walks', async (): Promise<void> => {
+        vi.spyOn(Math, 'random').mockReturnValue(0);
+
+        const seen: string[] = [];
+
+        for await (const user of users().inRandomOrder().lazy(2)) {
+            seen.push(user.name);
+        }
+
+        expect(seen).toEqual(['Bob', 'Carol', 'Dave', 'Erin', 'Alice']);
+    });
+
+    test('shuffles the rows of a joined query', async (): Promise<void> => {
+        const random: MockInstance = vi.spyOn(Math, 'random').mockReturnValue(0.999);
+
+        expect(await users().crossJoin('logs').orderBy('users.name').inRandomOrder().get()).toHaveLength(15);
+        expect(random).toHaveBeenCalledTimes(14);
+    });
+
+    test('is carried over by clone', async (): Promise<void> => {
+        vi.spyOn(Math, 'random').mockReturnValue(0);
+
+        expect(await names(users().orderBy('name').inRandomOrder().clone())).toEqual(['Bob', 'Carol', 'Dave', 'Erin', 'Alice']);
+    });
+
+    test('is dropped by a grouping, which orders its own groups', async (): Promise<void> => {
+        const random: MockInstance = vi.spyOn(Math, 'random').mockReturnValue(0);
+
+        expect(await users().inRandomOrder().groupBy('role').orderBy('role').get()).toEqual([{ role: 'admin' }, { role: 'member' }, { role: 'owner' }]);
+        expect(random).not.toHaveBeenCalled();
+    });
+
+    test('reports no orders on the executed query', async (): Promise<void> => {
+        const seen: unknown[] = [];
+
+        Dispatcher.listen('db:query', ((event: QueryExecuted): void => {
+            seen.push(event.orders);
+        }) as (event: Event) => void, true);
+
+        await users().orderBy('name').inRandomOrder().get();
+
+        expect(seen).toEqual([[]]);
+    });
+});
+
+describe('Builder.whereTime', (): void => {
+    /**
+     * Begin a query against the seeded visits table.
+     */
+    function times(): Builder<Visit> {
+        return connection.table<Visit>('visits');
+    }
+
+    /**
+     * Get the labels of the visits a query returns.
+     */
+    async function labels(query: Builder<Visit>): Promise<string[]> {
+        return (await query.get()).map((visit: Visit): string => visit.label);
+    }
+
+    test('matches a time given with seconds', async (): Promise<void> => {
+        expect(await labels(times().whereTime('at', '09:30:15'))).toEqual(['later']);
+    });
+
+    test('pads a time given without seconds', async (): Promise<void> => {
+        expect(await labels(times().whereTime('at', '09:30'))).toEqual(['morning']);
+    });
+
+    test('ignores the date', async (): Promise<void> => {
+        expect(await labels(times().whereTime('at', '18:45:00'))).toEqual(['evening']);
+    });
+
+    test('compares with an explicit operator', async (): Promise<void> => {
+        expect(await labels(times().whereTime('at', '>=', '09:30'))).toEqual(['morning', 'later', 'evening']);
+        expect(await labels(times().whereTime('at', '<', '12:00'))).toEqual(['morning', 'later']);
+        expect(await labels(times().whereTime('at', '>', '09:30:00'))).toEqual(['later', 'evening']);
+    });
+
+    test('matches nothing where the column is null or holds no date', async (): Promise<void> => {
+        expect(await labels(times().whereTime('at', '!=', '09:30'))).toEqual(['later', 'evening']);
+    });
+
+    test('combines with other constraints', async (): Promise<void> => {
+        expect(await labels(times().whereTime('at', '<', '12:00').where('label', 'later'))).toEqual(['later']);
+    });
+
+    test('never drives the scan, even over an indexed column', async (): Promise<void> => {
+        expect(await times().whereTime('at', '09:30').explain()).toEqual('scan');
+    });
+});
+
+describe('Builder.whereAny, whereAll and whereNone', (): void => {
+    test('matches when any of the columns meets the comparison', async (): Promise<void> => {
+        expect(await names(users().whereAny(['name', 'role'], 'like', '%o%'))).toEqual(['Bob', 'Carol']);
+    });
+
+    test('matches when every one of the columns meets the comparison', async (): Promise<void> => {
+        expect(await names(users().whereAll(['name', 'role'], 'like', '%o%'))).toEqual(['Carol']);
+    });
+
+    test('matches when none of the columns meets the comparison', async (): Promise<void> => {
+        expect(await names(users().whereNone(['name', 'role'], 'like', '%o%'))).toEqual(['Alice', 'Dave', 'Erin']);
+    });
+
+    test('compares with an implicit equals', async (): Promise<void> => {
+        expect(await names(users().whereAny(['name', 'role'], 'owner'))).toEqual(['Carol']);
+        expect(await names(users().whereAll(['name', 'email'], 'Alice'))).toEqual([]);
+        expect(await names(users().whereNone(['name', 'role'], 'member'))).toEqual(['Alice', 'Carol']);
+    });
+
+    test('joins the group to the rest of the query with and', async (): Promise<void> => {
+        expect(await names(users().whereAny(['name', 'role'], 'like', '%o%').where('age', 25))).toEqual(['Bob']);
+        expect(await names(users().where('age', 25).whereAny(['name', 'role'], 'like', '%o%'))).toEqual(['Bob']);
+    });
+
+    test('keeps its comparisons inside the group', async (): Promise<void> => {
+        // Were the or to leak out of the group, the email of Alice, who is no member, would match.
+        expect(await names(users().where('role', 'member').whereAny(['name', 'email'], 'like', 'a%'))).toEqual([]);
     });
 });

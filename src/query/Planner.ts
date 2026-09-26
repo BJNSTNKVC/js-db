@@ -98,7 +98,7 @@ export class Planner {
      * Assess whether a single constraint can drive the scan.
      */
     static #candidacy(constraint: Constraint, schema: TableSchema): Candidate | null {
-        if (constraint.type === 'nested' || constraint.type === 'null' || constraint.type === 'column' || constraint.type === 'part' || constraint.not) {
+        if (constraint.type === 'nested' || constraint.type === 'null' || constraint.type === 'column' || constraint.type === 'part' || constraint.type === 'time' || constraint.not) {
             return null;
         }
 
