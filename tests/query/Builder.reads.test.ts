@@ -285,6 +285,16 @@ describe('Builder shaping', (): void => {
         expect(query.dump()).toBe(query);
         expect(log).toHaveBeenCalledWith(expect.objectContaining({ table: 'users' }));
     });
+
+    test('dumps its joins', async (): Promise<void> => {
+        const log: MockInstance = vi.spyOn(console, 'log').mockImplementation((): void => {});
+
+        users().join('posts', 'users.id', 'posts.user_id').dump();
+
+        expect(log).toHaveBeenCalledWith(expect.objectContaining({
+            joins: [{ table: 'posts', type: 'inner', conditions: [{ first: 'users.id', operator: '=', second: 'posts.user_id', conjunction: 'and' }] }],
+        }));
+    });
 });
 
 describe('Builder terminals', (): void => {

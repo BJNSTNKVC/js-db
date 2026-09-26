@@ -3,7 +3,7 @@ import { Connection } from '../../src/database/Connection';
 import { Migration } from '../../src/migrations/Migration';
 import { Schema } from '../../src/schema/Schema';
 import { Blueprint } from '../../src/schema/Blueprint';
-import { Coercer } from '../../src/schema/Coercer';
+import { Enforcer } from '../../src/schema/Enforcer';
 import { CheckConstraintViolationException, NotNullConstraintViolationException, SchemaException } from '../../src/exceptions';
 import type { Builder } from '../../src/query/Builder';
 import type { ColumnSchema, Enumerable, TableSchema } from '../../src/schema/types';
@@ -80,19 +80,19 @@ describe('Blueprint.decimal', (): void => {
     });
 
     test('rounds a fractional value when the connection is loose', (): void => {
-        expect(Coercer.coerce(19.99, 'decimal', false)).toEqual(20);
+        expect(Enforcer.coerce(19.99, 'decimal', false)).toEqual(20);
     });
 
     test('refuses an uncoercible value', (): void => {
-        expect((): unknown => Coercer.coerce('abc', 'decimal', true)).toThrow(TypeError);
+        expect((): unknown => Enforcer.coerce('abc', 'decimal', true)).toThrow(TypeError);
     });
 
     test('yields null for an uncoercible value when loose', (): void => {
-        expect(Coercer.coerce('abc', 'decimal', false)).toBeNull();
+        expect(Enforcer.coerce('abc', 'decimal', false)).toBeNull();
     });
 
     test('passes null through', (): void => {
-        expect(Coercer.coerce(null, 'decimal', true)).toBeNull();
+        expect(Enforcer.coerce(null, 'decimal', true)).toBeNull();
     });
 
     test('orders exactly, being an integer at rest', async (): Promise<void> => {
@@ -158,7 +158,7 @@ describe('Blueprint.enum', (): void => {
     });
 
     test('coerces a value to a string before checking it', (): void => {
-        expect(Coercer.coerce(7, 'enum', true)).toEqual('7');
+        expect(Enforcer.coerce(7, 'enum', true)).toEqual('7');
     });
 
     test('refuses to declare an enumerated column over no values', (): void => {
@@ -198,25 +198,25 @@ describe('Enumerated columns on a loose connection', (): void => {
     }
 
     test('writes null in place of a value it does not accept', (): void => {
-        expect(Coercer.insertable({ status: 'pending' }, schema(true), false, new Date())).toEqual({ status: null });
+        expect(Enforcer.insertable({ status: 'pending' }, schema(true), false, new Date())).toEqual({ status: null });
     });
 
     test('still reports a non nullable column it had to empty', (): void => {
-        expect((): unknown => Coercer.insertable({ status: 'pending' }, schema(false), true, new Date())).toThrow(
+        expect((): unknown => Enforcer.insertable({ status: 'pending' }, schema(false), true, new Date())).toThrow(
             CheckConstraintViolationException,
         );
     });
 
     test('writes null for a non nullable column when loose', (): void => {
-        expect(Coercer.insertable({ status: 'pending' }, schema(false), false, new Date())).toEqual({ status: null });
+        expect(Enforcer.insertable({ status: 'pending' }, schema(false), false, new Date())).toEqual({ status: null });
     });
 
     test('leaves an accepted value alone', (): void => {
-        expect(Coercer.insertable({ status: 'live' }, schema(false), true, new Date())).toEqual({ status: 'live' });
+        expect(Enforcer.insertable({ status: 'live' }, schema(false), true, new Date())).toEqual({ status: 'live' });
     });
 
     test('reports a null in a non nullable enumerated column', (): void => {
-        expect((): unknown => Coercer.insertable({ status: null }, schema(false), true, new Date())).toThrow(
+        expect((): unknown => Enforcer.insertable({ status: null }, schema(false), true, new Date())).toThrow(
             NotNullConstraintViolationException,
         );
     });

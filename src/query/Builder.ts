@@ -1,23 +1,10 @@
-import { QueryExecuted } from '../events';
-import { Dispatcher } from '../events/Dispatcher';
-import {
-    MultipleRecordsFoundException,
-    RecordsNotFoundException,
-    SchemaException,
-    UniqueConstraintViolationException
-} from '../exceptions';
-import { Request } from '../database/Request';
-import { Coercer } from '../schema/Coercer';
-import { Columns } from './Columns';
-import { Comparator } from './Comparator';
+import { MultipleRecordsFoundException, RecordsNotFoundException } from '../exceptions';
 import { Join } from './Join';
-import { Joiner } from './Joiner';
-import { Planner } from './Planner';
 import { Grouping } from './Grouping';
-import { Predicate } from './Predicate';
-import { Signature } from './Signature';
+import { Executor } from './Executor';
+import { Writer } from './Writer';
 import type { Connection } from '../database/Connection';
-import type { ColumnSchema, IndexSchema, TableSchema } from '../schema/types';
+import type { TableSchema } from '../schema/types';
 import type {
     Conjunction,
     Constraint,
@@ -29,8 +16,7 @@ import type {
     Operator,
     Order,
     Paginated,
-    Plan,
-    Projection
+    Query
 } from './types';
 
 type Nested<T> = (query: Builder<T>) => void;
@@ -371,7 +357,7 @@ export class Builder<T = Record<string, unknown>> {
         records.#offset = 0;
 
         return new Grouping<T, G>(
-            async (): Promise<Record<string, unknown>[]> => await records.#records() as Record<string, unknown>[],
+            async (): Promise<Record<string, unknown>[]> => await records.#executor().records() as Record<string, unknown>[],
             columns,
         );
     }
@@ -486,15 +472,7 @@ export class Builder<T = Record<string, unknown>> {
      * Dump the state of the query.
      */
     dump(): this {
-        console.log({
-            table      : this.#table,
-            constraints: this.#constraints,
-            orders     : this.#orders,
-            limit      : this.#limit,
-            offset     : this.#offset,
-            columns    : this.#columns,
-            distinct   : this.#distinct,
-        });
+        console.log(this.#query());
 
         return this;
     }
@@ -503,16 +481,16 @@ export class Builder<T = Record<string, unknown>> {
      * Describe the plan the query would run under.
      */
     async explain(): Promise<string> {
-        const schema: TableSchema = await this.#connection.schema(this.#table);
-
-        return Planner.describe(Planner.plan(this.#constraints, this.#orders, schema));
+        return this.#executor().explain();
     }
 
     /**
      * Get every record matching the query.
      */
     async get(): Promise<T[]> {
-        return this.#shape(await this.#records());
+        const executor: Executor<T> = this.#executor();
+
+        return executor.shape(await executor.records());
     }
 
     /**
@@ -558,13 +536,7 @@ export class Builder<T = Record<string, unknown>> {
      * Get the record with the given key.
      */
     async find(key: IDBValidKey): Promise<T | null> {
-        const store: IDBObjectStore = await this.#store('readonly');
-        const started: number = performance.now();
-        const record: T | undefined = await Request.settle(store.get(key) as IDBRequest<T | undefined>);
-
-        this.#emit('key', started, record === undefined ? 0 : 1);
-
-        return record ?? null;
+        return this.#executor().find(key);
     }
 
     /**
@@ -599,7 +571,7 @@ export class Builder<T = Record<string, unknown>> {
     async pluck<V = unknown>(column: Key<T>): Promise<V[]>;
     async pluck<V = unknown>(column: Key<T>, key: Key<T>): Promise<Record<string, V>>;
     async pluck<V = unknown>(column: Key<T>, key?: Key<T>): Promise<V[] | Record<string, V>> {
-        const records: Record<string, unknown>[] = await this.#records() as Record<string, unknown>[];
+        const records: Record<string, unknown>[] = await this.#executor().records() as Record<string, unknown>[];
 
         if (key === undefined) {
             return records.map((record: Record<string, unknown>): V => record[column] as V);
@@ -612,7 +584,7 @@ export class Builder<T = Record<string, unknown>> {
      * Determine whether any record matches the query.
      */
     async exists(): Promise<boolean> {
-        return (await this.clone().limit(1).#records()).length > 0;
+        return (await this.clone().limit(1).#executor().records()).length > 0;
     }
 
     /**
@@ -626,35 +598,21 @@ export class Builder<T = Record<string, unknown>> {
      * Count the records matching the query.
      */
     async count(): Promise<number> {
-        const schema: TableSchema = await this.#connection.schema(this.#table);
-        const plan: Plan = Planner.plan(this.#constraints, this.#orders, schema);
-
-        if (plan.residual.length > 0 || plan.values !== null) {
-            return (await this.#records()).length;
-        }
-
-        const store: IDBObjectStore = await this.#store('readonly');
-        const started: number = performance.now();
-        const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index);
-        const count: number = await Request.settle(source.count(plan.range ?? undefined));
-
-        this.#emit(Planner.describe(plan), started, count);
-
-        return count;
+        return this.#executor().count();
     }
 
     /**
      * Sum a column across the records matching the query.
      */
     async sum(column: Key<T>): Promise<number> {
-        return (await this.#numbers(column)).reduce((carry: number, value: number): number => carry + value, 0);
+        return (await this.#executor().numbers(column)).reduce((carry: number, value: number): number => carry + value, 0);
     }
 
     /**
      * Average a column across the records matching the query.
      */
     async avg(column: Key<T>): Promise<number | null> {
-        const values: number[] = await this.#numbers(column);
+        const values: number[] = await this.#executor().numbers(column);
 
         if (values.length === 0) {
             return null;
@@ -667,59 +625,14 @@ export class Builder<T = Record<string, unknown>> {
      * Get the smallest value of a column across the records matching the query.
      */
     async min(column: Key<T>): Promise<number | null> {
-        return this.#extreme(column, 'next');
+        return this.#executor().extreme(column, 'next');
     }
 
     /**
      * Get the largest value of a column across the records matching the query.
      */
     async max(column: Key<T>): Promise<number | null> {
-        return this.#extreme(column, 'prev');
-    }
-
-    /**
-     * Get the value at one end of a column's range.
-     */
-    async #extreme(column: Key<T>, direction: IDBCursorDirection): Promise<number | null> {
-        const index: IndexSchema | null = await this.#sole(column);
-
-        // An index is already sorted, and IndexedDB omits records with no value for its key path,
-        // which is exactly what SQL does with nulls. So the answer is its first entry.
-        if (index !== null) {
-            const store: IDBObjectStore = await this.#store('readonly');
-            const started: number = performance.now();
-            const cursor: IDBCursorWithValue | null = await Request.settle(store.index(index.name).openCursor(null, direction));
-
-            this.#emit(`index:${index.name}`, started, cursor === null ? 0 : 1);
-
-            return cursor === null ? null : Number(cursor.key);
-        }
-
-        const values: number[] = await this.#numbers(column);
-
-        if (values.length === 0) {
-            return null;
-        }
-
-        // Reduced rather than spread, since Math.min(...values) throws past roughly 100k arguments.
-        return values.reduce((carry: number, value: number): number => direction === 'next'
-            ? Math.min(carry, value)
-            : Math.max(carry, value));
-    }
-
-    /**
-     * Get the single column index that can answer an unconstrained extreme, if there is one.
-     */
-    async #sole(column: Key<T>): Promise<IndexSchema | null> {
-        if (this.#joins.length > 0 || this.#constraints.length > 0) {
-            return null;
-        }
-
-        const schema: TableSchema = await this.#connection.schema(this.#table);
-
-        return schema.indexes.find((index: IndexSchema): boolean => index.columns.length === 1
-            && index.columns[0] === column
-            && !index.multiEntry) ?? null;
+        return this.#executor().extreme(column, 'prev');
     }
 
     /**
@@ -749,10 +662,12 @@ export class Builder<T = Record<string, unknown>> {
      * Walk the records matching the query in chunks.
      */
     async chunk(size: number, callback: (records: T[], page: number) => unknown): Promise<boolean> {
+        const executor: Executor<T> = this.#executor();
+
         // A joined row is synthesised and has no key of its own, so its pages are sliced from the
         // materialised result rather than fetched back by key.
         if (this.#joins.length > 0) {
-            const rows: T[] = await this.#records();
+            const rows: T[] = await executor.records();
 
             for (let index: number = 0; index < rows.length; index += size) {
                 if (await callback(rows.slice(index, index + size), Math.floor(index / size) + 1) === false) {
@@ -763,19 +678,12 @@ export class Builder<T = Record<string, unknown>> {
             return true;
         }
 
-        const keys: IDBValidKey[] = await this.#keys();
+        const keys: IDBValidKey[] = await executor.keys();
 
         for (let index: number = 0; index < keys.length; index += size) {
-            const page: IDBValidKey[] = keys.slice(index, index + size);
-            const store: IDBObjectStore = await this.#store('readonly');
+            const records: T[] = await executor.fetch(keys.slice(index, index + size));
 
-            const records: (T | undefined)[] = await Promise.all(
-                page.map((key: IDBValidKey): Promise<T | undefined> => Request.settle(store.get(key) as IDBRequest<T | undefined>)),
-            );
-
-            const present: T[] = records.filter((record: T | undefined): record is T => record !== undefined);
-
-            if (await callback(this.#shape(present), Math.floor(index / size) + 1) === false) {
+            if (await callback(executor.shape(records), Math.floor(index / size) + 1) === false) {
                 return false;
             }
         }
@@ -787,27 +695,22 @@ export class Builder<T = Record<string, unknown>> {
      * Walk the records matching the query as an async iterable.
      */
     async *lazy(size: number = 100): AsyncGenerator<T, void, undefined> {
+        const executor: Executor<T> = this.#executor();
+
         // A joined row is synthesised and has no key to fetch it back by, so there is nothing to
         // page over and the materialised result is yielded as it stands.
         if (this.#joins.length > 0) {
-            yield* await this.#records();
+            yield* await executor.records();
 
             return;
         }
 
-        const keys: IDBValidKey[] = await this.#keys();
+        const keys: IDBValidKey[] = await executor.keys();
 
         // Only the keys are held for the whole walk. Each page of records is fetched when the caller
         // reaches it, and released once consumed.
         for (let index: number = 0; index < keys.length; index += size) {
-            const page: IDBValidKey[] = keys.slice(index, index + size);
-            const store: IDBObjectStore = await this.#store('readonly');
-
-            const records: (T | undefined)[] = await Promise.all(
-                page.map((key: IDBValidKey): Promise<T | undefined> => Request.settle(store.get(key) as IDBRequest<T | undefined>)),
-            );
-
-            yield* this.#shape(records.filter((record: T | undefined): record is T => record !== undefined));
+            yield* executor.shape(await executor.fetch(keys.slice(index, index + size)));
         }
     }
 
@@ -824,61 +727,21 @@ export class Builder<T = Record<string, unknown>> {
      * Insert one or more records into the table.
      */
     async insert(records: Partial<T> | Partial<T>[]): Promise<number> {
-        const rows: Partial<T>[] = Array.isArray(records) ? records : [records];
-        const schema: TableSchema = await this.#connection.schema(this.#table);
-        const store: IDBObjectStore = await this.#store('readwrite');
-        const started: number = performance.now();
-
-        for (const row of rows) {
-            await this.#add(store, schema, row);
-        }
-
-        this.#emit('insert', started, rows.length);
-
-        return rows.length;
+        return this.#executor().insert(Array.isArray(records) ? records : [records]);
     }
 
     /**
      * Insert one or more records, skipping any the unique indexes reject.
      */
     async insertOrIgnore(records: Partial<T> | Partial<T>[]): Promise<number> {
-        const rows: Partial<T>[] = Array.isArray(records) ? records : [records];
-        const schema: TableSchema = await this.#connection.schema(this.#table);
-        const store: IDBObjectStore = await this.#store('readwrite');
-        const started: number = performance.now();
-
-        let inserted: number = 0;
-
-        for (const row of rows) {
-            try {
-                await this.#add(store, schema, row);
-
-                inserted++;
-            } catch (error: unknown) {
-                // Only a rejected constraint is skipped. Anything else is the caller's problem.
-                if (!(error instanceof UniqueConstraintViolationException)) {
-                    throw error;
-                }
-            }
-        }
-
-        this.#emit('insert', started, inserted);
-
-        return inserted;
+        return this.#executor().insert(Array.isArray(records) ? records : [records], true);
     }
 
     /**
      * Insert a record and get the key the database gave it.
      */
     async insertGetId(record: Partial<T>): Promise<IDBValidKey> {
-        const schema: TableSchema = await this.#connection.schema(this.#table);
-        const store: IDBObjectStore = await this.#store('readwrite');
-        const started: number = performance.now();
-        const key: IDBValidKey = await this.#add(store, schema, record);
-
-        this.#emit('insert', started, 1);
-
-        return key;
+        return this.#executor().insertGetId(record);
     }
 
     /**
@@ -886,11 +749,9 @@ export class Builder<T = Record<string, unknown>> {
      */
     async update(values: Partial<T>): Promise<number> {
         const schema: TableSchema = await this.#connection.schema(this.#table);
-        const prepared: Record<string, unknown> = Coercer.updatable(values as Record<string, unknown>, schema, this.#connection.strict, new Date());
+        const prepared: Record<string, unknown> = Writer.changes(values as Record<string, unknown>, schema, this.#connection.strict);
 
-        this.#settled(schema, prepared);
-
-        return this.#modify((cursor: IDBCursorWithValue): void => {
+        return this.#executor().modify((cursor: IDBCursorWithValue): void => {
             cursor.update({ ...cursor.value as Record<string, unknown>, ...prepared });
         });
     }
@@ -916,19 +777,7 @@ export class Builder<T = Record<string, unknown>> {
      * Insert records, updating those that already exist.
      */
     async upsert(values: Partial<T>[], uniqueBy: Key<T> | Key<T>[], update?: Key<T>[]): Promise<number> {
-        const schema: TableSchema = await this.#connection.schema(this.#table);
-        const columns: string[] = (Array.isArray(uniqueBy) ? uniqueBy : [uniqueBy]) as string[];
-        const target: IndexSchema | null = this.#conflict(schema, columns);
-        const store: IDBObjectStore = await this.#store('readwrite');
-        const started: number = performance.now();
-
-        for (const value of values) {
-            await this.#merge(store, schema, columns, target, value, update);
-        }
-
-        this.#emit('upsert', started, values.length);
-
-        return values.length;
+        return this.#executor().upsert(values, (Array.isArray(uniqueBy) ? uniqueBy : [uniqueBy]) as string[], update);
     }
 
     /**
@@ -949,7 +798,7 @@ export class Builder<T = Record<string, unknown>> {
      * Delete every record matching the query.
      */
     async delete(): Promise<number> {
-        return this.#modify((cursor: IDBCursorWithValue): void => {
+        return this.#executor().modify((cursor: IDBCursorWithValue): void => {
             cursor.delete();
         });
     }
@@ -958,126 +807,7 @@ export class Builder<T = Record<string, unknown>> {
      * Delete every record in the table.
      */
     async truncate(): Promise<void> {
-        const store: IDBObjectStore = await this.#store('readwrite');
-        const started: number = performance.now();
-
-        await Request.settle(store.clear());
-
-        this.#emit('truncate', started, 0);
-    }
-
-    /**
-     * Add a record to the store, reporting a violated constraint by its index.
-     */
-    async #add(store: IDBObjectStore, schema: TableSchema, record: Partial<T>): Promise<IDBValidKey> {
-        const prepared: Record<string, unknown> = Coercer.insertable(record as Record<string, unknown>, schema, this.#connection.strict, new Date());
-
-        try {
-            return await Request.settle(store.add(prepared), true);
-        } catch (error: unknown) {
-            if (error instanceof DOMException && error.name === 'ConstraintError') {
-                const index: string | null = await this.#violated(store, schema, prepared);
-
-                if (index !== null) {
-                    throw new UniqueConstraintViolationException(this.#table, index);
-                }
-            }
-
-            throw error;
-        }
-    }
-
-    /**
-     * Find the unique index the record collides with, or null when it cannot be attributed.
-     */
-    async #violated(store: IDBObjectStore, schema: TableSchema, record: Record<string, unknown>): Promise<string | null> {
-        // A generated key is absent from the record, and an absent value is not a valid range.
-        if (schema.key !== null && this.#keyable(record[schema.key])) {
-            if (await Request.settle(store.count(IDBKeyRange.only(record[schema.key] as IDBValidKey))) > 0) {
-                return schema.key;
-            }
-        }
-
-        for (const index of schema.indexes.filter((candidate: IndexSchema): boolean => candidate.unique)) {
-            if (!index.columns.every((column: string): boolean => this.#keyable(record[column]))) {
-                continue;
-            }
-
-            const key: IDBValidKey = this.#keyOf(index.columns, record);
-
-            if (await Request.settle(store.index(index.name).count(IDBKeyRange.only(key))) > 0) {
-                return index.name;
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * Determine whether the value may be used as an IndexedDB key.
-     */
-    #keyable(value: unknown): boolean {
-        return value !== null && value !== undefined;
-    }
-
-    /**
-     * Build the index key the given columns of a record form.
-     */
-    #keyOf(columns: string[], record: Record<string, unknown>): IDBValidKey {
-        if (columns.length === 1) {
-            return record[columns[0] as string] as IDBValidKey;
-        }
-
-        return columns.map((column: string): unknown => record[column]) as IDBValidKey;
-    }
-
-    /**
-     * Resolve the conflict target of an upsert, or fail when it cannot be enforced.
-     */
-    #conflict(schema: TableSchema, columns: string[]): IndexSchema | null {
-        if (columns.length === 1 && columns[0] === schema.key) {
-            return null;
-        }
-
-        const index: IndexSchema | undefined = schema.indexes.find((candidate: IndexSchema): boolean => candidate.unique
-            && candidate.columns.length === columns.length
-            && candidate.columns.every((column: string, position: number): boolean => column === columns[position]));
-
-        if (index === undefined) {
-            throw new SchemaException(`Upsert on table [${this.#table}] requires [${columns.join(', ')}] to be the key path or a unique index.`);
-        }
-
-        return index;
-    }
-
-    /**
-     * Insert a record, or merge it into the one already holding its conflict key.
-     */
-    async #merge(store: IDBObjectStore, schema: TableSchema, columns: string[], target: IndexSchema | null, value: Partial<T>, update?: Key<T>[]): Promise<void> {
-        if (target === null) {
-            await Request.settle(store.put(Coercer.insertable(value as Record<string, unknown>, schema, this.#connection.strict, new Date())));
-
-            return;
-        }
-
-        const key: IDBValidKey = this.#keyOf(columns, value as Record<string, unknown>);
-        const existing: Record<string, unknown> | undefined = await Request.settle(store.index(target.name).get(IDBKeyRange.only(key)) as IDBRequest<Record<string, unknown> | undefined>);
-
-        if (existing === undefined) {
-            await this.#add(store, schema, value);
-
-            return;
-        }
-
-        const changes: Record<string, unknown> = update === undefined
-            ? value as Record<string, unknown>
-            : Object.fromEntries((update as string[]).map((column: string): [string, unknown] => [column, (value as Record<string, unknown>)[column]]));
-
-        const prepared: Record<string, unknown> = Coercer.updatable(changes, schema, this.#connection.strict, new Date());
-
-        this.#settled(schema, prepared);
-
-        await Request.settle(store.put({ ...existing, ...prepared }));
+        return this.#executor().truncate();
     }
 
     /**
@@ -1085,11 +815,9 @@ export class Builder<T = Record<string, unknown>> {
      */
     async #step(column: Key<T>, amount: number, extra: Partial<T>): Promise<number> {
         const schema: TableSchema = await this.#connection.schema(this.#table);
-        const prepared: Record<string, unknown> = Coercer.updatable(extra as Record<string, unknown>, schema, this.#connection.strict, new Date());
+        const prepared: Record<string, unknown> = Writer.changes(extra as Record<string, unknown>, schema, this.#connection.strict);
 
-        this.#settled(schema, prepared);
-
-        return this.#modify((cursor: IDBCursorWithValue): void => {
+        return this.#executor().modify((cursor: IDBCursorWithValue): void => {
             const record: Record<string, unknown> = { ...cursor.value as Record<string, unknown> };
             const current: number = Number(record[column] ?? 0);
 
@@ -1098,83 +826,27 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Assert the changes leave the key path of the record alone.
+     * Get the state of the query as a snapshot the executor can read.
      */
-    #settled(schema: TableSchema, changes: Record<string, unknown>): void {
-        if (schema.key !== null && Object.hasOwn(changes, schema.key)) {
-            throw new SchemaException(`Column [${schema.key}] is the key path of table [${this.#table}] and may not be updated.`);
-        }
+    #query(): Query {
+        return {
+            table      : this.#table,
+            transaction: this.#transaction,
+            constraints: this.#constraints,
+            orders     : this.#orders,
+            limit      : this.#limit,
+            offset     : this.#offset,
+            columns    : this.#columns,
+            distinct   : this.#distinct,
+            joins      : this.#joins,
+        };
     }
 
     /**
-     * Apply a change to every record matching the query, in the order the query asks for.
+     * Get an executor for the query as it stands.
      */
-    async #modify(apply: (cursor: IDBCursorWithValue) => void): Promise<number> {
-        const schema: TableSchema = await this.#connection.schema(this.#table);
-        const plan: Plan = Planner.plan(this.#constraints, this.#orders, schema);
-        const store: IDBObjectStore = await this.#store('readwrite');
-        const started: number = performance.now();
-        const matches: (record: Record<string, unknown>) => boolean = Predicate.compile(plan.residual);
-        const ceiling: number | null = this.#limit === null ? null : this.#offset + this.#limit;
-
-        const collects: boolean = !plan.ordered && this.#orders.length > 0 && (this.#limit !== null || this.#offset > 0);
-
-        let seen: number = 0;
-        let affected: number = 0;
-
-        if (collects) {
-            const collected: { record: T; key: IDBValidKey }[] = plan.values === null
-                ? await this.#cursored(store, plan, matches)
-                : await this.#points(store, plan, matches);
-
-            for (const entry of this.#paged(this.#sorted(collected))) {
-                await Request.walk(store.openCursor(IDBKeyRange.only(entry.key)), (cursor: IDBCursorWithValue): void => {
-                    apply(cursor);
-
-                    affected++;
-                });
-            }
-
-            this.#emit(Planner.describe(plan), started, affected);
-
-            return affected;
-        }
-
-        const visit: (cursor: IDBCursorWithValue) => boolean = (cursor: IDBCursorWithValue): boolean => {
-            if (!matches(cursor.value as Record<string, unknown>)) {
-                return true;
-            }
-
-            seen++;
-
-            if (seen > this.#offset) {
-                apply(cursor);
-
-                affected++;
-            }
-
-            return ceiling === null || seen < ceiling;
-        };
-
-        if (plan.values === null) {
-            const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index);
-
-            await Request.walk(source.openCursor(plan.range, plan.direction), visit);
-        } else {
-            for (const value of plan.values) {
-                if (ceiling !== null && seen >= ceiling) {
-                    break;
-                }
-
-                const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index);
-
-                await Request.walk(source.openCursor(IDBKeyRange.only(value as IDBValidKey)), visit);
-            }
-        }
-
-        this.#emit(Planner.describe(plan), started, affected);
-
-        return affected;
+    #executor(): Executor<T> {
+        return new Executor<T>(this.#connection, this.#query());
     }
 
     /**
@@ -1239,47 +911,6 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Get the object store the query reads from.
-     */
-    async #store(mode: IDBTransactionMode, table: string = this.#table): Promise<IDBObjectStore> {
-        if (this.#transaction !== null) {
-            return this.#transaction.objectStore(table);
-        }
-
-        const database: IDBDatabase = await this.#connection.open();
-
-        await this.#connection.schema(table);
-
-        return database.transaction(table, mode).objectStore(table);
-    }
-
-    /**
-     * Get the numeric values of a column across the records matching the query.
-     */
-    async #numbers(column: Key<T>): Promise<number[]> {
-        const records: Record<string, unknown>[] = await this.#records() as Record<string, unknown>[];
-
-        return records
-            .map((record: Record<string, unknown>): unknown => record[column])
-            .filter((value: unknown): boolean => value !== null && value !== undefined)
-            .map((value: unknown): number => Number(value));
-    }
-
-    /**
-     * Get the records matching the query, unshaped.
-     */
-    async #records(): Promise<T[]> {
-        return (await this.#matched()).records;
-    }
-
-    /**
-     * Get the keys of the records matching the query.
-     */
-    async #keys(): Promise<IDBValidKey[]> {
-        return (await this.#matched()).keys;
-    }
-
-    /**
      * Record a join, accepting either the column shorthand or a closure of conditions.
      */
     #join<R>(type: JoinType, table: string, first: string | Joining, operator?: string, second?: string): Builder<R> {
@@ -1296,242 +927,5 @@ export class Builder<T = Record<string, unknown>> {
         this.#joins.push({ table, type, conditions: clause.conditions() });
 
         return this as unknown as Builder<R>;
-    }
-
-    /**
-     * Get the columns of every table the query reads, keyed by table.
-     */
-    async #tables(): Promise<Map<string, string[]>> {
-        const tables: Map<string, string[]> = new Map<string, string[]>();
-        const names: string[] = [this.#table, ...this.#joins.map((clause: JoinClause): string => clause.table)];
-
-        for (const name of names) {
-            const schema: TableSchema = await this.#connection.schema(name);
-
-            tables.set(name, schema.columns.map((column: ColumnSchema): string => column.name));
-        }
-
-        return tables;
-    }
-
-    /**
-     * Run the joins, returning rows whose keys are all qualified by table.
-     */
-    async #joined(): Promise<Record<string, unknown>[]> {
-        const tables: Map<string, string[]> = await this.#tables();
-        const store: IDBObjectStore = await this.#store('readonly');
-        const started: number = performance.now();
-
-        let rows: Record<string, unknown>[] = Joiner.qualify(
-            await Request.settle(store.getAll() as IDBRequest<Record<string, unknown>[]>),
-            this.#table,
-        );
-
-        for (const clause of this.#joins) {
-            const other: IDBObjectStore = await this.#store('readonly', clause.table);
-            const records: Record<string, unknown>[] = await Request.settle(other.getAll() as IDBRequest<Record<string, unknown>[]>);
-            const columns: string[] = (tables.get(clause.table) as string[]).map((column: string): string => `${clause.table}.${column}`);
-
-            rows = Joiner.join(rows, Joiner.qualify(records, clause.table), clause, columns);
-        }
-
-        const constraints: Constraint[] = this.#constraints.map((constraint: Constraint): Constraint => this.#qualified(constraint, tables));
-        const orders: Order[] = this.#orders.map((order: Order): Order => ({ ...order, column: Columns.resolve(order.column, tables) }));
-        const matches: (row: Record<string, unknown>) => boolean = Predicate.compile(constraints);
-
-        const kept: Record<string, unknown>[] = rows.filter(matches);
-        const sorted: Record<string, unknown>[] = Comparator.sort(kept, orders, (row: Record<string, unknown>, column: string): unknown => row[column]);
-        const from: number = this.#offset;
-        const paged: Record<string, unknown>[] = this.#limit === null ? sorted.slice(from) : sorted.slice(from, from + this.#limit);
-
-        this.#emit('join', started, paged.length);
-
-        return this.#flatten(paged, tables);
-    }
-
-    /**
-     * Qualify every column a constraint names with the table that owns it.
-     */
-    #qualified(constraint: Constraint, tables: Map<string, string[]>): Constraint {
-        if (constraint.type === 'nested') {
-            return { ...constraint, constraints: constraint.constraints.map((nested: Constraint): Constraint => this.#qualified(nested, tables)) };
-        }
-
-        if (constraint.type === 'column') {
-            return { ...constraint, column: Columns.resolve(constraint.column, tables), other: Columns.resolve(constraint.other, tables) };
-        }
-
-        return { ...constraint, column: Columns.resolve(constraint.column, tables) };
-    }
-
-    /**
-     * Flatten qualified rows the way SQL does, letting later tables win a collision.
-     */
-    #flatten(rows: Record<string, unknown>[], tables: Map<string, string[]>): Record<string, unknown>[] {
-        if (this.#columns !== null) {
-            return rows.map((row: Record<string, unknown>): Record<string, unknown> => Object.fromEntries(
-                (this.#columns as string[]).map((expression: string): [string, unknown] => {
-                    const projection: Projection = Columns.parse(expression);
-
-                    return [projection.alias, row[Columns.resolve(projection.column, tables)]];
-                }),
-            ));
-        }
-
-        const order: string[] = [...tables.keys()];
-
-        return rows.map((row: Record<string, unknown>): Record<string, unknown> => {
-            const flat: Record<string, unknown> = {};
-
-            for (const table of order) {
-                for (const column of tables.get(table) as string[]) {
-                    if (Object.hasOwn(row, `${table}.${column}`)) {
-                        flat[column] = row[`${table}.${column}`];
-                    }
-                }
-            }
-
-            return flat;
-        });
-    }
-
-    /**
-     * Run the query, collecting the matching records and their keys.
-     */
-    async #matched(): Promise<{ records: T[]; keys: IDBValidKey[] }> {
-        if (this.#joins.length > 0) {
-            const rows: Record<string, unknown>[] = await this.#joined();
-
-            return { records: rows as T[], keys: [] };
-        }
-
-        const schema: TableSchema = await this.#connection.schema(this.#table);
-        const plan: Plan = Planner.plan(this.#constraints, this.#orders, schema);
-        const store: IDBObjectStore = await this.#store('readonly');
-        const started: number = performance.now();
-        const matches: (record: Record<string, unknown>) => boolean = Predicate.compile(plan.residual);
-
-        const collected: { record: T; key: IDBValidKey }[] = plan.values === null
-            ? await this.#cursored(store, plan, matches)
-            : await this.#points(store, plan, matches);
-
-        const ordered: { record: T; key: IDBValidKey }[] = plan.ordered ? collected : this.#sorted(collected);
-        const paged: { record: T; key: IDBValidKey }[] = this.#paged(ordered);
-
-        this.#emit(Planner.describe(plan), started, paged.length);
-
-        return {
-            records: paged.map((entry: { record: T; key: IDBValidKey }): T => entry.record),
-            keys   : paged.map((entry: { record: T; key: IDBValidKey }): IDBValidKey => entry.key),
-        };
-    }
-
-    /**
-     * Collect the records a cursor over the planned source yields.
-     */
-    async #cursored(store: IDBObjectStore, plan: Plan, matches: (record: Record<string, unknown>) => boolean): Promise<{ record: T; key: IDBValidKey }[]> {
-        const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index);
-        const collected: { record: T; key: IDBValidKey }[] = [];
-        const ceiling: number | null = plan.ordered && this.#limit !== null ? this.#offset + this.#limit : null;
-
-        await Request.walk(source.openCursor(plan.range, plan.direction), (cursor: IDBCursorWithValue): boolean => {
-            if (matches(cursor.value as Record<string, unknown>)) {
-                collected.push({ record: cursor.value as T, key: cursor.primaryKey });
-            }
-
-            return ceiling === null || collected.length < ceiling;
-        });
-
-        return collected;
-    }
-
-    /**
-     * Collect the records the planned point lookups yield.
-     */
-    async #points(store: IDBObjectStore, plan: Plan, matches: (record: Record<string, unknown>) => boolean): Promise<{ record: T; key: IDBValidKey }[]> {
-        const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index);
-        const collected: { record: T; key: IDBValidKey }[] = [];
-
-        for (const value of plan.values as unknown[]) {
-            const range: IDBKeyRange = IDBKeyRange.only(value as IDBValidKey);
-
-            await Request.walk(source.openCursor(range), (cursor: IDBCursorWithValue): void => {
-                if (matches(cursor.value as Record<string, unknown>)) {
-                    collected.push({ record: cursor.value as T, key: cursor.primaryKey });
-                }
-            });
-        }
-
-        return collected;
-    }
-
-    /**
-     * Sort the collected records by the requested orders.
-     */
-    #sorted(collected: { record: T; key: IDBValidKey }[]): { record: T; key: IDBValidKey }[] {
-        return Comparator.sort(
-            collected,
-            this.#orders,
-            (entry: { record: T; key: IDBValidKey }, column: string): unknown => (entry.record as Record<string, unknown>)[column],
-        );
-    }
-
-    /**
-     * Apply the offset and limit to the collected records.
-     */
-    #paged(collected: { record: T; key: IDBValidKey }[]): { record: T; key: IDBValidKey }[] {
-        const from: number = this.#offset;
-
-        return this.#limit === null ? collected.slice(from) : collected.slice(from, from + this.#limit);
-    }
-
-    /**
-     * Project and deduplicate the records the query returns.
-     */
-    #shape(records: T[]): T[] {
-        // A joined query has already projected, since only there can a column need qualifying.
-        const projected: T[] = this.#columns === null || this.#joins.length > 0
-            ? records
-            : records.map((record: T): T => Object.fromEntries(
-                (this.#columns as string[]).map((expression: string): [string, unknown] => {
-                    const projection: Projection = Columns.parse(expression);
-
-                    return [projection.alias, (record as Record<string, unknown>)[projection.column]];
-                }),
-            ) as T);
-
-        if (!this.#distinct) {
-            return projected;
-        }
-
-        const seen: Set<string> = new Set<string>();
-
-        return projected.filter((record: T): boolean => {
-            const signature: string = Signature.of(record as Record<string, unknown>);
-
-            if (seen.has(signature)) {
-                return false;
-            }
-
-            seen.add(signature);
-
-            return true;
-        });
-    }
-
-    /**
-     * Announce that the query ran.
-     */
-    #emit(plan: string, started: number, records: number): void {
-        Dispatcher.dispatch(new QueryExecuted(
-            this.#connection.name,
-            this.#table,
-            plan,
-            this.#constraints,
-            this.#orders,
-            this.#limit,
-            performance.now() - started,
-            records,
-        ));
     }
 }

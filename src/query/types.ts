@@ -32,6 +32,18 @@ export interface Plan {
     residual: Constraint[];
 }
 
+export interface Query {
+    readonly table: string;
+    readonly transaction: IDBTransaction | null;
+    readonly constraints: readonly Constraint[];
+    readonly orders: readonly Order[];
+    readonly limit: number | null;
+    readonly offset: number;
+    readonly columns: readonly string[] | null;
+    readonly distinct: boolean;
+    readonly joins: readonly JoinClause[];
+}
+
 export type JoinType = 'inner' | 'left' | 'right' | 'cross';
 
 export interface JoinCondition {

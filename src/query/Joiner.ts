@@ -1,5 +1,6 @@
+import { Columns } from './Columns';
 import { Predicate } from './Predicate';
-import type { Conjunction, Constraint, JoinClause, JoinCondition } from './types';
+import type { Conjunction, Constraint, JoinClause, JoinCondition, Projection } from './types';
 
 export class Joiner {
     /**
@@ -35,6 +36,52 @@ export class Joiner {
         }
 
         return this.#matched(left, right, clause, columns);
+    }
+
+    /**
+     * Qualify every column a constraint names with the table that owns it.
+     */
+    static qualified(constraint: Constraint, tables: Map<string, string[]>): Constraint {
+        if (constraint.type === 'nested') {
+            return { ...constraint, constraints: constraint.constraints.map((nested: Constraint): Constraint => this.qualified(nested, tables)) };
+        }
+
+        if (constraint.type === 'column') {
+            return { ...constraint, column: Columns.resolve(constraint.column, tables), other: Columns.resolve(constraint.other, tables) };
+        }
+
+        return { ...constraint, column: Columns.resolve(constraint.column, tables) };
+    }
+
+    /**
+     * Flatten qualified rows the way SQL does, letting later tables win a collision.
+     */
+    static flatten(rows: Record<string, unknown>[], tables: Map<string, string[]>, columns: readonly string[] | null): Record<string, unknown>[] {
+        if (columns !== null) {
+            return rows.map((row: Record<string, unknown>): Record<string, unknown> => Object.fromEntries(
+                columns.map((expression: string): [string, unknown] => {
+                    const projection: Projection = Columns.parse(expression);
+
+                    return [projection.alias, row[Columns.resolve(projection.column, tables)]];
+                }),
+            ));
+        }
+
+        const order: string[] = [...tables.keys()];
+
+        return rows.map((row: Record<string, unknown>): Record<string, unknown> => {
+            const flat: Record<string, unknown> = {};
+
+            for (const table of order) {
+                for (const column of tables.get(table) as string[]) {
+                    if (Object.hasOwn(row, `${table}.${column}`)) {
+                        flat[column] = row[`${table}.${column}`];
+                    }
+                }
+            }
+
+            return flat;
+        });
     }
 
     /**

@@ -9,7 +9,7 @@ export class Predicate {
     /**
      * Compile a list of constraints into a record test.
      */
-    static compile(constraints: Constraint[]): (record: Record<string, unknown>) => boolean {
+    static compile(constraints: readonly Constraint[]): (record: Record<string, unknown>) => boolean {
         if (constraints.length === 0) {
             return (): boolean => true;
         }
@@ -26,7 +26,7 @@ export class Predicate {
     /**
      * Split the constraints into disjunctive groups, so and binds tighter than or.
      */
-    static #grouped(constraints: Constraint[]): Constraint[][] {
+    static #grouped(constraints: readonly Constraint[]): Constraint[][] {
         const groups: Constraint[][] = [];
 
         for (const [index, constraint] of constraints.entries()) {

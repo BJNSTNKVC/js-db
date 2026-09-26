@@ -58,7 +58,7 @@ describe('main', (): void => {
     });
 
     test('keeps the internals out of the public surface', (): void => {
-        const internals: string[] = ['Migrator', 'Repository', 'Registry', 'Coercer', 'Planner', 'Predicate', 'Request', 'Dispatcher'];
+        const internals: string[] = ['Migrator', 'Repository', 'Registry', 'Enforcer', 'Planner', 'Predicate', 'Request', 'Dispatcher'];
 
         for (const name of internals) {
             expect((db as unknown as Record<string, unknown>)[name]).toBeUndefined();

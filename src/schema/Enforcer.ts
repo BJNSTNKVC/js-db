@@ -3,7 +3,7 @@ import type { ColumnSchema, ColumnType, TableSchema } from './types';
 
 const FALSY: ReadonlySet<string> = new Set<string>(['false', '0']);
 
-export class Coercer {
+export class Enforcer {
     /**
      * Coerce a value into its declared column type.
      */

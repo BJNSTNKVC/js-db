@@ -16,7 +16,7 @@ export class Planner {
     /**
      * Compile the constraints and orders into an execution plan.
      */
-    static plan(constraints: Constraint[], orders: Order[], schema: TableSchema): Plan {
+    static plan(constraints: readonly Constraint[], orders: readonly Order[], schema: TableSchema): Plan {
         const candidate: Candidate | null = this.#disjunctive(constraints) ? null : this.#candidate(constraints, schema);
         const ordering: Candidate | null = this.#disjunctive(constraints) ? null : this.#ordering(orders, schema);
 
@@ -54,9 +54,9 @@ export class Planner {
     /**
      * Build the plan for a query no constraint could drive.
      */
-    static #ordered(constraints: Constraint[], orders: Order[], ordering: Candidate | null): Plan {
+    static #ordered(constraints: readonly Constraint[], orders: readonly Order[], ordering: Candidate | null): Plan {
         if (ordering === null) {
-            return { source: 'scan', index: null, range: null, values: null, direction: 'next', ordered: false, residual: constraints };
+            return { source: 'scan', index: null, range: null, values: null, direction: 'next', ordered: false, residual: [...constraints] };
         }
 
         return {
@@ -66,21 +66,21 @@ export class Planner {
             values   : null,
             direction: this.#direction(orders),
             ordered  : true,
-            residual : constraints,
+            residual : [...constraints],
         };
     }
 
     /**
      * Determine whether any top level constraint is disjunctive.
      */
-    static #disjunctive(constraints: Constraint[]): boolean {
+    static #disjunctive(constraints: readonly Constraint[]): boolean {
         return constraints.some((constraint: Constraint, index: number): boolean => index > 0 && constraint.conjunction === 'or');
     }
 
     /**
      * Get the most selective constraint able to drive the scan.
      */
-    static #candidate(constraints: Constraint[], schema: TableSchema): Candidate | null {
+    static #candidate(constraints: readonly Constraint[], schema: TableSchema): Candidate | null {
         let best: Candidate | null = null;
 
         for (const constraint of constraints) {
@@ -153,7 +153,7 @@ export class Planner {
     /**
      * Get the index able to satisfy the requested order without dropping records.
      */
-    static #ordering(orders: Order[], schema: TableSchema): Candidate | null {
+    static #ordering(orders: readonly Order[], schema: TableSchema): Candidate | null {
         const order: Order | undefined = orders[0];
 
         if (orders.length !== 1 || order === undefined) {
@@ -178,7 +178,7 @@ export class Planner {
     /**
      * Get the cursor direction the orders ask for.
      */
-    static #direction(orders: Order[]): IDBCursorDirection {
+    static #direction(orders: readonly Order[]): IDBCursorDirection {
         return orders[0]?.direction === 'desc' ? 'prev' : 'next';
     }
 

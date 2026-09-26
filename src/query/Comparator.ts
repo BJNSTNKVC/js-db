@@ -4,7 +4,7 @@ export class Comparator {
     /**
      * Sort rows by the requested orders, reading each column through the accessor.
      */
-    static sort<R>(rows: R[], orders: Order[], value: (row: R, column: string) => unknown): R[] {
+    static sort<R>(rows: R[], orders: readonly Order[], value: (row: R, column: string) => unknown): R[] {
         if (orders.length === 0) {
             return rows;
         }
