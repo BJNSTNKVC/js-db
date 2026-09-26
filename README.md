@@ -818,6 +818,13 @@ await DB.table<User>('users').each((user: User, index: number): void => {
 });
 ```
 
+`chunk`, `each` and `lazy` decide which records match when the walk starts, and fetch each page
+fresh when it is reached. A record that stops matching or is deleted before its page arrives is left
+out, so every record is delivered at most once, and only while it still matches. A record that
+starts matching during the walk is not picked up. Since records can drop out, any page may be
+shorter than the size asked for. A page left empty is skipped, and the page numbers stay
+consecutive.
+
 #### Writes
 
 ```ts

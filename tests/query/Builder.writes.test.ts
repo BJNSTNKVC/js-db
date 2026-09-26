@@ -510,6 +510,88 @@ describe('Builder ordered writes with a limit or offset', (): void => {
     });
 });
 
+describe('Builder chunking over records that change', (): void => {
+    beforeEach(async (): Promise<void> => {
+        await users().insert([
+            { name: 'Alice', email: 'alice@example.com' },
+            { name: 'Bob', email: 'bob@example.com' },
+            { name: 'Carol', email: 'carol@example.com' },
+            { name: 'Dave', email: 'dave@example.com' },
+            { name: 'Erin', email: 'erin@example.com' },
+        ]);
+    });
+
+    test('leaves out a record that stops matching before its page', async (): Promise<void> => {
+        const pages: string[][] = [];
+
+        await users().where('role', 'member').orderBy('name').chunk(2, async (records: User[]): Promise<void> => {
+            pages.push(records.map((user: User): string => user.name));
+
+            if (pages.length === 1) {
+                await users().where('name', 'Carol').update({ role: 'owner' });
+            }
+        });
+
+        expect(pages).toEqual([['Alice', 'Bob'], ['Dave'], ['Erin']]);
+    });
+
+    test('rechecks the constraint that drove the scan', async (): Promise<void> => {
+        const pages: string[][] = [];
+
+        await users().where('email', '<', 'e').orderBy('name').chunk(2, async (records: User[]): Promise<void> => {
+            pages.push(records.map((user: User): string => user.name));
+
+            if (pages.length === 1) {
+                await users().where('name', 'Carol').update({ email: 'zed@example.com' });
+            }
+        });
+
+        expect(pages).toEqual([['Alice', 'Bob'], ['Dave']]);
+    });
+
+    test('skips a record deleted before its page', async (): Promise<void> => {
+        const pages: string[][] = [];
+
+        await users().orderBy('name').chunk(2, async (records: User[]): Promise<void> => {
+            pages.push(records.map((user: User): string => user.name));
+
+            if (pages.length === 1) {
+                await users().where('name', 'Carol').delete();
+            }
+        });
+
+        expect(pages).toEqual([['Alice', 'Bob'], ['Dave'], ['Erin']]);
+    });
+
+    test('skips a page left empty and numbers the next one after the last delivered', async (): Promise<void> => {
+        const pages: [number, string[]][] = [];
+
+        await users().where('role', 'member').orderBy('name').chunk(2, async (records: User[], page: number): Promise<void> => {
+            pages.push([page, records.map((user: User): string => user.name)]);
+
+            if (page === 1) {
+                await users().whereIn('name', ['Carol', 'Dave']).update({ role: 'owner' });
+            }
+        });
+
+        expect(pages).toEqual([[1, ['Alice', 'Bob']], [2, ['Erin']]]);
+    });
+
+    test('leaves out a record that stops matching while walking lazily', async (): Promise<void> => {
+        const seen: string[] = [];
+
+        for await (const user of users().where('role', 'member').orderBy('name').lazy(2)) {
+            seen.push(user.name);
+
+            if (user.name === 'Bob') {
+                await users().where('name', 'Carol').update({ role: 'owner' });
+            }
+        }
+
+        expect(seen).toEqual(['Alice', 'Bob', 'Dave', 'Erin']);
+    });
+});
+
 describe('Builder truncate', (): void => {
     test('empties the table', async (): Promise<void> => {
         await users().insert([

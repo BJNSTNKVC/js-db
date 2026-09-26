@@ -679,11 +679,18 @@ export class Builder<T = Record<string, unknown>> {
         }
 
         const keys: IDBValidKey[] = await executor.keys();
+        let page: number = 0;
 
         for (let index: number = 0; index < keys.length; index += size) {
             const records: T[] = await executor.fetch(keys.slice(index, index + size));
 
-            if (await callback(executor.shape(records), Math.floor(index / size) + 1) === false) {
+            // Every record on a page may have stopped matching since the keys were taken. A callback
+            // never receives an empty page, so the page number counts only the pages delivered.
+            if (records.length === 0) {
+                continue;
+            }
+
+            if (await callback(executor.shape(records), ++page) === false) {
                 return false;
             }
         }

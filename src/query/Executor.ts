@@ -58,16 +58,22 @@ export class Executor<T> {
     }
 
     /**
-     * Get the records held under the given keys, skipping any deleted since.
+     * Get the records held under the given keys, skipping any deleted or no longer matching since.
      */
     async fetch(keys: IDBValidKey[]): Promise<T[]> {
         const store: IDBObjectStore = await this.#store('readonly');
+
+        // Every constraint is checked rather than only the residual, since the one that drove the
+        // scan is exactly what a record changed after the keys were taken may no longer meet.
+        const matches: (record: Record<string, unknown>) => boolean = Predicate.compile(this.#query.constraints);
 
         const records: (T | undefined)[] = await Promise.all(
             keys.map((key: IDBValidKey): Promise<T | undefined> => Request.settle(store.get(key) as IDBRequest<T | undefined>)),
         );
 
-        return records.filter((record: T | undefined): record is T => record !== undefined);
+        return records.filter((record: T | undefined): record is T => {
+            return record !== undefined && matches(record as Record<string, unknown>);
+        });
     }
 
     /**
