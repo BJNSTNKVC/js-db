@@ -196,7 +196,6 @@ export class DatabaseManager {
     static async estimate(): Promise<StorageEstimate> {
         const storage: StorageManager | undefined = globalThis.navigator?.storage;
 
-        // Not every environment exposes the Storage Manager, and a missing one is not a failure.
         if (storage === undefined) {
             return {};
         }

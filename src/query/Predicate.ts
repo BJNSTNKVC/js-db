@@ -106,7 +106,6 @@ export class Predicate {
             return date.getFullYear();
         }
 
-        // Numbered from one, as SQL does, rather than from zero as JavaScript does.
         return part === 'month' ? date.getMonth() + 1 : date.getDate();
     }
 
@@ -228,7 +227,6 @@ export class Predicate {
                 return false;
             }
 
-            // The last wildcard gives up one more character and the walk resumes from there.
             token = wildcard + 1;
             resume++;
             index = resume;
@@ -251,7 +249,6 @@ export class Predicate {
         for (let index: number = 0; index < pattern.length; index++) {
             const character: string = pattern[index] as string;
 
-            // A backslash escapes a wildcard, so a pattern can match a literal % or _.
             if (character === '\\' && (pattern[index + 1] === '%' || pattern[index + 1] === '_')) {
                 tokens.push({ kind: 'literal', value: (pattern[index + 1] as string).toLowerCase() });
                 index++;

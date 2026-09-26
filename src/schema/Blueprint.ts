@@ -265,7 +265,6 @@ export class Blueprint {
             throw new SchemaException(`Column [${column}] of table [${this.#table}] is enumerated over a numeric enum, which has no string form to store. Give the enum string values, or use integer() instead.`);
         }
 
-        // Two members may share a value, and the duplicate would reach anything rendering the column.
         return [...new Set(listed as string[])];
     }
 

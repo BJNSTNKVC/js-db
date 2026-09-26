@@ -133,7 +133,6 @@ export class Enforcer {
             return null;
         }
 
-        // A decimal column holds its smallest unit, so a fractional value would be silently lost.
         if (!Number.isInteger(number)) {
             if (strict) {
                 throw new TypeError(`A decimal column stores a whole number of its smallest unit, so [${String(value)}] cannot be written. Scale it first, as in Math.round(19.99 * 100).`);

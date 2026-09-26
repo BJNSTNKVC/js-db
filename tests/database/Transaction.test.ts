@@ -261,9 +261,7 @@ describe('Transaction events', (): void => {
     test('announces nothing extra for a nested call', async (): Promise<void> => {
         const seen: string[] = await recorded(['db:transaction-beginning', 'db:transaction-committed'], async (): Promise<unknown> => {
             return connection.transaction(async (): Promise<void> => {
-                await connection.transaction(async (): Promise<void> => {
-                    // Joining the outer transaction announces nothing of its own.
-                });
+                await connection.transaction(async (): Promise<void> => {});
             });
         });
 

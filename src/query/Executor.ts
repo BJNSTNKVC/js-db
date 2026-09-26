@@ -168,7 +168,6 @@ export class Executor<T> {
 
                 inserted++;
             } catch (error: unknown) {
-                // Only a rejected constraint is skipped. Anything else is the caller's problem.
                 if (!ignore || !(error instanceof UniqueConstraintViolationException)) {
                     throw error;
                 }
@@ -455,7 +454,6 @@ export class Executor<T> {
     #shuffled<R>(collected: R[]): R[] {
         const shuffled: R[] = [...collected];
 
-        // Fisher and Yates, which gives every permutation the same chance.
         for (let index: number = shuffled.length - 1; index > 0; index--) {
             const other: number = Math.floor(Math.random() * (index + 1));
 
