@@ -35,10 +35,16 @@ export interface RenamedColumn {
     to: string;
 }
 
+export interface ChangedColumn {
+    from: ColumnSchema;
+    to: ColumnSchema;
+}
+
 export interface BlueprintOperations {
     added: ColumnSchema[];
     dropped: string[];
     renamed: RenamedColumn[];
+    changed: ChangedColumn[];
     indexed: IndexSchema[];
     unindexed: string[];
 }

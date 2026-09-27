@@ -53,6 +53,16 @@ describe('ColumnDefinition', (): void => {
         expect(definition.index()).toBe(definition);
         expect(definition.unique()).toBe(definition);
         expect(definition.multiEntry()).toBe(definition);
+        expect(definition.change()).toBe(definition);
+    });
+
+    test('adds a column unless marked as a change', (): void => {
+        expect(new ColumnDefinition('name', 'string').changed).toEqual(false);
+        expect(new ColumnDefinition('name', 'string').change().changed).toEqual(true);
+    });
+
+    test('leaves the change out of the column schema', (): void => {
+        expect(new ColumnDefinition('name', 'string').change().toSchema()).toEqual(new ColumnDefinition('name', 'string').toSchema());
     });
 
     test('requests no index by default', (): void => {

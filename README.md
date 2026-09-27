@@ -504,9 +504,11 @@ types are recorded as metadata and enforced by this package at write time.
 | `table.index(['a', 'b'])`                                                       | Compound index                                                                     |
 | `.multiEntry()`                                                                 | One index entry per array element                                                  |
 | `table.timestamps()`                                                            | Nullable `created_at` / `updated_at`, filled automatically                         |
+| `.change()`                                                                     | Inside `Schema.table`, replaces the existing column of the same name               |
 
-Altering a table also supports `dropColumn`, `renameColumn`, `dropIndex` and `Schema.rename`. The key
-path may not be dropped or renamed, because IndexedDB fixes it when the store is created.
+Altering a table also supports `dropColumn`, `renameColumn`, `dropIndex`, `change()` and
+`Schema.rename`. The key path may not be dropped, renamed or changed, because IndexedDB fixes it when
+the store is created.
 
 ```ts
 await Schema.table('users', (table: Blueprint): void => {
@@ -518,6 +520,59 @@ await Schema.table('users', (table: Blueprint): void => {
 ```
 
 `Schema.rename` is implemented as create-copy-drop, so it is O(n) in the number of records.
+
+#### Changing columns
+
+Declaring a column again with `.change()` inside `Schema.table` replaces the existing declaration,
+keeping the column where it stands among the others:
+
+```ts
+await Schema.table('users', (table: Blueprint): void => {
+    table.string('nickname').nullable().change();
+    table.integer('age').default(18).index().change();
+    table.enum('role', ['admin', 'editor', 'member', 'owner']).default('member').change();
+});
+```
+
+The new declaration is the whole of it, as in Laravel, so a modifier left out is removed rather than
+kept. Changing `age` above without `.index()` would delete its index, and without `.default(18)`
+would remove its default. Only the indexes over that column alone are redeclared this way. An index
+spanning several columns is left as it is.
+
+A change may make a column nullable or required, add, change or remove its default, change the
+values an enum accepts, and add or remove `.index()` and `.unique()`. What the rows already hold is
+checked in the same migration:
+
+| Change                  | What happens to the rows                                                                        |
+|-------------------------|-------------------------------------------------------------------------------------------------|
+| Becoming required       | A row with no value takes the default. Without a default, any such row fails the migration      |
+| Adding a default        | A row without the column takes the default. A row holding `null` keeps it                       |
+| An enum dropping values | Any row still holding a dropped value fails the migration, since a replacement would be a guess |
+| Adding `.unique()`      | Values repeated across rows fail the migration                                                  |
+
+A failure throws `SchemaException` naming the table, the column and how many rows are in the way:
+
+```
+SchemaException: Column [age] of table [users] cannot be made required without a default,
+because it holds no value in 3 rows.
+```
+
+Throwing aborts the migration's transaction, so the whole migration rolls back and nothing is left
+half changed. The same check guards a unique index added with `table.unique()` inside
+`Schema.table`, which is reported the same way rather than as IndexedDB's `ConstraintError`.
+
+Three changes are refused with `SchemaException`:
+
+- **The key path**, which IndexedDB fixes when the store is created. A column cannot become the key
+  path through a change either.
+- **The type.** Each pair of types would need its own conversion rules. Add a new column, copy the
+  values across and drop the old one.
+- **The scale of a decimal.** Stored values are whole numbers of the smallest unit, so 1999 at two
+  places would silently read as 1.999 at three.
+
+Changing a column that does not exist throws `SchemaException`, as `dropColumn` does.
+
+> Modeled on Laravel's [Modifying Columns](https://laravel.com/docs/12.x/migrations#modifying-columns).
 
 #### Fixed point columns hold their smallest unit
 

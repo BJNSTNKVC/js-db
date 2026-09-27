@@ -8,12 +8,15 @@ import { Request } from '../../src/database/Request';
 import { Dispatcher } from '../../src/events/Dispatcher';
 import { DB } from '../../src/main';
 import {
+    CheckConstraintViolationException,
     DatabaseBlockedException,
     MigrationMismatchException,
     MigrationTransactionClosedException,
+    NotNullConstraintViolationException,
     ReservedTableException,
     SchemaException,
     TableNotFoundException,
+    UniqueConstraintViolationException,
 } from '../../src/exceptions';
 import type { MigrationConstructor, MigrationStatus } from '../../src/migrations/types';
 import type { ColumnSchema, TableSchema } from '../../src/schema/types';
@@ -861,6 +864,257 @@ describe('Schema.table', (): void => {
         const connection: Connection = connect([CreateKeyless, AlterKeyless]);
 
         expect((await connection.schema('keyless')).columns.map((column: ColumnSchema): string => column.name)).toEqual(['name', 'role']);
+    });
+});
+
+describe('Schema.table column changes', (): void => {
+    const CreateMembersTable: MigrationConstructor = migration('CreateMembersTable', async (): Promise<void> => {
+        await Schema.create('members', (table: Blueprint): void => {
+            table.id();
+            table.string('name');
+            table.string('email').nullable().unique();
+            table.enum('role', ['admin', 'editor', 'member']).default('member');
+            table.integer('age').nullable().index();
+            table.json('tags').nullable();
+        });
+    });
+
+    /**
+     * Migrate a members table holding the given rows, then change it with the given callback.
+     */
+    async function changed(rows: Record<string, unknown>[], callback: (table: Blueprint) => void, database: string = `connection-${++sequence}`): Promise<Connection> {
+        const first: Connection = connect([CreateMembersTable], database);
+
+        await first.migrate();
+        await seed(first, 'members', rows);
+
+        first.disconnect();
+        connections.splice(connections.indexOf(first), 1);
+
+        const ChangeMembersTable: MigrationConstructor = migration('ChangeMembersTable', async (): Promise<void> => {
+            await Schema.table('members', callback);
+        });
+
+        const second: Connection = connect([CreateMembersTable, ChangeMembersTable], database);
+
+        await second.migrate();
+
+        return second;
+    }
+
+    /**
+     * Get the schema of a column of the members table.
+     */
+    async function column(connection: Connection, name: string): Promise<ColumnSchema | undefined> {
+        return (await connection.schema('members')).columns.find((candidate: ColumnSchema): boolean => candidate.name === name);
+    }
+
+    /**
+     * Get the names of the indexes the members store really has.
+     */
+    async function indexNames(connection: Connection): Promise<string[]> {
+        const database: IDBDatabase = await connection.open();
+
+        return Array.from(database.transaction('members', 'readonly').objectStore('members').indexNames).sort();
+    }
+
+    /**
+     * Get one column of every record in the members table.
+     */
+    async function values(connection: Connection, name: string): Promise<unknown[]> {
+        return (await records(connection, 'members')).map((record: Record<string, unknown>): unknown => record[name]);
+    }
+
+    test('makes a column nullable, leaving the rows and the column order as they are', async (): Promise<void> => {
+        const connection: Connection = await changed([{ name: 'John', role: 'admin' }], (table: Blueprint): void => {
+            table.string('name').nullable().change();
+        });
+
+        expect(await column(connection, 'name')).toEqual(expect.objectContaining({ nullable: true }));
+        expect((await connection.schema('members')).columns.map((candidate: ColumnSchema): string => candidate.name)).toEqual(['id', 'name', 'email', 'role', 'age', 'tags']);
+        expect(await records(connection, 'members')).toEqual([{ id: 1, name: 'John', role: 'admin' }]);
+
+        await connection.table('members').insert({ name: null });
+
+        expect(await values(connection, 'name')).toEqual(['John', null]);
+    });
+
+    test('makes a column required, giving its default to every row without a value', async (): Promise<void> => {
+        const connection: Connection = await changed([{ name: 'A', age: null }, { name: 'B' }, { name: 'C', age: 30 }], (table: Blueprint): void => {
+            table.integer('age').default(18).index().change();
+        });
+
+        expect(await column(connection, 'age')).toEqual(expect.objectContaining({ nullable: false, default: 18 }));
+        expect(await values(connection, 'age')).toEqual([18, 18, 30]);
+        expect(await indexNames(connection)).toEqual(['members_age_index', 'members_email_unique']);
+    });
+
+    test('refuses to make a column required without a default while rows hold no value', async (): Promise<void> => {
+        await expect(changed([{ name: 'A', age: null }, { name: 'B' }, { name: 'C', age: 30 }], (table: Blueprint): void => {
+            table.integer('age').index().change();
+        })).rejects.toThrow(new SchemaException('Column [age] of table [members] cannot be made required without a default, because it holds no value in 2 rows.'));
+    });
+
+    test('makes a column required without a default once every row holds a value, and enforces it on writes', async (): Promise<void> => {
+        const connection: Connection = await changed([{ name: 'A', age: 30 }], (table: Blueprint): void => {
+            table.integer('age').index().change();
+        });
+
+        expect(await column(connection, 'age')).toEqual(expect.objectContaining({ nullable: false }));
+        await expect(connection.table('members').insert({ name: 'B' })).rejects.toBeInstanceOf(NotNullConstraintViolationException);
+    });
+
+    test('adds a default, filling rows without the column and keeping null', async (): Promise<void> => {
+        const connection: Connection = await changed([{ name: 'A' }, { name: 'B', age: null }], (table: Blueprint): void => {
+            table.integer('age').nullable().default(18).index().change();
+        });
+
+        expect(await values(connection, 'age')).toEqual([18, null]);
+
+        await connection.table('members').insert({ name: 'C' });
+
+        expect(await values(connection, 'age')).toEqual([18, null, 18]);
+    });
+
+    test('removes a default', async (): Promise<void> => {
+        const connection: Connection = await changed([], (table: Blueprint): void => {
+            table.enum('role', ['admin', 'editor', 'member']).change();
+        });
+
+        expect(await column(connection, 'role')).toEqual(expect.objectContaining({ hasDefault: false }));
+        await expect(connection.table('members').insert({ name: 'A' })).rejects.toBeInstanceOf(NotNullConstraintViolationException);
+    });
+
+    test('widens an enum', async (): Promise<void> => {
+        const connection: Connection = await changed([], (table: Blueprint): void => {
+            table.enum('role', ['admin', 'editor', 'member', 'owner']).default('member').change();
+        });
+
+        await connection.table('members').insert({ name: 'A', role: 'owner' });
+
+        expect(await values(connection, 'role')).toEqual(['owner']);
+    });
+
+    test('narrows an enum when no row holds a value it drops', async (): Promise<void> => {
+        const connection: Connection = await changed([{ name: 'A', role: 'admin' }], (table: Blueprint): void => {
+            table.enum('role', ['admin', 'member']).default('member').change();
+        });
+
+        expect(await column(connection, 'role')).toEqual(expect.objectContaining({ values: ['admin', 'member'] }));
+        await expect(connection.table('members').insert({ name: 'B', role: 'editor' })).rejects.toBeInstanceOf(CheckConstraintViolationException);
+    });
+
+    test('refuses to narrow an enum while rows hold a value it drops', async (): Promise<void> => {
+        await expect(changed([{ name: 'A', role: 'editor' }, { name: 'B', role: 'editor' }, { name: 'C', role: 'admin' }], (table: Blueprint): void => {
+            table.enum('role', ['admin', 'member']).default('member').change();
+        })).rejects.toThrow(new SchemaException('Column [role] of table [members] cannot stop accepting [editor], which it still holds in 2 rows.'));
+    });
+
+    test('makes a column unique', async (): Promise<void> => {
+        const connection: Connection = await changed([{ name: 'A' }, { name: 'B' }], (table: Blueprint): void => {
+            table.string('name').unique().change();
+        });
+
+        expect(await indexNames(connection)).toEqual(['members_age_index', 'members_email_unique', 'members_name_unique']);
+        await expect(connection.table('members').insert({ name: 'A' })).rejects.toBeInstanceOf(UniqueConstraintViolationException);
+    });
+
+    test('refuses to make a column unique over values that repeat', async (): Promise<void> => {
+        await expect(changed([{ name: 'A' }, { name: 'A' }, { name: 'B' }], (table: Blueprint): void => {
+            table.string('name').unique().change();
+        })).rejects.toThrow(new SchemaException('Index [members_name_unique] of table [members] cannot be unique, because 2 rows repeat a value of [name].'));
+    });
+
+    test('refuses a default that would repeat across a unique column', async (): Promise<void> => {
+        await expect(changed([{ name: 'A' }, { name: 'B' }], (table: Blueprint): void => {
+            table.string('email').nullable().default('none').unique().change();
+        })).rejects.toThrow(new SchemaException('Index [members_email_unique] of table [members] cannot be unique, because 2 rows repeat a value of [email].'));
+    });
+
+    test('refuses a compound unique index over values that repeat, skipping rows it would not index', async (): Promise<void> => {
+        const rows: Record<string, unknown>[] = [{ name: 'A', age: 1 }, { name: 'A', age: 1 }, { name: 'A', age: null }, { name: 'A', age: null }];
+
+        await expect(changed(rows, (table: Blueprint): void => {
+            table.unique(['name', 'age']);
+        })).rejects.toThrow(new SchemaException('Index [members_name_age_unique] of table [members] cannot be unique, because 2 rows repeat a value of [name, age].'));
+    });
+
+    test('checks a unique multi entry index by element, across rows only', async (): Promise<void> => {
+        const connection: Connection = await changed([{ name: 'A', tags: ['x', 'x', {}] }, { name: 'B', tags: ['y'] }, { name: 'C', tags: 'z' }], (table: Blueprint): void => {
+            table.json('tags').nullable().unique().multiEntry().change();
+        });
+
+        expect(await indexNames(connection)).toContain('members_tags_unique');
+
+        await expect(changed([{ name: 'A', tags: ['x', 'y'] }, { name: 'B', tags: ['y'] }], (table: Blueprint): void => {
+            table.json('tags').nullable().unique().multiEntry().change();
+        })).rejects.toThrow(new SchemaException('Index [members_tags_unique] of table [members] cannot be unique, because 2 rows repeat a value of [tags].'));
+    });
+
+    test('removes a unique index the change leaves out', async (): Promise<void> => {
+        const connection: Connection = await changed([], (table: Blueprint): void => {
+            table.string('email').nullable().change();
+        });
+
+        expect(await indexNames(connection)).toEqual(['members_age_index']);
+
+        await connection.table('members').insert([{ name: 'A', email: 'a@b.c' }, { name: 'B', email: 'a@b.c' }]);
+
+        expect(await values(connection, 'email')).toEqual(['a@b.c', 'a@b.c']);
+    });
+
+    test('adds and removes plain indexes', async (): Promise<void> => {
+        const connection: Connection = await changed([{ name: 'A', age: 30 }], (table: Blueprint): void => {
+            table.integer('age').nullable().change();
+            table.string('name').index().change();
+        });
+
+        expect(await indexNames(connection)).toEqual(['members_email_unique', 'members_name_index']);
+    });
+
+    test('refuses to change the key path', async (): Promise<void> => {
+        await expect(changed([], (table: Blueprint): void => {
+            table.integer('id').primary().increments().change();
+        })).rejects.toThrow(new SchemaException('Column [id] is the key path of table [members] and may not be changed.'));
+    });
+
+    test('refuses a change of type', async (): Promise<void> => {
+        await expect(changed([], (table: Blueprint): void => {
+            table.integer('name').change();
+        })).rejects.toBeInstanceOf(SchemaException);
+    });
+
+    test('rolls the whole migration back when a change fails, leaving the schema and the rows as they were', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+        const first: Connection = connect([CreateMembersTable], database);
+
+        await first.migrate();
+        await seed(first, 'members', [{ name: 'A', age: null }]);
+
+        first.disconnect();
+        connections.splice(connections.indexOf(first), 1);
+
+        const ChangeMembersTable: MigrationConstructor = migration('ChangeMembersTable', async (): Promise<void> => {
+            await Schema.table('members', (table: Blueprint): void => {
+                table.string('email').nullable().default('none').change();
+                table.string('name').unique().change();
+            });
+
+            await Schema.table('members', (table: Blueprint): void => {
+                table.integer('age').index().change();
+            });
+        });
+
+        await expect(connect([CreateMembersTable, ChangeMembersTable], database).migrate()).rejects.toThrow(new SchemaException('Column [age] of table [members] cannot be made required without a default, because it holds no value in 1 row.'));
+
+        connections.splice(0).forEach((connection: Connection): void => connection.disconnect());
+
+        const restored: Connection = connect([CreateMembersTable], database);
+
+        expect(await column(restored, 'email')).toEqual(expect.objectContaining({ hasDefault: false }));
+        expect(await column(restored, 'age')).toEqual(expect.objectContaining({ nullable: true }));
+        expect(await records(restored, 'members')).toEqual([{ id: 1, name: 'A', age: null }]);
+        expect(await indexNames(restored)).toEqual(['members_age_index', 'members_email_unique']);
     });
 });
 

@@ -1,6 +1,6 @@
 import { SchemaException } from '../exceptions';
 import { ColumnDefinition } from './ColumnDefinition';
-import type { BlueprintOperations, ColumnSchema, ColumnType, Enumerable, IndexSchema, RenamedColumn, RequestedIndex, TableSchema } from './types';
+import type { BlueprintOperations, ChangedColumn, ColumnSchema, ColumnType, Enumerable, IndexSchema, RenamedColumn, RequestedIndex, TableSchema } from './types';
 
 export class Blueprint {
     /**
@@ -232,11 +232,12 @@ export class Blueprint {
      */
     operations(): BlueprintOperations {
         return {
-            added    : this.#columns.map((column: ColumnDefinition): ColumnSchema => column.toSchema()),
+            added    : this.#added().map((column: ColumnDefinition): ColumnSchema => column.toSchema()),
             dropped  : this.#dropped,
             renamed  : this.#renamed,
-            indexed  : this.#declaredIndexes(),
-            unindexed: this.#unindexed,
+            changed  : this.#changes(),
+            indexed  : this.#createdIndexes(),
+            unindexed: this.#removedIndexes(),
         };
     }
 
@@ -312,17 +313,10 @@ export class Blueprint {
      * Get the columns of the table once the blueprint is applied.
      */
     #resolved(): ColumnSchema[] {
-        const renamed: Map<string, string> = new Map(this.#renamed.map((rename: RenamedColumn): [string, string] => [rename.from, rename.to]));
+        const changed: Map<string, ColumnSchema> = new Map(this.#changes().map((change: ChangedColumn): [string, ColumnSchema] => [change.to.name, change.to]));
 
-        const kept: ColumnSchema[] = this.#columnsOf()
-            .filter((column: ColumnSchema): boolean => !this.#dropped.includes(column.name))
-            .map((column: ColumnSchema): ColumnSchema => {
-                const to: string | undefined = renamed.get(column.name);
-
-                return to === undefined ? column : { ...column, name: to };
-            });
-
-        const added: ColumnSchema[] = this.#columns.map((column: ColumnDefinition): ColumnSchema => column.toSchema());
+        const kept: ColumnSchema[] = this.#kept().map((column: ColumnSchema): ColumnSchema => changed.get(column.name) ?? column);
+        const added: ColumnSchema[] = this.#added().map((column: ColumnDefinition): ColumnSchema => column.toSchema());
         const columns: ColumnSchema[] = [...kept, ...added];
         const seen: Set<string> = new Set<string>();
 
@@ -335,6 +329,78 @@ export class Blueprint {
         }
 
         return columns;
+    }
+
+    /**
+     * Get the existing columns the blueprint keeps, under the names it gives them.
+     */
+    #kept(): ColumnSchema[] {
+        const renamed: Map<string, string> = new Map(this.#renamed.map((rename: RenamedColumn): [string, string] => [rename.from, rename.to]));
+
+        return this.#columnsOf()
+            .filter((column: ColumnSchema): boolean => !this.#dropped.includes(column.name))
+            .map((column: ColumnSchema): ColumnSchema => {
+                const to: string | undefined = renamed.get(column.name);
+
+                return to === undefined ? column : { ...column, name: to };
+            });
+    }
+
+    /**
+     * Get the columns the blueprint adds.
+     */
+    #added(): ColumnDefinition[] {
+        return this.#columns.filter((column: ColumnDefinition): boolean => !column.changed);
+    }
+
+    /**
+     * Get each column the blueprint changes, before and after, refusing a change it cannot apply.
+     */
+    #changes(): ChangedColumn[] {
+        const kept: ColumnSchema[] = this.#kept();
+        const changes: ChangedColumn[] = [];
+
+        for (const definition of this.#columns.filter((column: ColumnDefinition): boolean => column.changed)) {
+            const from: ColumnSchema | undefined = kept.find((column: ColumnSchema): boolean => column.name === definition.name);
+            const to: ColumnSchema = definition.toSchema();
+
+            if (from === undefined) {
+                throw new SchemaException(`Column [${to.name}] does not exist on table [${this.#table}].`);
+            }
+
+            if (changes.some((change: ChangedColumn): boolean => change.to.name === to.name)) {
+                throw new SchemaException(`Column [${to.name}] is declared more than once on table [${this.#table}].`);
+            }
+
+            this.#changeable(from, to);
+
+            changes.push({ from, to });
+        }
+
+        return changes;
+    }
+
+    /**
+     * Assert a column can be changed from one declaration to the other.
+     */
+    #changeable(from: ColumnSchema, to: ColumnSchema): void {
+        const column: string = `Column [${to.name}] of table [${this.#table}]`;
+
+        // Every pair of types would need its own conversion rules. Until they exist, a new column
+        // with the values copied across does the same job without guessing.
+        if (from.type !== to.type) {
+            throw new SchemaException(`${column} may not change type from [${from.type}] to [${to.type}]. Add a new column, copy the values across and drop the old one.`);
+        }
+
+        // A decimal holds a whole number of its smallest unit, so 1999 at two places would read
+        // as 1.999 at three. Nothing would fail, and every stored value would be wrong.
+        if (from.places !== to.places) {
+            throw new SchemaException(`${column} may not change scale from [${from.places}] to [${to.places}], because every stored value would be read at the wrong scale.`);
+        }
+
+        if (to.primary && !from.primary) {
+            throw new SchemaException(`${column} may not become the key path, because IndexedDB fixes it when the store is created.`);
+        }
     }
 
     /**
@@ -368,10 +434,12 @@ export class Blueprint {
      * Get the indexes of the table once the blueprint is applied.
      */
     #resolvedIndexes(): IndexSchema[] {
-        const kept: IndexSchema[] = this.#indexesOf()
-            .filter((index: IndexSchema): boolean => !this.#unindexed.includes(index.name));
+        const removed: string[] = this.#removedIndexes();
 
-        const indexes: IndexSchema[] = [...kept, ...this.#declaredIndexes()];
+        const kept: IndexSchema[] = this.#indexesOf()
+            .filter((index: IndexSchema): boolean => !removed.includes(index.name));
+
+        const indexes: IndexSchema[] = [...kept, ...this.#createdIndexes()];
         const seen: Set<string> = new Set<string>();
 
         for (const index of indexes) {
@@ -383,5 +451,72 @@ export class Blueprint {
         }
 
         return indexes;
+    }
+
+    /**
+     * Get the existing indexes over a changed column alone, which the change declares afresh.
+     */
+    #redeclared(): IndexSchema[] {
+        const changed: string[] = this.#columns
+            .filter((column: ColumnDefinition): boolean => column.changed)
+            .map((column: ColumnDefinition): string => column.name);
+
+        return this.#indexesOf().filter((index: IndexSchema): boolean => index.columns.length === 1
+            && changed.includes(index.columns[0] as string)
+            && !this.#unindexed.includes(index.name));
+    }
+
+    /**
+     * Get the redeclared indexes the blueprint declares again exactly as they stand.
+     */
+    #retained(): IndexSchema[] {
+        const declared: IndexSchema[] = this.#declaredIndexes();
+
+        return this.#redeclared().filter((index: IndexSchema): boolean => declared.some((candidate: IndexSchema): boolean => this.#same(index, candidate)));
+    }
+
+    /**
+     * Get the names of the indexes to delete, whether dropped or left out of a changed column.
+     */
+    #removedIndexes(): string[] {
+        const retained: IndexSchema[] = this.#retained();
+
+        const omitted: string[] = this.#redeclared()
+            .filter((index: IndexSchema): boolean => !retained.includes(index))
+            .map((index: IndexSchema): string => index.name);
+
+        return [...this.#unindexed, ...omitted];
+    }
+
+    /**
+     * Get the indexes to create, leaving out those a changed column keeps as they stand.
+     */
+    #createdIndexes(): IndexSchema[] {
+        // Each retained index stands in for one declaration only, so declaring it twice is still
+        // reported as a duplicate rather than quietly collapsing.
+        const pending: IndexSchema[] = this.#retained();
+
+        return this.#declaredIndexes().filter((index: IndexSchema): boolean => {
+            const position: number = pending.findIndex((retained: IndexSchema): boolean => this.#same(retained, index));
+
+            if (position === -1) {
+                return true;
+            }
+
+            pending.splice(position, 1);
+
+            return false;
+        });
+    }
+
+    /**
+     * Determine whether two indexes are declared identically.
+     */
+    #same(first: IndexSchema, second: IndexSchema): boolean {
+        return first.name === second.name
+            && first.unique === second.unique
+            && first.multiEntry === second.multiEntry
+            && first.columns.length === second.columns.length
+            && first.columns.every((column: string, position: number): boolean => column === second.columns[position]);
     }
 }

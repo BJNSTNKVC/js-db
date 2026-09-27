@@ -47,6 +47,11 @@ export class ColumnDefinition {
     #values: string[] | null = null;
 
     /**
+     * Whether the definition changes an existing column rather than adding one.
+     */
+    #changed: boolean = false;
+
+    /**
      * The indexes requested for the column.
      */
     readonly #requested: RequestedIndex[] = [];
@@ -71,6 +76,13 @@ export class ColumnDefinition {
      */
     get type(): ColumnType {
         return this.#type;
+    }
+
+    /**
+     * Determine whether the definition changes an existing column.
+     */
+    get changed(): boolean {
+        return this.#changed;
     }
 
     /**
@@ -157,6 +169,15 @@ export class ColumnDefinition {
         for (const requested of this.#requested) {
             requested.multiEntry = true;
         }
+
+        return this;
+    }
+
+    /**
+     * Change the existing column of the same name to this definition, instead of adding one.
+     */
+    change(): this {
+        this.#changed = true;
 
         return this;
     }

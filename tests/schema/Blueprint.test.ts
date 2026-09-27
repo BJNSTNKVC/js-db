@@ -225,6 +225,7 @@ describe('Blueprint operations in create mode', (): void => {
         expect(operations.indexed.map((index: IndexSchema): string => index.name)).toEqual(['users_email_unique']);
         expect(operations.dropped).toEqual([]);
         expect(operations.renamed).toEqual([]);
+        expect(operations.changed).toEqual([]);
         expect(operations.unindexed).toEqual([]);
     });
 });
@@ -355,5 +356,212 @@ describe('Blueprint operations in alter mode', (): void => {
 
     test('exposes the table name', (): void => {
         expect(new Blueprint('users').table).toEqual('users');
+    });
+});
+
+describe('Blueprint column changes', (): void => {
+    const existing: TableSchema = {
+        table     : 'users',
+        key       : 'id',
+        increments: true,
+        timestamps: false,
+        columns   : [
+            { name: 'id', type: 'integer', nullable: false, default: undefined, hasDefault: false, primary: true, increments: true, places: null, values: null },
+            { name: 'name', type: 'string', nullable: false, default: undefined, hasDefault: false, primary: false, increments: false, places: null, values: null },
+            { name: 'price', type: 'decimal', nullable: false, default: undefined, hasDefault: false, primary: false, increments: false, places: 2, values: null },
+            { name: 'role', type: 'enum', nullable: false, default: 'member', hasDefault: true, primary: false, increments: false, places: null, values: ['admin', 'member'] },
+        ],
+        indexes   : [
+            { name: 'users_name_index', columns: ['name'], unique: false, multiEntry: false },
+            { name: 'users_name_price_index', columns: ['name', 'price'], unique: false, multiEntry: false },
+        ],
+    };
+
+    /**
+     * Get the names of the columns of a schema.
+     */
+    function names(table: TableSchema): string[] {
+        return table.columns.map((column: ColumnSchema): string => column.name);
+    }
+
+    /**
+     * Get the names of the indexes of a schema.
+     */
+    function indexes(table: TableSchema): string[] {
+        return table.indexes.map((index: IndexSchema): string => index.name);
+    }
+
+    test('replaces the column where it stands', (): void => {
+        const blueprint: Blueprint = new Blueprint('users', existing);
+
+        blueprint.string('name').nullable().index().change();
+        blueprint.string('email');
+
+        const table: TableSchema = blueprint.toSchema();
+
+        expect(names(table)).toEqual(['id', 'name', 'price', 'role', 'email']);
+        expect(table.columns[1]?.nullable).toEqual(true);
+    });
+
+    test('reports the column before and after, and not as added', (): void => {
+        const blueprint: Blueprint = new Blueprint('users', existing);
+
+        blueprint.enum('role', ['admin', 'member', 'owner']).change();
+
+        const operations: BlueprintOperations = blueprint.operations();
+
+        expect(operations.added).toEqual([]);
+        expect(operations.changed).toEqual([{ from: existing.columns[3], to: expect.objectContaining({ name: 'role', hasDefault: false, values: ['admin', 'member', 'owner'] }) }]);
+    });
+
+    test('changes a column under the name a rename gives it', (): void => {
+        const blueprint: Blueprint = new Blueprint('users', existing);
+
+        blueprint.renameColumn('name', 'title');
+        blueprint.string('title').nullable().change();
+
+        expect(names(blueprint.toSchema())).toEqual(['id', 'title', 'price', 'role']);
+        expect(blueprint.operations().changed[0]?.from.name).toEqual('title');
+    });
+
+    test('rejects changing a column that does not exist', (): void => {
+        const blueprint: Blueprint = new Blueprint('users', existing);
+
+        blueprint.string('missing').change();
+
+        expect((): TableSchema => blueprint.toSchema()).toThrow(new SchemaException('Column [missing] does not exist on table [users].'));
+        expect((): BlueprintOperations => blueprint.operations()).toThrow(SchemaException);
+    });
+
+    test('rejects changing a column the blueprint drops', (): void => {
+        const blueprint: Blueprint = new Blueprint('users', existing);
+
+        blueprint.dropColumn('name');
+        blueprint.string('name').change();
+
+        expect((): TableSchema => blueprint.toSchema()).toThrow(new SchemaException('Column [name] does not exist on table [users].'));
+    });
+
+    test('rejects a change when creating a table', (): void => {
+        expect((): TableSchema => schema((table: Blueprint): void => {
+            table.string('name').change();
+        })).toThrow(new SchemaException('Column [name] does not exist on table [users].'));
+    });
+
+    test('rejects changing a column twice', (): void => {
+        const blueprint: Blueprint = new Blueprint('users', existing);
+
+        blueprint.string('name').nullable().change();
+        blueprint.string('name').change();
+
+        expect((): TableSchema => blueprint.toSchema()).toThrow(new SchemaException('Column [name] is declared more than once on table [users].'));
+    });
+
+    test('rejects a change of type', (): void => {
+        const blueprint: Blueprint = new Blueprint('users', existing);
+
+        blueprint.integer('name').change();
+
+        expect((): TableSchema => blueprint.toSchema()).toThrow(new SchemaException('Column [name] of table [users] may not change type from [string] to [integer]. Add a new column, copy the values across and drop the old one.'));
+    });
+
+    test('rejects a change of decimal scale', (): void => {
+        const blueprint: Blueprint = new Blueprint('users', existing);
+
+        blueprint.decimal('price', 3).change();
+
+        expect((): TableSchema => blueprint.toSchema()).toThrow(new SchemaException('Column [price] of table [users] may not change scale from [2] to [3], because every stored value would be read at the wrong scale.'));
+    });
+
+    test('keeps a decimal at the same scale', (): void => {
+        const blueprint: Blueprint = new Blueprint('users', existing);
+
+        blueprint.decimal('price').nullable().change();
+
+        expect(blueprint.toSchema().columns[2]).toEqual(expect.objectContaining({ places: 2, nullable: true }));
+    });
+
+    test('rejects making a column the key path', (): void => {
+        const blueprint: Blueprint = new Blueprint('users', { ...existing, key: null, columns: existing.columns.slice(1) });
+
+        blueprint.string('name').primary().change();
+
+        expect((): TableSchema => blueprint.toSchema()).toThrow(new SchemaException('Column [name] of table [users] may not become the key path, because IndexedDB fixes it when the store is created.'));
+    });
+
+    test('keeps an index the change declares again', (): void => {
+        const blueprint: Blueprint = new Blueprint('users', existing);
+
+        blueprint.string('name').nullable().index().change();
+
+        expect(indexes(blueprint.toSchema())).toEqual(['users_name_index', 'users_name_price_index']);
+        expect(blueprint.operations().indexed).toEqual([]);
+        expect(blueprint.operations().unindexed).toEqual([]);
+    });
+
+    test('deletes an index the change leaves out, keeping a compound one over the column', (): void => {
+        const blueprint: Blueprint = new Blueprint('users', existing);
+
+        blueprint.string('name').change();
+
+        expect(indexes(blueprint.toSchema())).toEqual(['users_name_price_index']);
+        expect(blueprint.operations().unindexed).toEqual(['users_name_index']);
+    });
+
+    test('creates an index the change adds', (): void => {
+        const blueprint: Blueprint = new Blueprint('users', existing);
+
+        blueprint.decimal('price').index().change();
+
+        expect(indexes(blueprint.toSchema())).toEqual(['users_name_index', 'users_name_price_index', 'users_price_index']);
+        expect(blueprint.operations().indexed.map((index: IndexSchema): string => index.name)).toEqual(['users_price_index']);
+    });
+
+    test('replaces an index the change declares differently', (): void => {
+        const blueprint: Blueprint = new Blueprint('users', existing);
+
+        blueprint.string('name').unique().change();
+
+        expect(indexes(blueprint.toSchema())).toEqual(['users_name_price_index', 'users_name_unique']);
+        expect(blueprint.operations().unindexed).toEqual(['users_name_index']);
+        expect(blueprint.operations().indexed.map((index: IndexSchema): string => index.name)).toEqual(['users_name_unique']);
+    });
+
+    test('rebuilds an index under the same name with other options', (): void => {
+        const blueprint: Blueprint = new Blueprint('users', existing);
+
+        blueprint.string('name').unique('users_name_index').change();
+
+        expect(blueprint.toSchema().indexes.find((index: IndexSchema): boolean => index.name === 'users_name_index')?.unique).toEqual(true);
+        expect(blueprint.operations().unindexed).toEqual(['users_name_index']);
+        expect(blueprint.operations().indexed.map((index: IndexSchema): string => index.name)).toEqual(['users_name_index']);
+    });
+
+    test('deletes a dropped index once when the change also leaves it out', (): void => {
+        const blueprint: Blueprint = new Blueprint('users', existing);
+
+        blueprint.dropIndex('users_name_index');
+        blueprint.string('name').change();
+
+        expect(blueprint.operations().unindexed).toEqual(['users_name_index']);
+    });
+
+    test('recreates a dropped index the change declares again', (): void => {
+        const blueprint: Blueprint = new Blueprint('users', existing);
+
+        blueprint.dropIndex('users_name_index');
+        blueprint.string('name').index().change();
+
+        expect(indexes(blueprint.toSchema())).toEqual(['users_name_price_index', 'users_name_index']);
+        expect(blueprint.operations().unindexed).toEqual(['users_name_index']);
+        expect(blueprint.operations().indexed.map((index: IndexSchema): string => index.name)).toEqual(['users_name_index']);
+    });
+
+    test('still rejects an index the change declares twice', (): void => {
+        const blueprint: Blueprint = new Blueprint('users', existing);
+
+        blueprint.string('name').index().index().change();
+
+        expect((): TableSchema => blueprint.toSchema()).toThrow(new SchemaException('Index [users_name_index] is declared more than once on table [users].'));
     });
 });
