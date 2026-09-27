@@ -593,3 +593,175 @@ describe('Predicate like matching', (): void => {
         expect(like('h%z', 'hello world')).toEqual(false);
     });
 });
+
+describe('Predicate JSON paths', (): void => {
+    /**
+     * Build a null constraint.
+     */
+    function isNull(column: string, not: boolean = false): Constraint {
+        return { type: 'null', column, conjunction: 'and', not };
+    }
+
+    const record: Record<string, unknown> = {
+        settings: { theme: 'dark', rank: 3, layout: { sidebar: { width: 240 } }, tags: ['a', 'b'], note: null },
+        label   : 'dark',
+    };
+
+    test('reads one level into a column', (): void => {
+        expect(matches([basic('settings->theme', '=', 'dark')], record)).toEqual(true);
+        expect(matches([basic('settings->theme', '=', 'light')], record)).toEqual(false);
+        expect(matches([basic('settings->rank', '>', 2)], record)).toEqual(true);
+    });
+
+    test('reads several levels into a column', (): void => {
+        expect(matches([basic('settings->layout->sidebar->width', '=', 240)], record)).toEqual(true);
+        expect(matches([basic('settings->layout->sidebar->width', '<', 240)], record)).toEqual(false);
+    });
+
+    test('reads a missing step as null', (): void => {
+        expect(matches([isNull('settings->layout->header->height')], record)).toEqual(true);
+        expect(matches([isNull('settings->layout->header->height', true)], record)).toEqual(false);
+        expect(matches([basic('settings->layout->header->height', '=', 1)], record)).toEqual(false);
+        expect(matches([basic('settings->layout->header->height', '=', 1, 'and', true)], record)).toEqual(false);
+    });
+
+    test('reads a path into a column that is absent or null as null', (): void => {
+        expect(matches([isNull('missing->theme')], record)).toEqual(true);
+        expect(matches([isNull('settings->note->text')], record)).toEqual(true);
+    });
+
+    test('never steps into a value that is not a plain object', (): void => {
+        expect(matches([isNull('settings->tags->0')], record)).toEqual(true);
+        expect(matches([isNull('settings->tags->length')], record)).toEqual(true);
+        expect(matches([isNull('label->length')], record)).toEqual(true);
+        expect(matches([isNull('settings->rank->toFixed')], record)).toEqual(true);
+    });
+
+    test.each(['__proto__', 'constructor', 'toString', 'hasOwnProperty'])('never resolves %s to the prototype', (segment: string): void => {
+        expect(matches([isNull(`settings->${segment}`, true)], record)).toEqual(false);
+        expect(matches([isNull(segment, true)], record)).toEqual(false);
+        expect(matches([basic(`settings->${segment}->name`, '=', 'Object')], record)).toEqual(false);
+    });
+
+    test('reads a __proto__ key that parsing made an own property as the data it holds', (): void => {
+        const parsed: Record<string, unknown> = JSON.parse('{ "settings": { "__proto__": { "admin": true } } }');
+
+        expect(matches([basic('settings->__proto__->admin', '=', true)], parsed)).toEqual(true);
+        expect(matches([basic('settings->admin', '=', true)], parsed)).toEqual(false);
+    });
+
+    test('compares a path against another column', (): void => {
+        const compared: (column: string, other: string) => Constraint = (column: string, other: string): Constraint => {
+            return { type: 'column', column, operator: '=', other, conjunction: 'and', not: false };
+        };
+
+        expect(matches([compared('settings->theme', 'label')], record)).toEqual(true);
+        expect(matches([compared('label', 'settings->theme')], record)).toEqual(true);
+        expect(matches([compared('label', 'settings->missing')], record)).toEqual(false);
+    });
+});
+
+describe('Predicate JSON contains', (): void => {
+    /**
+     * Build a JSON contains constraint.
+     */
+    function contains(column: string, value: unknown, not: boolean = false): Constraint {
+        return { type: 'json-contains', column, value, conjunction: 'and', not };
+    }
+
+    const record: Record<string, unknown> = { tags: ['php', 'js', 3, null], settings: { roles: ['admin'] }, name: 'php', empty: [] };
+
+    test('matches a scalar the array holds', (): void => {
+        expect(matches([contains('tags', 'php')], record)).toEqual(true);
+        expect(matches([contains('tags', 3)], record)).toEqual(true);
+        expect(matches([contains('tags', 'go')], record)).toEqual(false);
+    });
+
+    test('compares strictly', (): void => {
+        expect(matches([contains('tags', '3')], record)).toEqual(false);
+    });
+
+    test('matches an array of values only when the array holds every one', (): void => {
+        expect(matches([contains('tags', ['php', 'js'])], record)).toEqual(true);
+        expect(matches([contains('tags', ['php', 'go'])], record)).toEqual(false);
+        expect(matches([contains('tags', [])], record)).toEqual(true);
+    });
+
+    test('reads the array through a path', (): void => {
+        expect(matches([contains('settings->roles', 'admin')], record)).toEqual(true);
+        expect(matches([contains('settings->roles', 'owner')], record)).toEqual(false);
+    });
+
+    test('negates', (): void => {
+        expect(matches([contains('tags', 'go', true)], record)).toEqual(true);
+        expect(matches([contains('tags', 'php', true)], record)).toEqual(false);
+        expect(matches([contains('tags', ['php', 'go'], true)], record)).toEqual(true);
+        expect(matches([contains('empty', 'php', true)], record)).toEqual(true);
+    });
+
+    test('never finds an object, which would need structural equality', (): void => {
+        expect(matches([contains('items', { id: 1 })], { items: [{ id: 1 }] })).toEqual(false);
+    });
+
+    test.each([
+        ['a string', 'name'],
+        ['an object', 'settings'],
+        ['a missing value', 'missing'],
+    ])('treats %s as unknown, satisfying neither contains nor its negation', (_label: string, column: string): void => {
+        expect(matches([contains(column, 'php')], record)).toEqual(false);
+        expect(matches([contains(column, 'php', true)], record)).toEqual(false);
+    });
+});
+
+describe('Predicate JSON length', (): void => {
+    /**
+     * Build a JSON length constraint.
+     */
+    function length(column: string, operator: Operator, value: number, not: boolean = false): Constraint {
+        return { type: 'json-length', column, operator, value, conjunction: 'and', not };
+    }
+
+    const record: Record<string, unknown> = { tags: ['a', 'b', 'c'], settings: { roles: [] }, name: 'abc' };
+
+    test.each([
+        ['=', 3, true],
+        ['=', 2, false],
+        ['==', 3, true],
+        ['===', 3, true],
+        ['!=', 3, false],
+        ['<>', 2, true],
+        ['!==', 2, true],
+        ['<', 4, true],
+        ['<', 3, false],
+        ['<=', 3, true],
+        ['>', 2, true],
+        ['>', 3, false],
+        ['>=', 3, true],
+        ['>=', 4, false],
+    ] as [Operator, number, boolean][])('compares the length with %s %s', (operator: Operator, value: number, expected: boolean): void => {
+        expect(matches([length('tags', operator, value)], record)).toEqual(expected);
+    });
+
+    test('reads the array through a path', (): void => {
+        expect(matches([length('settings->roles', '=', 0)], record)).toEqual(true);
+    });
+
+    test('negates', (): void => {
+        expect(matches([length('tags', '=', 3, true)], record)).toEqual(false);
+        expect(matches([length('tags', '=', 2, true)], record)).toEqual(true);
+    });
+
+    test.each([
+        ['a string', 'name'],
+        ['an object', 'settings'],
+        ['a missing value', 'missing'],
+    ])('treats %s as unknown, satisfying neither the comparison nor its negation', (_label: string, column: string): void => {
+        expect(matches([length(column, '>=', 0)], record)).toEqual(false);
+        expect(matches([length(column, '>=', 0, true)], record)).toEqual(false);
+    });
+
+    test('treats a comparison against null as unknown', (): void => {
+        expect(matches([length('tags', '=', null as unknown as number)], record)).toEqual(false);
+        expect(matches([length('tags', '=', null as unknown as number, true)], record)).toEqual(false);
+    });
+});

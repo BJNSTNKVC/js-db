@@ -1,3 +1,4 @@
+import { Columns } from './Columns';
 import type { ColumnSchema, IndexSchema, TableSchema } from '../schema/types';
 import type { Constraint, Operator, Order, Plan } from './types';
 
@@ -99,6 +100,11 @@ export class Planner {
      */
     static #candidacy(constraint: Constraint, schema: TableSchema): Candidate | null {
         if (constraint.type === 'nested' || constraint.type === 'null' || constraint.type === 'column' || constraint.type === 'part' || constraint.type === 'time' || constraint.not) {
+            return null;
+        }
+
+        // A value inside a JSON column is never indexed, so a path always runs as a residual.
+        if (constraint.type === 'json-contains' || constraint.type === 'json-length' || Columns.path(constraint.column).path.length > 0) {
             return null;
         }
 

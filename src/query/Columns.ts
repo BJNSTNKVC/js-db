@@ -16,9 +16,66 @@ export class Columns {
     }
 
     /**
+     * Split a column into the column itself and the JSON path followed into it.
+     */
+    static path(column: string): { column: string; path: string[] } {
+        const [name, ...path]: string[] = column.split('->');
+
+        return { column: name as string, path };
+    }
+
+    /**
+     * Read the value a record holds under a column, following its JSON path when it has one.
+     */
+    static read(record: Record<string, unknown>, column: string): unknown {
+        let value: unknown = record;
+
+        // Only own properties of plain objects are followed, so a segment such as __proto__ or
+        // constructor never reaches a prototype, and no segment indexes into an array or a string.
+        for (const segment of column.split('->')) {
+            if (typeof value !== 'object' || value === null || Array.isArray(value) || !Object.hasOwn(value, segment)) {
+                return undefined;
+            }
+
+            value = (value as Record<string, unknown>)[segment];
+        }
+
+        return value;
+    }
+
+    /**
      * Qualify a column with the table that owns it, or fail when that is not decidable.
      */
     static resolve(column: string, tables: Map<string, string[]>): string {
+        const { column: name, path }: { column: string; path: string[] } = this.path(column);
+
+        return [this.#owned(name, tables), ...path].join('->');
+    }
+
+    /**
+     * Parse a projection, which may alias the column it selects.
+     */
+    static parse(expression: string): Projection {
+        const alias: number = expression.toLowerCase().indexOf(' as ');
+
+        // Left unaliased, a path is named after its last step, as a qualified column is named without
+        // its table.
+        if (alias === -1) {
+            const { column, path }: { column: string; path: string[] } = this.path(expression);
+
+            return { column: expression, alias: path.at(-1) ?? this.split(column).name };
+        }
+
+        return {
+            column: expression.slice(0, alias).trim(),
+            alias : expression.slice(alias + 4).trim(),
+        };
+    }
+
+    /**
+     * Qualify a column that carries no JSON path with the table that owns it.
+     */
+    static #owned(column: string, tables: Map<string, string[]>): string {
         const { table, name }: { table: string | null; name: string } = this.split(column);
 
         if (table !== null) {
@@ -44,21 +101,5 @@ export class Columns {
         }
 
         return `${owners[0]}.${name}`;
-    }
-
-    /**
-     * Parse a projection, which may alias the column it selects.
-     */
-    static parse(expression: string): Projection {
-        const alias: number = expression.toLowerCase().indexOf(' as ');
-
-        if (alias === -1) {
-            return { column: expression, alias: this.split(expression).name };
-        }
-
-        return {
-            column: expression.slice(0, alias).trim(),
-            alias : expression.slice(alias + 4).trim(),
-        };
     }
 }

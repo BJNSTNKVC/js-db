@@ -16,6 +16,8 @@ export type Constraint =
     | { type: 'column'; column: string; operator: Operator; other: string; conjunction: Conjunction; not: boolean }
     | { type: 'part'; column: string; part: DatePart; value: number; conjunction: Conjunction; not: boolean }
     | { type: 'time'; column: string; operator: Operator; value: string; conjunction: Conjunction; not: boolean }
+    | { type: 'json-contains'; column: string; value: unknown; conjunction: Conjunction; not: boolean }
+    | { type: 'json-length'; column: string; operator: Operator; value: number; conjunction: Conjunction; not: boolean }
     | { type: 'nested'; constraints: Constraint[]; conjunction: Conjunction; not: boolean };
 
 export interface Order {

@@ -776,6 +776,68 @@ way of splitting the value between the wildcards, and that is exponential in the
 walks the value once per wildcard instead, so a hostile or careless pattern costs time in proportion
 to its length rather than freezing the tab.
 
+#### JSON columns
+
+The values inside a `json()` column can be queried with `->`, the path syntax Laravel uses. A path
+works anywhere a column is compared or sorted by, so `where` and every other constraint above take
+one, and so does `orderBy`.
+
+```ts
+DB.table<User>('users')
+    .where('settings->theme', 'dark')
+    .where('settings->notifications->email', true)
+    .whereNull('settings->deleted_at')
+    .whereJsonContains('tags', 'admin')
+    .whereJsonContains('tags', ['admin', 'owner'])
+    .whereJsonDoesntContain('settings->roles', 'guest')
+    .whereJsonLength('tags', '>', 1)
+    .orderBy('settings->rank', 'desc');
+```
+
+| Method                                       | A record matches when                                                    |
+|----------------------------------------------|--------------------------------------------------------------------------|
+| `whereJsonContains(column, value)`           | The array holds the value, or every one of an array of values            |
+| `whereJsonDoesntContain(column, value)`      | The array lacks the value, or at least one of an array of values         |
+| `whereJsonLength(column, operator?, length)` | The number of elements in the array meets the comparison, `=` by default |
+
+Each has an `or` form: `orWhereJsonContains`, `orWhereJsonDoesntContain` and `orWhereJsonLength`.
+
+A path steps only through objects, and only through keys they hold themselves, so a step such as
+`__proto__` or `constructor` never reaches the prototype, and a path never picks an element out of
+an array. A missing step reads as `null`. So `whereNull('settings->rank')` matches a record whose
+settings have no rank, that record satisfies neither `where('settings->rank', 2)` nor
+`whereNot('settings->rank', 2)`, and sorting places it where it places `null`.
+
+`whereJsonContains` and `whereJsonLength` expect the path to hold an array. Values are compared
+strictly, so `'3'` is not found in `[3]`, and an object is never found, since that would need
+comparing objects by their structure. A target that holds anything but an array satisfies neither
+the constraint nor its negation, the way `like` treats anything but a string.
+
+In a joined query, a path may start from a column qualified by its table, as in
+`users.settings->theme`. That is why the steps are separated by `->` rather than `.`, which already
+qualifies a column.
+
+No index covers a value inside a JSON column, so a constraint on a path is checked against every
+record the query reads, and ordering by a path sorts in memory. Another constraint on an indexed
+column can still drive the scan.
+
+`select`, `pluck` and `value` read a path too. Left unaliased, a selected path is named after its
+last step, the way `select('users.name')` is named `name`:
+
+```ts
+await DB.table<User>('users').select('name', 'settings->theme').get();
+// [{ name: 'Alice', theme: 'dark' }, ...]
+
+await DB.table<User>('users').select('settings->notifications->email as email').get();
+await DB.table<User>('users').pluck('settings->theme');
+await DB.table<User>('users').where('id', 1).value('settings->rank');
+```
+
+A missing path selects as `undefined`, and `value` returns `null` for it. `update` cannot write
+through a path yet.
+
+> Modeled on Laravel's [JSON Where Clauses](https://laravel.com/docs/12.x/queries#json-where-clauses).
+
 #### Shaping
 
 ```ts

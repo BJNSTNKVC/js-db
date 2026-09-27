@@ -1,3 +1,4 @@
+import { Columns } from './Columns';
 import type { Constraint, DatePart, Operator } from './types';
 
 type Truth = boolean | null;
@@ -92,7 +93,7 @@ export class Predicate {
             return this.#negate(constraint.not, this.#evaluator(constraint.constraints)(record));
         }
 
-        const held: unknown = record[constraint.column];
+        const held: unknown = Columns.read(record, constraint.column);
 
         if (constraint.type === 'null') {
             return this.#negate(constraint.not, this.#absent(held));
@@ -105,7 +106,7 @@ export class Predicate {
         }
 
         if (constraint.type === 'column') {
-            return this.#negate(constraint.not, this.#compared(held, constraint.operator, record[constraint.other]));
+            return this.#negate(constraint.not, this.#compared(held, constraint.operator, Columns.read(record, constraint.other)));
         }
 
         if (constraint.type === 'part') {
@@ -118,6 +119,15 @@ export class Predicate {
             const time: string | null = this.#time(held);
 
             return time === null ? null : this.#negate(constraint.not, this.#compare(time, constraint.operator, constraint.value));
+        }
+
+        // Only an array can contain a value or have a length, so any other target is unknown.
+        if (constraint.type === 'json-contains') {
+            return Array.isArray(held) ? this.#negate(constraint.not, this.#contains(held, constraint.value)) : null;
+        }
+
+        if (constraint.type === 'json-length') {
+            return Array.isArray(held) ? this.#negate(constraint.not, this.#compared(held.length, constraint.operator, constraint.value)) : null;
         }
 
         if (constraint.type === 'in') {
@@ -138,6 +148,15 @@ export class Predicate {
         }
 
         return this.#negate(constraint.not, this.#compared(held, constraint.operator, constraint.value));
+    }
+
+    /**
+     * Determine whether an array holds a value, or every element when the value is an array itself.
+     */
+    static #contains(held: unknown[], value: unknown): boolean {
+        const wanted: unknown[] = Array.isArray(value) ? value : [value];
+
+        return wanted.every((element: unknown): boolean => held.includes(element));
     }
 
     /**

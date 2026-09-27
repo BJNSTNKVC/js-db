@@ -209,6 +209,29 @@ describe('Planner fallbacks to a scan', (): void => {
         expect(Planner.plan([basic('name', '=', 'John')], [], table).source).toEqual('scan');
     });
 
+    test('scans for a path into a column, which no index covers', (): void => {
+        const constraints: Constraint[] = [basic('email->domain', '=', 'b.c')];
+        const plan: Plan = Planner.plan(constraints, [], users);
+
+        expect(plan.source).toEqual('scan');
+        expect(plan.residual).toEqual(constraints);
+    });
+
+    test('scans for a JSON contains, even on an indexed column', (): void => {
+        expect(Planner.plan([{ type: 'json-contains', column: 'email', value: 'a@b.c', conjunction: 'and', not: false }], [], users).source).toEqual('scan');
+    });
+
+    test('scans for a JSON length, even on the key path', (): void => {
+        expect(Planner.plan([{ type: 'json-length', column: 'id', operator: '=', value: 1, conjunction: 'and', not: false }], [], users).source).toEqual('scan');
+    });
+
+    test('keeps an indexed constraint driving the scan alongside a path', (): void => {
+        const plan: Plan = Planner.plan([basic('name->first', '=', 'John'), basic('email', '=', 'a@b.c')], [], users);
+
+        expect(plan.index).toEqual('users_email_unique');
+        expect(plan.residual).toEqual([basic('name->first', '=', 'John')]);
+    });
+
     test('scans a table with no key path when constrained on a missing column', (): void => {
         const table: TableSchema = { ...users, key: null, indexes: [] };
 
@@ -248,6 +271,10 @@ describe('Planner ordering', (): void => {
 
     test('refuses to order by an unindexed column', (): void => {
         expect(Planner.plan([], [order('score')], users).ordered).toEqual(false);
+    });
+
+    test('refuses to order by a path into an indexed column', (): void => {
+        expect(Planner.plan([], [order('name->first')], users).ordered).toEqual(false);
     });
 
     test('refuses to order by more than one column', (): void => {

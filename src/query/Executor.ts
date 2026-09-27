@@ -310,7 +310,7 @@ export class Executor<T> {
                 columns.map((expression: string): [string, unknown] => {
                     const projection: Projection = Columns.parse(expression);
 
-                    return [projection.alias, (record as Record<string, unknown>)[projection.column]];
+                    return [projection.alias, Columns.read(record as Record<string, unknown>, projection.column)];
                 }),
             ) as T);
 
@@ -444,7 +444,7 @@ export class Executor<T> {
         return Comparator.sort(
             collected,
             this.#query.orders,
-            (entry: Entry<T>, column: string): unknown => (entry.record as Record<string, unknown>)[column],
+            (entry: Entry<T>, column: string): unknown => Columns.read(entry.record as Record<string, unknown>, column),
         );
     }
 
@@ -523,7 +523,7 @@ export class Executor<T> {
         const kept: Record<string, unknown>[] = rows.filter(matches);
         const sorted: Record<string, unknown>[] = this.#query.random
             ? this.#shuffled(kept)
-            : Comparator.sort(kept, orders, (row: Record<string, unknown>, column: string): unknown => row[column]);
+            : Comparator.sort(kept, orders, (row: Record<string, unknown>, column: string): unknown => Columns.read(row, column));
         const paged: Record<string, unknown>[] = this.#paged(sorted);
 
         this.#emit('join', started, paged.length);

@@ -1,4 +1,5 @@
 import { MultipleRecordsFoundException, RecordsNotFoundException } from '../exceptions';
+import { Columns } from './Columns';
 import { Join } from './Join';
 import { Grouping } from './Grouping';
 import { Executor } from './Executor';
@@ -322,6 +323,52 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
+     * Constrain a JSON array to hold a value, or every one of an array of values.
+     */
+    whereJsonContains(column: Key<T>, value: unknown): this {
+        return this.#push({ type: 'json-contains', column, value, conjunction: 'and', not: false });
+    }
+
+    /**
+     * Constrain a JSON array to hold a value, or every one of an array of values, disjunctively.
+     */
+    orWhereJsonContains(column: Key<T>, value: unknown): this {
+        return this.#push({ type: 'json-contains', column, value, conjunction: 'or', not: false });
+    }
+
+    /**
+     * Constrain a JSON array to not hold a value, or not every one of an array of values.
+     */
+    whereJsonDoesntContain(column: Key<T>, value: unknown): this {
+        return this.#push({ type: 'json-contains', column, value, conjunction: 'and', not: true });
+    }
+
+    /**
+     * Constrain a JSON array to not hold a value, or not every one of an array of values, disjunctively.
+     */
+    orWhereJsonDoesntContain(column: Key<T>, value: unknown): this {
+        return this.#push({ type: 'json-contains', column, value, conjunction: 'or', not: true });
+    }
+
+    /**
+     * Constrain the number of elements a JSON array holds.
+     */
+    whereJsonLength(column: Key<T>, value: number): this;
+    whereJsonLength(column: Key<T>, operator: Operator, value: number): this;
+    whereJsonLength(column: Key<T>, operator: Operator | number, value?: number): this {
+        return this.#length('and', column, operator, value);
+    }
+
+    /**
+     * Constrain the number of elements a JSON array holds, disjunctively.
+     */
+    orWhereJsonLength(column: Key<T>, value: number): this;
+    orWhereJsonLength(column: Key<T>, operator: Operator, value: number): this;
+    orWhereJsonLength(column: Key<T>, operator: Operator | number, value?: number): this {
+        return this.#length('or', column, operator, value);
+    }
+
+    /**
      * Join another table, keeping only the rows that match.
      */
     join<R = Record<string, unknown>>(table: string, first: Joining): Builder<R>;
@@ -635,7 +682,7 @@ export class Builder<T = Record<string, unknown>> {
             return null;
         }
 
-        return (record as Record<string, unknown>)[column] as V ?? null;
+        return Columns.read(record as Record<string, unknown>, column) as V ?? null;
     }
 
     /**
@@ -647,10 +694,10 @@ export class Builder<T = Record<string, unknown>> {
         const records: Record<string, unknown>[] = await this.#executor().records() as Record<string, unknown>[];
 
         if (key === undefined) {
-            return records.map((record: Record<string, unknown>): V => record[column] as V);
+            return records.map((record: Record<string, unknown>): V => Columns.read(record, column) as V);
         }
 
-        return Object.fromEntries(records.map((record: Record<string, unknown>): [string, V] => [String(record[key]), record[column] as V]));
+        return Object.fromEntries(records.map((record: Record<string, unknown>): [string, V] => [String(Columns.read(record, key)), Columns.read(record, column) as V]));
     }
 
     /**
@@ -999,6 +1046,17 @@ export class Builder<T = Record<string, unknown>> {
             : { operator: operator as Operator, other };
 
         return this.#push({ type: 'column', column, operator: resolved.operator, other: resolved.other, conjunction, not: false });
+    }
+
+    /**
+     * Add a constraint on the length of a JSON array, allowing the operator to be left implicit.
+     */
+    #length(conjunction: Conjunction, column: Key<T>, operator: Operator | number, value?: number): this {
+        const resolved: { operator: Operator; value: number } = value === undefined
+            ? { operator: '=', value: operator as number }
+            : { operator: operator as Operator, value };
+
+        return this.#push({ type: 'json-length', column, operator: resolved.operator, value: resolved.value, conjunction, not: false });
     }
 
     /**

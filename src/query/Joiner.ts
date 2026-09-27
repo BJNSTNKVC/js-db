@@ -62,7 +62,7 @@ export class Joiner {
                 columns.map((expression: string): [string, unknown] => {
                     const projection: Projection = Columns.parse(expression);
 
-                    return [projection.alias, row[Columns.resolve(projection.column, tables)]];
+                    return [projection.alias, Columns.read(row, Columns.resolve(projection.column, tables))];
                 }),
             ));
         }
@@ -95,7 +95,7 @@ export class Joiner {
         for (const row of driving) {
             const candidates: Record<string, unknown>[] = hashed === null
                 ? other
-                : hashed.get(row[(clause.conditions[0] as JoinCondition).first]) ?? [];
+                : hashed.get(Columns.read(row, (clause.conditions[0] as JoinCondition).first)) ?? [];
 
             const paired: Record<string, unknown>[] = candidates
                 .map((candidate: Record<string, unknown>): Record<string, unknown> => ({ ...row, ...candidate }))
@@ -132,7 +132,7 @@ export class Joiner {
         const hashed: Map<unknown, Record<string, unknown>[]> = new Map<unknown, Record<string, unknown>[]>();
 
         for (const record of records) {
-            const key: unknown = record[column];
+            const key: unknown = Columns.read(record, column);
             const bucket: Record<string, unknown>[] | undefined = hashed.get(key);
 
             if (bucket === undefined) {
