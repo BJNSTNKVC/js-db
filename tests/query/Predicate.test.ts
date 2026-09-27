@@ -17,6 +17,18 @@ function basic(column: string, operator: Operator, value: unknown, conjunction: 
 }
 
 /**
+ * Build a nested group of constraints.
+ */
+function nested(constraints: Constraint[], not: boolean = false, conjunction: Conjunction = 'and'): Constraint {
+    return {
+        type: 'nested',
+        constraints,
+        conjunction,
+        not,
+    };
+}
+
+/**
  * Test a record against the given constraints.
  */
 function matches(constraints: Constraint[], record: Record<string, unknown>): boolean {
@@ -273,12 +285,141 @@ describe('Predicate three valued logic', (): void => {
         expect(matches([{ type: 'between', column: 'value', from: 1, to: 10, conjunction: 'and', not: true }], { value: null })).toEqual(false);
     });
 
+    test.each([
+        [null],
+        [undefined],
+    ])('%s in the list leaves in and not in unknown unless the value is found', (absent: null | undefined): void => {
+        const within: Constraint[] = [{ type: 'in', column: 'role', values: ['admin', absent], conjunction: 'and', not: false }];
+        const outside: Constraint[] = [{ type: 'in', column: 'role', values: ['admin', absent], conjunction: 'and', not: true }];
+
+        expect(matches(within, { role: 'admin' })).toEqual(true);
+        expect(matches(outside, { role: 'admin' })).toEqual(false);
+        expect(matches(within, { role: 'guest' })).toEqual(false);
+        expect(matches(outside, { role: 'guest' })).toEqual(false);
+    });
+
+    test.each([
+        [null, 10, 20, 5],
+        [1, null, 0, 5],
+        [undefined, 10, 20, 5],
+    ] as [unknown, unknown, number, number][])('a between from %s to %s is false for %s and unknown for %s', (from: unknown, to: unknown, outside: number, inside: number): void => {
+        const within: Constraint[] = [{ type: 'between', column: 'age', from, to, conjunction: 'and', not: false }];
+        const beyond: Constraint[] = [{ type: 'between', column: 'age', from, to, conjunction: 'and', not: true }];
+
+        expect(matches(within, { age: outside })).toEqual(false);
+        expect(matches(beyond, { age: outside })).toEqual(true);
+        expect(matches(within, { age: inside })).toEqual(false);
+        expect(matches(beyond, { age: inside })).toEqual(false);
+    });
+
+    test('a between with two null bounds is unknown', (): void => {
+        expect(matches([{ type: 'between', column: 'age', from: null, to: null, conjunction: 'and', not: false }], { age: 5 })).toEqual(false);
+        expect(matches([{ type: 'between', column: 'age', from: null, to: null, conjunction: 'and', not: true }], { age: 5 })).toEqual(false);
+    });
+
+    test.each([
+        [25],
+        [true],
+        [new Date(2026, 0, 1)],
+        [{ name: 'John' }],
+    ])('%o satisfies neither like nor not like, even negated', (held: unknown): void => {
+        expect(matches([basic('value', 'like', '%')], { value: held })).toEqual(false);
+        expect(matches([basic('value', 'not like', '%')], { value: held })).toEqual(false);
+        expect(matches([basic('value', 'like', '%', 'and', true)], { value: held })).toEqual(false);
+        expect(matches([nested([basic('value', 'not like', '%')], true)], { value: held })).toEqual(false);
+    });
+
+    test('a column comparison by like is unknown when the held column is not a string', (): void => {
+        const constraints: Constraint[] = [{ type: 'column', column: 'a', operator: 'not like', other: 'b', conjunction: 'and', not: false }];
+
+        expect(matches(constraints, { a: 35, b: '2%' })).toEqual(false);
+        expect(matches(constraints, { a: '35', b: '2%' })).toEqual(true);
+    });
+
+    test.each(
+        (['=', '==', '===', '!=', '<>', '!==', '<', '>=', 'like', 'not like'] as Operator[]).flatMap(
+            (operator: Operator): [Operator, null | undefined][] => [[operator, null], [operator, undefined]],
+        ),
+    )('comparing by %s against %s is unknown, even negated', (operator: Operator, absent: null | undefined): void => {
+        expect(matches([basic('value', operator, absent)], { value: 'John' })).toEqual(false);
+        expect(matches([basic('value', operator, absent, 'and', true)], { value: 'John' })).toEqual(false);
+        expect(matches([nested([basic('value', operator, absent)], true)], { value: 'John' })).toEqual(false);
+    });
+
     test('a missing column behaves the same as an explicit null', (): void => {
         expect(matches([basic('value', '!=', 7, 'and', false)], {})).toEqual(false);
     });
 
     test('the null constraint is the only way to match a null', (): void => {
         expect(matches([{ type: 'null', column: 'value', conjunction: 'and', not: false }], { value: null })).toEqual(true);
+    });
+
+    test('negating a group leaves a null comparison unknown', (): void => {
+        expect(matches([nested([basic('age', '>', 26)], true)], { age: null })).toEqual(false);
+        expect(matches([nested([basic('age', '>', 26)], true)], {})).toEqual(false);
+        expect(matches([nested([basic('age', '>', 26)], true)], { age: 20 })).toEqual(true);
+    });
+
+    test('negating a group leaves a null column comparison unknown', (): void => {
+        const constraints: Constraint[] = [
+            nested([{ type: 'column', column: 'a', operator: '>', other: 'b', conjunction: 'and', not: false }], true),
+        ];
+
+        expect(matches(constraints, { a: 1, b: null })).toEqual(false);
+        expect(matches(constraints, { a: 1, b: 2 })).toEqual(true);
+    });
+
+    test('negating a group leaves the date part of a value that holds no date unknown', (): void => {
+        const constraints: Constraint[] = [
+            nested([{ type: 'part', column: 'at', part: 'year', value: 2026, conjunction: 'and', not: false }], true),
+        ];
+
+        expect(matches(constraints, { at: 'never' })).toEqual(false);
+        expect(matches(constraints, { at: new Date(2025, 0, 1) })).toEqual(true);
+    });
+
+    test('negating a group leaves the time of a value that holds no date unknown', (): void => {
+        const constraints: Constraint[] = [
+            nested([{ type: 'time', column: 'at', operator: '=', value: '09:30:00', conjunction: 'and', not: false }], true),
+        ];
+
+        expect(matches(constraints, { at: 'never' })).toEqual(false);
+        expect(matches(constraints, { at: new Date(2026, 0, 1, 18, 45) })).toEqual(true);
+    });
+
+    test('unknown and false is false, so its negation is true', (): void => {
+        const constraints: Constraint[] = [nested([basic('age', '>', 26), basic('role', '=', 'admin')], true)];
+
+        expect(matches(constraints, { age: null, role: 'member' })).toEqual(true);
+        expect(matches(constraints, { age: null, role: 'admin' })).toEqual(false);
+    });
+
+    test('unknown or true is true, so its negation is false', (): void => {
+        const group: Constraint[] = [basic('age', '>', 26), basic('role', '=', 'admin', 'or')];
+
+        expect(matches([nested(group)], { age: null, role: 'admin' })).toEqual(true);
+        expect(matches([nested(group, true)], { age: null, role: 'admin' })).toEqual(false);
+    });
+
+    test('unknown or false is unknown, so neither it nor its negation matches', (): void => {
+        const group: Constraint[] = [basic('age', '>', 26), basic('role', '=', 'admin', 'or')];
+
+        expect(matches([nested(group)], { age: null, role: 'member' })).toEqual(false);
+        expect(matches([nested(group, true)], { age: null, role: 'member' })).toEqual(false);
+    });
+
+    test('a null constraint inside a negated group is never unknown', (): void => {
+        const constraints: Constraint[] = [nested([{ type: 'null', column: 'age', conjunction: 'and', not: false }], true)];
+
+        expect(matches(constraints, { age: null })).toEqual(false);
+        expect(matches(constraints, { age: 30 })).toEqual(true);
+    });
+
+    test('a not null constraint inside a negated group is never unknown', (): void => {
+        const constraints: Constraint[] = [nested([{ type: 'null', column: 'age', conjunction: 'and', not: true }], true)];
+
+        expect(matches(constraints, { age: null })).toEqual(true);
+        expect(matches(constraints, { age: 30 })).toEqual(false);
     });
 });
 
@@ -334,6 +475,29 @@ describe('Predicate nested groups', (): void => {
 
         expect(matches(constraints, { role: 'admin' })).toEqual(false);
         expect(matches(constraints, { role: 'guest' })).toEqual(true);
+    });
+
+    test('keeps unknown unknown through a double negation', (): void => {
+        const constraints: Constraint[] = [nested([nested([basic('age', '>', 26)], true)], true)];
+
+        expect(matches(constraints, { age: null })).toEqual(false);
+        expect(matches(constraints, { age: 30 })).toEqual(true);
+        expect(matches(constraints, { age: 20 })).toEqual(false);
+    });
+
+    test('excludes a record whose null makes a negated disjunction unknown', (): void => {
+        const constraints: Constraint[] = [nested([basic('age', '>', 26), basic('score', '>', 26, 'or')], true)];
+
+        expect(matches(constraints, { age: null, score: 10 })).toEqual(false);
+        expect(matches(constraints, { age: null, score: 30 })).toEqual(false);
+        expect(matches(constraints, { age: 20, score: 10 })).toEqual(true);
+    });
+
+    test('lets a true branch outside a group rescue an unknown one', (): void => {
+        const constraints: Constraint[] = [nested([basic('age', '>', 26)], true), basic('role', '=', 'admin', 'or')];
+
+        expect(matches(constraints, { age: null, role: 'admin' })).toEqual(true);
+        expect(matches(constraints, { age: null, role: 'member' })).toEqual(false);
     });
 
     test('matches every record against an empty group', (): void => {

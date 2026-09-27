@@ -19,6 +19,10 @@ import type {
     Query
 } from './types';
 
+const EQUALITIES: ReadonlySet<Operator> = new Set<Operator>(['=', '==', '===']);
+
+const INEQUALITIES: ReadonlySet<Operator> = new Set<Operator>(['!=', '<>', '!==']);
+
 type Nested<T> = (query: Builder<T>) => void;
 
 type Joining = (join: Join) => void;
@@ -939,14 +943,9 @@ export class Builder<T = Record<string, unknown>> {
         }
 
         if (typeof column === 'object' && column !== null) {
-            const constraints: Constraint[] = Object.entries(column).map(([key, held]: [string, unknown]): Constraint => ({
-                type       : 'basic',
-                column     : key,
-                operator   : '=',
-                value      : held,
-                conjunction: 'and',
-                not        : false,
-            }));
+            const constraints: Constraint[] = Object.entries(column).map(
+                ([key, held]: [string, unknown]): Constraint => this.#basic('and', false, key, '=', held),
+            );
 
             return this.#push({ type: 'nested', constraints, conjunction, not });
         }
@@ -957,7 +956,18 @@ export class Builder<T = Record<string, unknown>> {
             ? { operator: '=', value: parameters[0] }
             : { operator: parameters[0] as Operator, value: parameters[1] };
 
-        return this.#push({ type: 'basic', column: column as string, operator: resolved.operator, value: resolved.value, conjunction, not });
+        return this.#push(this.#basic(conjunction, not, column as string, resolved.operator, resolved.value));
+    }
+
+    /**
+     * Build a comparison, which Laravel turns into a null check when it tests equality or inequality with null.
+     */
+    #basic(conjunction: Conjunction, not: boolean, column: string, operator: Operator, value: unknown): Constraint {
+        if ((value === null || value === undefined) && (EQUALITIES.has(operator) || INEQUALITIES.has(operator))) {
+            return { type: 'null', column, conjunction, not: not !== INEQUALITIES.has(operator) };
+        }
+
+        return { type: 'basic', column, operator, value, conjunction, not };
     }
 
     /**

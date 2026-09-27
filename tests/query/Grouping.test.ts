@@ -1,10 +1,12 @@
-import { beforeAll, describe, expect, test } from 'vitest';
+import { afterEach, beforeAll, describe, expect, test, vi } from 'vitest';
+import type { MockInstance } from 'vitest';
 import { Connection } from '../../src/database/Connection';
 import { Migration } from '../../src/migrations/Migration';
 import { Schema } from '../../src/schema/Schema';
 import { Blueprint } from '../../src/schema/Blueprint';
 import type { Builder } from '../../src/query/Builder';
 import type { Grouping } from '../../src/query/Grouping';
+import { Predicate } from '../../src/query/Predicate';
 
 interface User {
     id: number;
@@ -55,6 +57,10 @@ beforeAll(async (): Promise<void> => {
 
     await connection.migrate();
     await users().insert(seed);
+});
+
+afterEach((): void => {
+    vi.restoreAllMocks();
 });
 
 describe('Builder.groupBy', (): void => {
@@ -239,18 +245,16 @@ describe('Grouping having', (): void => {
     });
 
     test('keeps an explicit operator when the value is undefined', async (): Promise<void> => {
+        const compile: MockInstance = vi.spyOn(Predicate, 'compile');
+
         const rows: { role: string; total: number }[] = await users()
             .groupBy('role')
             .aggregate({ total: { count: '*' } })
             .having('role', '!=', undefined)
-            .orderBy('role')
             .get();
 
-        expect(rows).toEqual([
-            { role: 'admin', total: 1 },
-            { role: 'member', total: 3 },
-            { role: 'owner', total: 1 },
-        ]);
+        expect(compile).toHaveBeenCalledWith([{ type: 'basic', column: 'role', operator: '!=', value: undefined, conjunction: 'and', not: false }]);
+        expect(rows).toEqual([]);
     });
 
     test('filters by a grouped column', async (): Promise<void> => {

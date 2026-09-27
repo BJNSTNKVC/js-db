@@ -145,6 +145,43 @@ describe('Builder where', (): void => {
         expect((await names(users().where('role', '!=', undefined))).sort()).toEqual(['Alice', 'Bob', 'Carol', 'Dave', 'Erin']);
     });
 
+    test.each([
+        [null],
+        [undefined],
+    ])('treats equality with %s as whereNull', async (absent: null | undefined): Promise<void> => {
+        expect(await names(users().where('age', absent))).toEqual(['Dave']);
+        expect(await names(users().where('age', '=', absent))).toEqual(['Dave']);
+        expect(await names(users().where('age', '==', absent))).toEqual(['Dave']);
+        expect(await names(users().where('age', '===', absent))).toEqual(['Dave']);
+        expect(await names(users().where({ age: absent }))).toEqual(['Dave']);
+    });
+
+    test.each([
+        [null],
+        [undefined],
+    ])('treats inequality with %s as whereNotNull', async (absent: null | undefined): Promise<void> => {
+        expect(await names(users().where('age', '!=', absent))).toEqual(['Alice', 'Bob', 'Carol', 'Erin']);
+        expect(await names(users().where('age', '<>', absent))).toEqual(['Alice', 'Bob', 'Carol', 'Erin']);
+        expect(await names(users().where('age', '!==', absent))).toEqual(['Alice', 'Bob', 'Carol', 'Erin']);
+    });
+
+    test('flips the null check when negated', async (): Promise<void> => {
+        expect(await names(users().whereNot('age', null))).toEqual(['Alice', 'Bob', 'Carol', 'Erin']);
+        expect(await names(users().whereNot('age', '!=', null))).toEqual(['Dave']);
+        expect(await names(users().whereNot({ age: null }))).toEqual(['Alice', 'Bob', 'Carol', 'Erin']);
+        expect(await names(users().whereNone(['age'], null))).toEqual(['Alice', 'Bob', 'Carol', 'Erin']);
+    });
+
+    test('keeps the conjunction of a null check', async (): Promise<void> => {
+        expect(await names(users().where('name', 'Alice').orWhere('age', null))).toEqual(['Alice', 'Dave']);
+        expect(await names(users().where('role', 'member').where('age', '!=', null))).toEqual(['Bob', 'Erin']);
+    });
+
+    test('matches nothing when an ordering operator compares against null', async (): Promise<void> => {
+        expect(await names(users().where('age', '>', null))).toEqual([]);
+        expect(await names(users().whereNot('age', '>', null))).toEqual([]);
+    });
+
     test('constrains with an object', async (): Promise<void> => {
         expect(await names(users().where({ role: 'member', age: 25 }))).toEqual(['Bob', 'Erin']);
     });
@@ -173,6 +210,14 @@ describe('Builder where', (): void => {
         expect(found.sort()).toEqual(['Alice', 'Carol']);
     });
 
+    test('leaves a null comparison unknown inside a negated nested group', async (): Promise<void> => {
+        const found: string[] = await names(users().whereNot((query: Builder<User>): void => {
+            query.where('age', '>', 26);
+        }));
+
+        expect(found.sort()).toEqual(['Bob', 'Erin']);
+    });
+
     test('constrains to a list of values', async (): Promise<void> => {
         expect((await names(users().whereIn('email', ['alice@example.com', 'bob@example.com']))).sort()).toEqual(['Alice', 'Bob']);
     });
@@ -195,6 +240,21 @@ describe('Builder where', (): void => {
 
     test('constrains outside a range', async (): Promise<void> => {
         expect(await names(users().whereNotBetween('age', [25, 30]))).toEqual(['Carol']);
+    });
+
+    test('matches neither like nor not like against a column that does not hold strings', async (): Promise<void> => {
+        expect(await names(users().whereNotLike('age', '3%'))).toEqual([]);
+        expect(await names(users().whereLike('age', '3%'))).toEqual([]);
+    });
+
+    test('leaves not in unknown for a value missing from a list that holds null', async (): Promise<void> => {
+        expect(await names(users().whereNotIn('role', ['admin', null]))).toEqual([]);
+        expect((await names(users().whereIn('role', ['admin', null]))).sort()).toEqual(['Alice']);
+    });
+
+    test('leaves not between unknown unless the bound that is not null rules the value out', async (): Promise<void> => {
+        expect((await names(users().whereNotBetween('age', [null, 26]))).sort()).toEqual(['Alice', 'Carol']);
+        expect(await names(users().whereBetween('age', [null, 26]))).toEqual([]);
     });
 
     test('constrains by a pattern', async (): Promise<void> => {
@@ -931,6 +991,10 @@ describe('Builder.whereAny, whereAll and whereNone', (): void => {
 
     test('matches when none of the columns meets the comparison', async (): Promise<void> => {
         expect(await names(users().whereNone(['name', 'role'], 'like', '%o%'))).toEqual(['Alice', 'Dave', 'Erin']);
+    });
+
+    test('excludes a record whose column is null from none', async (): Promise<void> => {
+        expect(await names(users().whereNone(['age'], '>', 26))).toEqual(['Bob', 'Erin']);
     });
 
     test('compares with an implicit equals', async (): Promise<void> => {

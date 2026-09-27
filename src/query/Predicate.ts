@@ -1,5 +1,7 @@
 import type { Constraint, DatePart, Operator } from './types';
 
+type Truth = boolean | null;
+
 interface LikeToken {
     kind: 'any' | 'one' | 'literal';
     value: string;
@@ -10,17 +12,59 @@ export class Predicate {
      * Compile a list of constraints into a record test.
      */
     static compile(constraints: readonly Constraint[]): (record: Record<string, unknown>) => boolean {
+        const evaluate: (record: Record<string, unknown>) => Truth = this.#evaluator(constraints);
+
+        return (record: Record<string, unknown>): boolean => evaluate(record) === true;
+    }
+
+    /**
+     * Compile a list of constraints into a three valued record test.
+     */
+    static #evaluator(constraints: readonly Constraint[]): (record: Record<string, unknown>) => Truth {
         if (constraints.length === 0) {
-            return (): boolean => true;
+            return (): Truth => true;
         }
 
         const groups: Constraint[][] = this.#grouped(constraints);
 
-        return (record: Record<string, unknown>): boolean => groups.some(
-            (group: Constraint[]): boolean => group.every(
-                (constraint: Constraint): boolean => this.#test(constraint, record),
-            ),
-        );
+        return (record: Record<string, unknown>): Truth => {
+            let disjunction: Truth = false;
+
+            for (const group of groups) {
+                const conjunction: Truth = this.#conjoin(group, record);
+
+                if (conjunction === true) {
+                    return true;
+                }
+
+                if (conjunction === null) {
+                    disjunction = null;
+                }
+            }
+
+            return disjunction;
+        };
+    }
+
+    /**
+     * Test a group of constraints joined by and, where false outweighs unknown.
+     */
+    static #conjoin(group: readonly Constraint[], record: Record<string, unknown>): Truth {
+        let conjunction: Truth = true;
+
+        for (const constraint of group) {
+            const truth: Truth = this.#test(constraint, record);
+
+            if (truth === false) {
+                return false;
+            }
+
+            if (truth === null) {
+                conjunction = null;
+            }
+        }
+
+        return conjunction;
     }
 
     /**
@@ -43,53 +87,57 @@ export class Predicate {
     /**
      * Test a single constraint against a record.
      */
-    static #test(constraint: Constraint, record: Record<string, unknown>): boolean {
+    static #test(constraint: Constraint, record: Record<string, unknown>): Truth {
         if (constraint.type === 'nested') {
-            return this.#negate(constraint.not, this.compile(constraint.constraints)(record));
+            return this.#negate(constraint.not, this.#evaluator(constraint.constraints)(record));
         }
 
         const held: unknown = record[constraint.column];
 
         if (constraint.type === 'null') {
-            return this.#negate(constraint.not, held === null || held === undefined);
+            return this.#negate(constraint.not, this.#absent(held));
         }
 
         // SQL three valued logic: comparing against null is unknown, and negating unknown leaves it
         // unknown, so a null value satisfies neither a constraint nor its negation.
-        if (held === null || held === undefined) {
-            return false;
+        if (this.#absent(held)) {
+            return null;
         }
 
         if (constraint.type === 'column') {
-            const other: unknown = record[constraint.other];
-
-            if (other === null || other === undefined) {
-                return false;
-            }
-
-            return this.#negate(constraint.not, this.#compare(held, constraint.operator, other));
+            return this.#negate(constraint.not, this.#compared(held, constraint.operator, record[constraint.other]));
         }
 
         if (constraint.type === 'part') {
-            return this.#negate(constraint.not, this.#part(held, constraint.part) === constraint.value);
+            const part: number | null = this.#part(held, constraint.part);
+
+            return part === null ? null : this.#negate(constraint.not, part === constraint.value);
         }
 
         if (constraint.type === 'time') {
             const time: string | null = this.#time(held);
 
-            // A value that holds no date has no time of day, which is unknown rather than unequal.
-            return time !== null && this.#negate(constraint.not, this.#compare(time, constraint.operator, constraint.value));
+            return time === null ? null : this.#negate(constraint.not, this.#compare(time, constraint.operator, constraint.value));
         }
 
         if (constraint.type === 'in') {
-            return this.#negate(constraint.not, constraint.values.some((value: unknown): boolean => this.#compare(held, '==', value)));
+            const found: boolean = constraint.values.some((value: unknown): boolean => this.#compare(held, '==', value) === true);
+
+            if (!found && constraint.values.some((value: unknown): boolean => this.#absent(value))) {
+                return null;
+            }
+
+            return this.#negate(constraint.not, found);
         }
 
         if (constraint.type === 'between') {
-            return this.#negate(constraint.not, this.#compare(held, '>=', constraint.from) && this.#compare(held, '<=', constraint.to));
+            const lower: Truth = this.#compared(held, '>=', constraint.from);
+            const upper: Truth = this.#compared(held, '<=', constraint.to);
+
+            return this.#negate(constraint.not, lower === false || upper === false ? false : lower && upper);
         }
 
-        return this.#negate(constraint.not, this.#compare(held, constraint.operator, constraint.value));
+        return this.#negate(constraint.not, this.#compared(held, constraint.operator, constraint.value));
     }
 
     /**
@@ -134,18 +182,36 @@ export class Predicate {
     }
 
     /**
-     * Negate a result when the constraint asks for it.
+     * Negate a result when the constraint asks for it, leaving unknown unknown.
      */
-    static #negate(not: boolean, result: boolean): boolean {
-        return not ? !result : result;
+    static #negate(not: boolean, result: Truth): Truth {
+        return not && result !== null ? !result : result;
     }
 
     /**
-     * Compare a held value against a given one under the operator.
+     * Determine whether a value is null or missing.
      */
-    static #compare(held: unknown, operator: Operator, given: unknown): boolean {
+    static #absent(value: unknown): boolean {
+        return value === null || value === undefined;
+    }
+
+    /**
+     * Compare a held value against a given one, which is unknown when the given one is null.
+     */
+    static #compared(held: unknown, operator: Operator, given: unknown): Truth {
+        return this.#absent(given) ? null : this.#compare(held, operator, given);
+    }
+
+    /**
+     * Compare a held value against a given one, where a pattern against anything but a string is unknown.
+     */
+    static #compare(held: unknown, operator: Operator, given: unknown): Truth {
         if (operator === 'like' || operator === 'not like') {
-            const matched: boolean = typeof held === 'string' && this.#like(String(given), held);
+            if (typeof held !== 'string') {
+                return null;
+            }
+
+            const matched: boolean = this.#like(String(given), held);
 
             return operator === 'like' ? matched : !matched;
         }

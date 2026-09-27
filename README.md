@@ -753,11 +753,22 @@ loose and `===` is strict.
 Constraints follow SQL's three-valued logic: a comparison against `null` is unknown, and negating
 unknown leaves it unknown. So a record whose `age` is `null` satisfies neither
 `whereBetween('age', [18, 65])` nor `whereNotBetween('age', [18, 65])`. Only `whereNull` matches it.
+The same holds through groups, so `whereNot((query) => query.where('age', '>', 26))` and
+`whereNone(['age'], '>', 26)` both leave that record out too. A `null` in the list or among the
+bounds is unknown as well, so `whereNotIn('role', ['admin', null])` matches nothing, and
+`whereNotBetween('age', [null, 26])` matches only the ages above 26.
+
+As in Laravel, `where('age', null)` is short for `whereNull('age')`, and `where('age', '!=', null)`
+for `whereNotNull('age')`. This holds for `=`, `==` and `===`, for `!=`, `<>` and `!==`, and for
+`undefined` as well as `null`, and `whereNot` flips the check. Any other operator compared against
+`null`, such as `where('age', '>', null)`, is unknown and matches nothing, and so is every `having`
+against `null`, which Laravel leaves as SQL too.
 
 `like` and `not like` take SQL's wildcards, where `%` matches any run of characters and `_` matches
 exactly one. Both are case insensitive, both cross newlines, and a backslash escapes a wildcard so
 `'100\\%'` matches a literal percent. Everything else in the pattern is a literal, so a pattern full
-of regular expression syntax matches only itself.
+of regular expression syntax matches only itself. Only strings are matched, so a number, a date or
+any other value satisfies neither `like` nor `not like`.
 
 The pattern is matched by a direct scan rather than a regular expression, which matters if your
 patterns come from a search box. A regular expression compiled from `%%%%%` backtracks over every
