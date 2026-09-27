@@ -41,6 +41,8 @@ and then import it into your project
 import { DB, Schema, Migration, type Blueprint } from '@bjnstnkvc/db';
 ```
 
+The package supports Chrome 93, Edge 93, Firefox 92 and Safari 15.4 or later.
+
 ## Usage
 
 ### Configuration
