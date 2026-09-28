@@ -92,9 +92,45 @@ the planner, but the join itself reads both sides in full, so memory is proporti
 involved. That is fine at the data volumes a browser holds, and worth knowing before joining two
 large tables.
 
-Joined queries are **read-only**. `update`, `delete`, `insert` and `upsert` are not supported through
-a join. `orderBy` on a joined query always sorts in memory, since the row is synthesised and no index
-covers it, and `chunk` slices the materialised result rather than walking keys.
+`orderBy` on a joined query always sorts in memory, since the row is synthesised and no index covers
+it, and `chunk` slices the materialised result rather than walking keys.
+
+## Writing through a join
+
+`update`, `delete`, `increment` and `decrement` on a joined query write to the rows of this table
+that the join and its constraints keep, as Laravel does through MySQL's multi-table `UPDATE` and
+`DELETE`:
+
+```ts
+// Delete the users who wrote a post with this title.
+await DB.table('users')
+    .join('posts', 'users.id', '=', 'posts.user_id')
+    .where('posts.title', 'Hello')
+    .delete();
+
+// Delete the users who have written nothing at all.
+await DB.table('users')
+    .leftJoin('posts', 'users.id', '=', 'posts.user_id')
+    .whereNull('posts.id')
+    .delete();
+```
+
+A row joined to several others is written once, so `increment` adds its amount once however many
+posts a user has. A row a right join keeps for the other table alone is skipped, since there is no
+record of this table behind it.
+
+- **Only this table is written.** `update` takes its columns qualified or not, so `'users.active'`
+  and `'active'` both work, and a column of a joined table throws `SchemaException`.
+- **Values are fixed,** as in every other `update`. Setting a column from a joined one, as in
+  `SET users.title = posts.title`, would need raw expressions, which this package does not have.
+- **`orderBy`, `inRandomOrder`, `limit` and `offset` throw**, as MySQL refuses them on a
+  multi-table write, since it would be unclear whether a limit counts joined rows or records.
+- **`insert`, `insertOrIgnore`, `insertGetId`, `upsert`, `updateOrInsert` and `truncate` throw**,
+  since they have no meaning through a join.
+- **It runs in one transaction** over every table the join reads, so no other tab can change the
+  joined rows between choosing the records and writing them. Inside `DB.transaction()` with
+  `options.tables`, every one of those tables has to be listed.
+- **It costs what a joined read does:** every table involved is read in full and joined in memory.
 
 `whereColumn` compares two columns of the same row, and is available on any query:
 

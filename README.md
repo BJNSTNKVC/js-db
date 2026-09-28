@@ -128,8 +128,9 @@ await DB.transaction(async (transaction: Transaction): Promise<void> => {
   objects and checks nothing itself. See [Defining a schema](docs/schema.md).
 - **There is no `beginTransaction()`, `commit()` or `rollBack()`**, and a nested transaction joins
   the running one, since IndexedDB has no savepoints. See [Transactions](docs/transactions.md).
-- **Joins and grouping run in memory**, joined queries are read-only, and aggregates are named in a
-  typed object rather than raw SQL. See [Joins](docs/joins.md) and [Grouping](docs/grouping.md).
+- **Joins and grouping run in memory**, writes through a join reach the base table only, and
+  aggregates are named in a typed object rather than raw SQL. See [Joins](docs/joins.md) and
+  [Grouping](docs/grouping.md).
 - **A query uses at most one index.** `explain()` shows which. See [Query plans](docs/query-plans.md).
 - **The browser adds its own failure modes**: storage quota, eviction and other tabs holding the
   database open. See [Storage quota](docs/storage.md) and [Multiple tabs](docs/multiple-tabs.md).

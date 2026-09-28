@@ -1,6 +1,6 @@
 import { QueryExecuted } from '../events';
 import { Dispatcher } from '../events/Dispatcher';
-import { UniqueConstraintViolationException } from '../exceptions';
+import { SchemaException, UniqueConstraintViolationException } from '../exceptions';
 import { Request } from '../database/Request';
 import { Columns } from './Columns';
 import { Comparator } from './Comparator';
@@ -14,6 +14,10 @@ import type { ColumnSchema, IndexSchema, TableSchema } from '../schema/types';
 import type { Constraint, JoinClause, Order, Plan, Projection, Query } from './types';
 
 type Entry<T> = { record: T; key: IDBValidKey };
+
+const KEY: unique symbol = Symbol('key');
+
+type Row = Record<string, unknown> & { [KEY]?: IDBValidKey };
 
 export class Executor<T> {
     /**
@@ -156,6 +160,8 @@ export class Executor<T> {
      * Insert records into the table, skipping any the unique indexes reject when told to ignore them.
      */
     async insert(rows: Partial<T>[], ignore: boolean = false): Promise<number> {
+        this.writable(ignore ? 'insertOrIgnore' : 'insert');
+
         const schema: TableSchema = await this.#connection.schema(this.#query.table);
         const store: IDBObjectStore = await this.#store('readwrite');
         const started: number = performance.now();
@@ -183,6 +189,8 @@ export class Executor<T> {
      * Insert a record and get the key the database gave it.
      */
     async insertGetId(record: Partial<T>): Promise<IDBValidKey> {
+        this.writable('insertGetId');
+
         const schema: TableSchema = await this.#connection.schema(this.#query.table);
         const store: IDBObjectStore = await this.#store('readwrite');
         const started: number = performance.now();
@@ -197,6 +205,8 @@ export class Executor<T> {
      * Insert records, updating those that already hold their conflict key.
      */
     async upsert(values: Partial<T>[], columns: string[], update?: string[]): Promise<number> {
+        this.writable('upsert');
+
         const schema: TableSchema = await this.#connection.schema(this.#query.table);
         const target: IndexSchema | null = Writer.conflict(schema, columns);
         const store: IDBObjectStore = await this.#store('readwrite');
@@ -215,6 +225,10 @@ export class Executor<T> {
      * Apply a change to every record matching the query, in the order the query asks for.
      */
     async modify(apply: (cursor: IDBCursorWithValue) => void): Promise<number> {
+        if (this.#query.joins.length > 0) {
+            return this.#rewrite(apply);
+        }
+
         const schema: TableSchema = await this.#connection.schema(this.#query.table);
         const plan: Plan = Planner.plan(this.#query.constraints, this.#orders(), schema);
         const store: IDBObjectStore = await this.#store('readwrite');
@@ -289,12 +303,23 @@ export class Executor<T> {
      * Delete every record in the table.
      */
     async truncate(): Promise<void> {
+        this.writable('truncate');
+
         const store: IDBObjectStore = await this.#store('readwrite');
         const started: number = performance.now();
 
         await Request.settle(store.clear());
 
         this.#emit('truncate', started, 0);
+    }
+
+    /**
+     * Refuse a write that has no meaning through a join.
+     */
+    writable(operation: string): void {
+        if (this.#query.joins.length > 0) {
+            throw new SchemaException(`Table [${this.#query.table}] does not support ${operation} through a join.`);
+        }
     }
 
     /**
@@ -336,7 +361,9 @@ export class Executor<T> {
     /**
      * Get the object store the query reads from.
      */
-    async #store(mode: IDBTransactionMode, table: string = this.#query.table): Promise<IDBObjectStore> {
+    async #store(mode: IDBTransactionMode): Promise<IDBObjectStore> {
+        const table: string = this.#query.table;
+
         if (this.#query.transaction !== null) {
             return this.#query.transaction.objectStore(table);
         }
@@ -496,39 +523,102 @@ export class Executor<T> {
     }
 
     /**
+     * Get the object stores of the given tables, all within one transaction.
+     */
+    async #stores(tables: string[], mode: IDBTransactionMode): Promise<(table: string) => IDBObjectStore> {
+        const transaction: IDBTransaction = this.#query.transaction ?? (await this.#connection.open()).transaction(tables, mode);
+        const outside: string | undefined = tables.find((table: string): boolean => !transaction.objectStoreNames.contains(table));
+
+        if (outside !== undefined) {
+            throw new SchemaException(`Table [${outside}] is outside the scope of this transaction.`);
+        }
+
+        return (table: string): IDBObjectStore => transaction.objectStore(table);
+    }
+
+    /**
+     * Run the joins and keep the rows the constraints match, each carrying the key of its base record.
+     */
+    async #combined(tables: Map<string, string[]>, stores: (table: string) => IDBObjectStore): Promise<Row[]> {
+        const store: IDBObjectStore = stores(this.#query.table);
+
+        const [records, keys]: [Record<string, unknown>[], IDBValidKey[]] = await Promise.all([
+            Request.settle(store.getAll() as IDBRequest<Record<string, unknown>[]>),
+            Request.settle(store.getAllKeys()),
+        ]);
+
+        // Held under a symbol, the key travels through every join as the rows are spread together,
+        // yet is never read as a column nor flattened into the result. A row a right join keeps for
+        // the other table alone has no base record, and so carries none.
+        let rows: Row[] = Joiner.qualify(records, this.#query.table).map(
+            (row: Record<string, unknown>, index: number): Row => ({ ...row, [KEY]: keys[index] as IDBValidKey }),
+        );
+
+        for (const clause of this.#query.joins) {
+            const other: Record<string, unknown>[] = await Request.settle(stores(clause.table).getAll() as IDBRequest<Record<string, unknown>[]>);
+            const columns: string[] = (tables.get(clause.table) as string[]).map((column: string): string => `${clause.table}.${column}`);
+
+            rows = Joiner.join(rows, Joiner.qualify(other, clause.table), clause, columns);
+        }
+
+        const constraints: Constraint[] = this.#query.constraints.map((constraint: Constraint): Constraint => Joiner.qualified(constraint, tables));
+
+        return rows.filter(Predicate.compile(constraints));
+    }
+
+    /**
      * Run the joins, returning rows whose keys are all qualified by table.
      */
     async #joined(): Promise<Record<string, unknown>[]> {
         const tables: Map<string, string[]> = await this.#tables();
-        const store: IDBObjectStore = await this.#store('readonly');
+        const stores: (table: string) => IDBObjectStore = await this.#stores([...tables.keys()], 'readonly');
         const started: number = performance.now();
-
-        let rows: Record<string, unknown>[] = Joiner.qualify(
-            await Request.settle(store.getAll() as IDBRequest<Record<string, unknown>[]>),
-            this.#query.table,
-        );
-
-        for (const clause of this.#query.joins) {
-            const other: IDBObjectStore = await this.#store('readonly', clause.table);
-            const records: Record<string, unknown>[] = await Request.settle(other.getAll() as IDBRequest<Record<string, unknown>[]>);
-            const columns: string[] = (tables.get(clause.table) as string[]).map((column: string): string => `${clause.table}.${column}`);
-
-            rows = Joiner.join(rows, Joiner.qualify(records, clause.table), clause, columns);
-        }
-
-        const constraints: Constraint[] = this.#query.constraints.map((constraint: Constraint): Constraint => Joiner.qualified(constraint, tables));
+        const kept: Row[] = await this.#combined(tables, stores);
         const orders: Order[] = this.#query.orders.map((order: Order): Order => ({ ...order, column: Columns.resolve(order.column, tables) }));
-        const matches: (row: Record<string, unknown>) => boolean = Predicate.compile(constraints);
 
-        const kept: Record<string, unknown>[] = rows.filter(matches);
-        const sorted: Record<string, unknown>[] = this.#query.random
+        const sorted: Row[] = this.#query.random
             ? this.#shuffled(kept)
-            : Comparator.sort(kept, orders, (row: Record<string, unknown>, column: string): unknown => Columns.read(row, column));
-        const paged: Record<string, unknown>[] = this.#paged(sorted);
+            : Comparator.sort(kept, orders, (row: Row, column: string): unknown => Columns.read(row, column));
+        const paged: Row[] = this.#paged(sorted);
 
         this.#emit('join', started, paged.length);
 
         return Joiner.flatten(paged, tables, this.#query.columns);
+    }
+
+    /**
+     * Apply a change to each record of this table that the joined rows keep, once however many rows hold it.
+     */
+    async #rewrite(apply: (cursor: IDBCursorWithValue) => void): Promise<number> {
+        if (this.#query.random || this.#query.orders.length > 0 || this.#query.limit !== null || this.#query.offset > 0) {
+            throw new SchemaException(`Table [${this.#query.table}] does not support ordering, a limit or an offset on a write through a join.`);
+        }
+
+        const tables: Map<string, string[]> = await this.#tables();
+        const stores: (table: string) => IDBObjectStore = await this.#stores([...tables.keys()], 'readwrite');
+        const store: IDBObjectStore = stores(this.#query.table);
+        const started: number = performance.now();
+        const keys: Set<IDBValidKey> = new Set<IDBValidKey>();
+
+        for (const row of await this.#combined(tables, stores)) {
+            if (row[KEY] !== undefined) {
+                keys.add(row[KEY]);
+            }
+        }
+
+        let affected: number = 0;
+
+        for (const key of keys) {
+            await Request.walk(store.openCursor(IDBKeyRange.only(key)), (cursor: IDBCursorWithValue): void => {
+                apply(cursor);
+
+                affected++;
+            });
+        }
+
+        this.#emit('join', started, affected);
+
+        return affected;
     }
 
     /**

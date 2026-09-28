@@ -1,11 +1,11 @@
-import { MultipleRecordsFoundException, RecordsNotFoundException } from '../exceptions';
+import { MultipleRecordsFoundException, RecordsNotFoundException, SchemaException } from '../exceptions';
 import { Columns } from './Columns';
 import { Join } from './Join';
 import { Grouping } from './Grouping';
 import { Executor } from './Executor';
 import { Writer } from './Writer';
 import type { Connection } from '../database/Connection';
-import type { TableSchema } from '../schema/types';
+import type { ColumnSchema, TableSchema } from '../schema/types';
 import type {
     Conjunction,
     Constraint,
@@ -875,8 +875,7 @@ export class Builder<T = Record<string, unknown>> {
      * Update every record matching the query.
      */
     async update(values: Partial<T>): Promise<number> {
-        const schema: TableSchema = await this.#connection.schema(this.#table);
-        const prepared: Record<string, unknown> = Writer.changes(values as Record<string, unknown>, schema, this.#connection.strict);
+        const prepared: Record<string, unknown> = await this.#changes(values);
 
         return this.#executor().modify((cursor: IDBCursorWithValue): void => {
             cursor.update({ ...cursor.value as Record<string, unknown>, ...prepared });
@@ -887,6 +886,8 @@ export class Builder<T = Record<string, unknown>> {
      * Update the matching record, inserting it when there is none.
      */
     async updateOrInsert(attributes: Partial<T>, values: Partial<T> = {} as Partial<T>): Promise<boolean> {
+        this.#executor().writable('updateOrInsert');
+
         const query: Builder<T> = this.clone().where(attributes as Partial<T>);
 
         if (await query.exists()) {
@@ -941,15 +942,69 @@ export class Builder<T = Record<string, unknown>> {
      * Add the given amount to a column of every record matching the query.
      */
     async #step(column: Key<T>, amount: number, extra: Partial<T>): Promise<number> {
-        const schema: TableSchema = await this.#connection.schema(this.#table);
-        const prepared: Record<string, unknown> = Writer.changes(extra as Record<string, unknown>, schema, this.#connection.strict);
+        const own: string = await this.#own(column);
+        const prepared: Record<string, unknown> = await this.#changes(extra);
 
         return this.#executor().modify((cursor: IDBCursorWithValue): void => {
             const record: Record<string, unknown> = { ...cursor.value as Record<string, unknown> };
-            const current: number = Number(record[column] ?? 0);
+            const current: number = Number(record[own] ?? 0);
 
-            cursor.update({ ...record, ...prepared, [column]: current + amount });
+            cursor.update({ ...record, ...prepared, [own]: current + amount });
         });
+    }
+
+    /**
+     * Prepare the changes an update writes, naming each column as this table stores it.
+     */
+    async #changes(values: Partial<T>): Promise<Record<string, unknown>> {
+        const schema: TableSchema = await this.#connection.schema(this.#table);
+        const changes: Record<string, unknown> = {};
+
+        for (const [column, value] of Object.entries(values)) {
+            changes[await this.#own(column)] = value;
+        }
+
+        return Writer.changes(changes, schema, this.#connection.strict);
+    }
+
+    /**
+     * Name a column as this table stores it, refusing one that belongs to a table it joins.
+     */
+    async #own(column: string): Promise<string> {
+        if (this.#joins.length === 0) {
+            return column;
+        }
+
+        const { table, name }: { table: string | null; name: string } = Columns.split(column);
+
+        if (table === this.#table) {
+            return name;
+        }
+
+        if (table === null && !await this.#joinedColumn(name)) {
+            return name;
+        }
+
+        throw new SchemaException(`Column [${column}] is not a column of table [${this.#table}], the only table a write through a join changes.`);
+    }
+
+    /**
+     * Determine whether a column belongs to a joined table rather than to this one.
+     */
+    async #joinedColumn(column: string): Promise<boolean> {
+        const declares: (schema: TableSchema) => boolean = (schema: TableSchema): boolean => schema.columns.some((declared: ColumnSchema): boolean => declared.name === column);
+
+        if (declares(await this.#connection.schema(this.#table))) {
+            return false;
+        }
+
+        for (const clause of this.#joins) {
+            if (declares(await this.#connection.schema(clause.table))) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

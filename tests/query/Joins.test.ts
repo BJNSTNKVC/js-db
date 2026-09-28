@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, test } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, test } from 'vitest';
 import { Connection } from '../../src/database/Connection';
 import { Migration } from '../../src/migrations/Migration';
 import { Schema } from '../../src/schema/Schema';
@@ -6,6 +6,7 @@ import { Blueprint } from '../../src/schema/Blueprint';
 import { Dispatcher } from '../../src/events/Dispatcher';
 import { SchemaException } from '../../src/exceptions';
 import type { Builder } from '../../src/query/Builder';
+import type { Transaction } from '../../src/database/Transaction';
 import type { Join } from '../../src/query/Join';
 import type { QueryExecuted } from '../../src/events';
 
@@ -479,5 +480,298 @@ describe('Joined chunking and column comparison edges', (): void => {
         sparse.disconnect();
 
         expect(rows).toStrictEqual([{ id: 1, name: 'Dave', user_id: 1, title: 'Fourth' }]);
+    });
+});
+
+interface Member {
+    id: number;
+    name: string;
+    active: boolean;
+    votes: number;
+}
+
+interface Note {
+    user_id: number;
+    body: string;
+}
+
+type JoinKind = 'inner' | 'left' | 'right' | 'cross';
+
+class CreateWritableTables extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        await Schema.create('users', (table: Blueprint): void => {
+            table.id();
+            table.string('name');
+            table.boolean('active');
+            table.integer('votes');
+        });
+
+        await Schema.create('posts', (table: Blueprint): void => {
+            table.id();
+            table.integer('user_id');
+            table.string('title');
+        });
+
+        await Schema.create('notes', (table: Blueprint): void => {
+            table.integer('user_id');
+            table.string('body');
+        });
+    }
+}
+
+let writable: Connection;
+let databases: number = 0;
+
+/**
+ * Begin a query against the users table of the writable database.
+ */
+function members(): Builder<Member> {
+    return writable.table<Member>('users');
+}
+
+/**
+ * Get the names of the users left in the writable database.
+ */
+async function remaining(): Promise<string[]> {
+    return (await members().orderBy('name').get()).map((member: Member): string => member.name);
+}
+
+/**
+ * Get the names of the users holding the given value.
+ */
+async function named(column: keyof Member, value: unknown): Promise<string[]> {
+    return (await members().where(column, value).orderBy('name').get()).map((member: Member): string => member.name);
+}
+
+/**
+ * Get every user and post in the writable database.
+ */
+async function snapshot(): Promise<unknown[]> {
+    return [await members().orderBy('id').get(), await writable.table<Post>('posts').orderBy('id').get()];
+}
+
+/**
+ * Join the users of the writable database to their posts through the given kind of join.
+ */
+function joined(kind: JoinKind): Builder<Member> {
+    if (kind === 'cross') {
+        return members().crossJoin<Member>('posts');
+    }
+
+    const method: 'join' | 'leftJoin' | 'rightJoin' = kind === 'inner' ? 'join' : `${kind}Join`;
+
+    return members()[method]<Member>('posts', 'users.id', '=', 'posts.user_id');
+}
+
+describe('Writing through a join', (): void => {
+    beforeEach(async (): Promise<void> => {
+        writable = new Connection('app', { database: `joins-writable-${++databases}`, migrations: [CreateWritableTables] });
+
+        await writable.migrate();
+
+        await members().insert([
+            { name: 'Alice', active: false, votes: 0 },
+            { name: 'Bob', active: false, votes: 0 },
+        ]);
+
+        await writable.table<Post>('posts').insert([
+            { user_id: 1, title: 'Hello' },
+            { user_id: 1, title: 'Other' },
+            { user_id: 9, title: 'Orphan' },
+        ]);
+
+        await writable.table<Note>('notes').insert([
+            { user_id: 1, body: 'From Alice' },
+            { user_id: 2, body: 'From Bob' },
+        ]);
+    });
+
+    test('deletes only the rows the join keeps', async (): Promise<void> => {
+        expect(await joined('inner').where('active', false).delete()).toEqual(1);
+        expect(await remaining()).toEqual(['Bob']);
+    });
+
+    test('updates through a constraint on a joined column', async (): Promise<void> => {
+        expect(await joined('inner').where('posts.title', 'Hello').update({ active: true })).toEqual(1);
+        expect(await named('active', true)).toEqual(['Alice']);
+    });
+
+    describe.each([
+        ['inner', ['Alice']],
+        ['left', ['Alice', 'Bob']],
+        ['right', ['Alice']],
+        ['cross', ['Alice', 'Bob']],
+    ] as [JoinKind, string[]][])('through a %s join', (kind: JoinKind, touched: string[]): void => {
+        const untouched: string[] = ['Alice', 'Bob'].filter((name: string): boolean => !touched.includes(name));
+
+        test('updates exactly the base rows it keeps', async (): Promise<void> => {
+            const posts: unknown = (await snapshot())[1];
+
+            expect(await joined(kind).update({ active: true })).toEqual(touched.length);
+            expect(await named('active', true)).toEqual(touched);
+            expect((await snapshot())[1]).toEqual(posts);
+        });
+
+        test('deletes exactly the base rows it keeps', async (): Promise<void> => {
+            const posts: unknown = (await snapshot())[1];
+
+            expect(await joined(kind).delete()).toEqual(touched.length);
+            expect(await remaining()).toEqual(untouched);
+            expect((await snapshot())[1]).toEqual(posts);
+        });
+
+        test('increments exactly the base rows it keeps, once each', async (): Promise<void> => {
+            const posts: unknown = (await snapshot())[1];
+
+            expect(await joined(kind).increment('votes')).toEqual(touched.length);
+            expect(await named('votes', 1)).toEqual(touched);
+            expect(await named('votes', 0)).toEqual(untouched);
+            expect((await snapshot())[1]).toEqual(posts);
+        });
+
+        test('decrements exactly the base rows it keeps, once each', async (): Promise<void> => {
+            const posts: unknown = (await snapshot())[1];
+
+            expect(await joined(kind).decrement('votes', 2)).toEqual(touched.length);
+            expect(await named('votes', -2)).toEqual(touched);
+            expect(await named('votes', 0)).toEqual(untouched);
+            expect((await snapshot())[1]).toEqual(posts);
+        });
+    });
+
+    test('increments a base row joined twice only once', async (): Promise<void> => {
+        await joined('inner').where('users.name', 'Alice').increment('votes', 5);
+
+        expect(await named('votes', 5)).toEqual(['Alice']);
+    });
+
+    test('deletes the base rows with no match through a left join', async (): Promise<void> => {
+        expect(await joined('left').whereNull('posts.id').delete()).toEqual(1);
+        expect(await remaining()).toEqual(['Alice']);
+    });
+
+    test('writes to a table without a key path', async (): Promise<void> => {
+        const deleted: number = await writable.table<Note>('notes')
+            .join('users', 'notes.user_id', '=', 'users.id')
+            .where('users.name', 'Alice')
+            .delete();
+
+        const notes: Note[] = await writable.table<Note>('notes').get();
+
+        expect(deleted).toEqual(1);
+        expect(notes.map((note: Note): string => note.body)).toEqual(['From Bob']);
+    });
+
+    test('updates a base column given qualified', async (): Promise<void> => {
+        await joined('inner').update({ 'users.active': true } as Partial<Member>);
+
+        const alice: Record<string, unknown> = await members().where('name', 'Alice').firstOrFail() as unknown as Record<string, unknown>;
+
+        expect(alice.active).toEqual(true);
+        expect(Object.hasOwn(alice, 'users.active')).toEqual(false);
+    });
+
+    test('writes a column no table declares to the base table, as an update without a join does', async (): Promise<void> => {
+        await joined('inner').update({ nickname: 'Al' } as Partial<Member>);
+
+        const alice: Record<string, unknown> = await members().where('name', 'Alice').firstOrFail() as unknown as Record<string, unknown>;
+
+        expect(alice.nickname).toEqual('Al');
+    });
+
+    test('increments a base column given qualified', async (): Promise<void> => {
+        await joined('inner').increment('users.votes' as keyof Member, 3);
+
+        expect(await named('votes', 3)).toEqual(['Alice']);
+    });
+
+    test.each([
+        ['qualified', { 'posts.title': 'Changed' }],
+        ['unqualified', { title: 'Changed' }],
+    ])('refuses to update a joined column given %s', async (_: string, values: Record<string, unknown>): Promise<void> => {
+        const before: unknown[] = await snapshot();
+
+        await expect(joined('inner').update(values as Partial<Member>)).rejects.toThrow(SchemaException);
+
+        expect(await snapshot()).toEqual(before);
+    });
+
+    test('refuses to increment a joined column', async (): Promise<void> => {
+        const before: unknown[] = await snapshot();
+
+        await expect(joined('inner').increment('posts.user_id' as keyof Member)).rejects.toThrow(SchemaException);
+
+        expect(await snapshot()).toEqual(before);
+    });
+
+    test.each([
+        ['orderBy', (query: Builder<Member>): Builder<Member> => query.orderBy('name')],
+        ['inRandomOrder', (query: Builder<Member>): Builder<Member> => query.inRandomOrder()],
+        ['limit', (query: Builder<Member>): Builder<Member> => query.limit(1)],
+        ['offset', (query: Builder<Member>): Builder<Member> => query.offset(1)],
+    ])('refuses %s on a joined write', async (_: string, shape: (query: Builder<Member>) => Builder<Member>): Promise<void> => {
+        const before: unknown[] = await snapshot();
+
+        await expect(shape(joined('left')).delete()).rejects.toThrow(SchemaException);
+        await expect(shape(joined('left')).update({ active: true })).rejects.toThrow(SchemaException);
+        await expect(shape(joined('left')).increment('votes')).rejects.toThrow(SchemaException);
+
+        expect(await snapshot()).toEqual(before);
+    });
+
+    test.each([
+        ['insert', (query: Builder<Member>): Promise<unknown> => query.insert({ name: 'Carol', active: true, votes: 0 })],
+        ['insertOrIgnore', (query: Builder<Member>): Promise<unknown> => query.insertOrIgnore({ name: 'Carol', active: true, votes: 0 })],
+        ['insertGetId', (query: Builder<Member>): Promise<unknown> => query.insertGetId({ name: 'Carol', active: true, votes: 0 })],
+        ['upsert', (query: Builder<Member>): Promise<unknown> => query.upsert([{ id: 1, name: 'Carol', active: true, votes: 0 }], 'id')],
+        ['updateOrInsert', (query: Builder<Member>): Promise<unknown> => query.updateOrInsert({ name: 'Alice' }, { votes: 7 })],
+        ['truncate', (query: Builder<Member>): Promise<unknown> => query.truncate()],
+    ])('refuses %s through a join', async (operation: string, write: (query: Builder<Member>) => Promise<unknown>): Promise<void> => {
+        const before: unknown[] = await snapshot();
+
+        await expect(write(joined('inner'))).rejects.toThrow(`Table [users] does not support ${operation} through a join.`);
+
+        expect(await snapshot()).toEqual(before);
+    });
+
+    test('commits with the transaction it runs in', async (): Promise<void> => {
+        await writable.transaction(async (transaction: Transaction): Promise<void> => {
+            await transaction.table<Member>('users').join('posts', 'users.id', '=', 'posts.user_id').delete();
+        });
+
+        expect(await remaining()).toEqual(['Bob']);
+    });
+
+    test('rolls back with the transaction it runs in', async (): Promise<void> => {
+        await expect(writable.transaction(async (transaction: Transaction): Promise<void> => {
+            await transaction.table<Member>('users').join('posts', 'users.id', '=', 'posts.user_id').delete();
+
+            throw new Error('Rolled back.');
+        })).rejects.toThrow('Rolled back.');
+
+        expect(await remaining()).toEqual(['Alice', 'Bob']);
+    });
+
+    test('refuses a transaction that leaves out a joined table', async (): Promise<void> => {
+        await expect(writable.transaction(async (transaction: Transaction): Promise<void> => {
+            await transaction.table<Member>('users').join('posts', 'users.id', '=', 'posts.user_id').delete();
+        }, { tables: ['users'] })).rejects.toThrow('Table [posts] is outside the scope of this transaction.');
+
+        expect(await remaining()).toEqual(['Alice', 'Bob']);
+    });
+
+    test('announces the write as a join, with the rows written', async (): Promise<void> => {
+        const seen: [string, number][] = [];
+
+        Dispatcher.listen('db:query', ((event: QueryExecuted): void => {
+            seen.push([event.plan, event.records]);
+        }) as (event: Event) => void, true);
+
+        await joined('left').update({ active: true });
+
+        expect(seen).toEqual([['join', 2]]);
     });
 });
