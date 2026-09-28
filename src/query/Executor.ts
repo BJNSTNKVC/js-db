@@ -224,7 +224,7 @@ export class Executor<T> {
     /**
      * Apply a change to every record matching the query, in the order the query asks for.
      */
-    async modify(apply: (cursor: IDBCursorWithValue) => void): Promise<number> {
+    async modify(apply: (cursor: IDBCursorWithValue) => void, changes: readonly string[] = []): Promise<number> {
         if (this.#query.joins.length > 0) {
             return this.#rewrite(apply);
         }
@@ -278,19 +278,20 @@ export class Executor<T> {
             return ceiling === null || seen < ceiling;
         };
 
-        if (plan.values === null) {
-            const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index);
+        const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index);
+        const moves: boolean = plan.index !== null && this.#moves(schema, plan.index, changes);
+        const lookups: unknown[] | null = moves ? await this.#keys(source as IDBIndex, plan) : plan.values;
+        const target: IDBObjectStore | IDBIndex = moves ? store : source;
 
+        if (lookups === null) {
             await Request.walk(source.openCursor(plan.range, plan.direction), visit);
         } else {
-            for (const value of plan.values) {
+            for (const value of lookups) {
                 if (ceiling !== null && seen >= ceiling) {
                     break;
                 }
 
-                const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index);
-
-                await Request.walk(source.openCursor(IDBKeyRange.only(value as IDBValidKey)), visit);
+                await Request.walk(target.openCursor(IDBKeyRange.only(value as IDBValidKey)), visit);
             }
         }
 
@@ -419,6 +420,36 @@ export class Executor<T> {
             records: paged.map((entry: Entry<T>): T => entry.record),
             keys   : paged.map((entry: Entry<T>): IDBValidKey => entry.key),
         };
+    }
+
+    /**
+     * Determine whether a write changes a column of the index it walks.
+     */
+    #moves(schema: TableSchema, name: string, changes: readonly string[]): boolean {
+        return schema.indexes.some((index: IndexSchema): boolean => index.name === name
+            && index.columns.some((column: string): boolean => changes.includes(column)));
+    }
+
+    /**
+     * Collect the primary keys the planned walk of an index reaches, in the order it reaches them.
+     */
+    async #keys(index: IDBIndex, plan: Plan): Promise<IDBValidKey[]> {
+        const keys: IDBValidKey[] = [];
+        const collect: (cursor: IDBCursor) => void = (cursor: IDBCursor): void => {
+            keys.push(cursor.primaryKey);
+        };
+
+        if (plan.values === null) {
+            await Request.walk(index.openKeyCursor(plan.range, plan.direction), collect);
+
+            return keys;
+        }
+
+        for (const value of plan.values) {
+            await Request.walk(index.openKeyCursor(IDBKeyRange.only(value as IDBValidKey)), collect);
+        }
+
+        return keys;
     }
 
     /**

@@ -879,7 +879,7 @@ export class Builder<T = Record<string, unknown>> {
 
         return this.#executor().modify((cursor: IDBCursorWithValue): void => {
             cursor.update({ ...cursor.value as Record<string, unknown>, ...prepared });
-        });
+        }, Object.keys(prepared));
     }
 
     /**
@@ -950,7 +950,7 @@ export class Builder<T = Record<string, unknown>> {
             const current: number = Number(record[own] ?? 0);
 
             cursor.update({ ...record, ...prepared, [own]: current + amount });
-        });
+        }, [own, ...Object.keys(prepared)]);
     }
 
     /**

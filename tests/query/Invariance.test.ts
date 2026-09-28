@@ -20,11 +20,13 @@ type Lookup = [string, 'id' | 'role', unknown[]];
 
 type Write = [string, (query: Builder<Item>) => Promise<number>, (row: Item) => Item | null];
 
+type Condition = [string, (query: Builder<Item>) => Builder<Item>, (row: Item) => Truth];
+
 const ROWS: Item[] = [
     { id: 3, name: 'Carol', role: 'a', visits: 0 },
-    { id: 1, name: 'Alice', role: 'a', visits: 0 },
-    { id: 4, name: 'Dave', role: 'b', visits: 0 },
-    { id: 2, name: 'Bob', role: null, visits: 0 },
+    { id: 1, name: 'Alice', role: 'a', visits: 2 },
+    { id: 4, name: 'Dave', role: 'b', visits: 1 },
+    { id: 2, name: 'Bob', role: null, visits: 5 },
     { id: 5, name: 'Erin', role: 'c', visits: 0 },
 ];
 
@@ -39,6 +41,17 @@ const WRITES: Write[] = [
     ['delete', (query: Builder<Item>): Promise<number> => query.delete(), (): null => null],
 ];
 
+const CONDITIONS: Condition[] = [
+    ['below a bound', (query: Builder<Item>): Builder<Item> => query.where('visits', '<', 4), (row: Item): Truth => compare(row.visits, '<', 4)],
+    ['from the lowest value up', (query: Builder<Item>): Builder<Item> => query.where('visits', '>=', 0), (row: Item): Truth => compare(row.visits, '>=', 0)],
+    ['through point lookups', (query: Builder<Item>): Builder<Item> => query.whereIn('visits', [0, 2]), (row: Item): Truth => within(row.visits, [0, 2])],
+];
+
+const SHIFTS: Write[] = [
+    ['an increment of that column', (query: Builder<Item>): Promise<number> => query.increment('visits', 2), (row: Item): Item => ({ ...row, visits: row.visits + 2 })],
+    ['an update of that column', (query: Builder<Item>): Promise<number> => query.update({ visits: 1 }), (row: Item): Item => ({ ...row, visits: 1 })],
+];
+
 class CreateItemsTables extends Migration {
     /**
      * Run the migration.
@@ -48,7 +61,7 @@ class CreateItemsTables extends Migration {
             table.id();
             table.string('name');
             table.string('role').nullable().index();
-            table.integer('visits');
+            table.integer('visits').index();
         });
 
         await Schema.create('plain', (table: Blueprint): void => {
@@ -75,6 +88,19 @@ function absent(value: unknown): boolean {
  */
 function comparable(value: unknown): unknown {
     return value instanceof Date ? value.getTime() : value;
+}
+
+/**
+ * Apply the documented semantics of a range operator to one value, three-valued.
+ */
+function compare(held: unknown, operator: '<' | '>=', given: unknown): Truth {
+    if (absent(held) || absent(given)) {
+        return null;
+    }
+
+    return operator === '<'
+        ? (comparable(held) as number) < (comparable(given) as number)
+        : (comparable(held) as number) >= (comparable(given) as number);
 }
 
 /**
@@ -161,4 +187,17 @@ describe.each(LOOKUPS)('whereIn with %s', (_: string, column: 'id' | 'role', val
         expect(affected).toEqual({ indexed: expected.length, plain: expected.length });
         expect({ indexed: await raw('indexed'), plain: await raw('plain') }).toEqual({ indexed: sorted(left), plain: sorted(left) });
     });
+});
+
+describe.each(CONDITIONS)('a write %s on the column whose index drives it', (_: string, constrain: (query: Builder<Item>) => Builder<Item>, holds: (row: Item) => Truth): void => {
+    const expected: Item[] = ROWS.filter((row: Item): boolean => holds(row) === true);
+
+    test.each(SHIFTS)('writes each record once through %s', async (_: string, write: (query: Builder<Item>) => Promise<number>, change: (row: Item) => Item | null): Promise<void> => {
+        const left: Item[] = ROWS.map((row: Item): Item => expected.includes(row) ? change(row) as Item : row);
+
+        const affected: Record<Copy, number> = await both((query: Builder<Item>): Promise<number> => write(constrain(query)));
+
+        expect(affected).toEqual({ indexed: expected.length, plain: expected.length });
+        expect({ indexed: await raw('indexed'), plain: await raw('plain') }).toEqual({ indexed: sorted(left), plain: sorted(left) });
+    }, 2000);
 });

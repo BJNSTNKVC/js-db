@@ -26,6 +26,12 @@ interface User {
     updated_at: Date | null;
 }
 
+interface Entry {
+    id: number;
+    label: string;
+    position: number;
+}
+
 class CreateUsersTable extends Migration {
     /**
      * Run the migration.
@@ -59,6 +65,12 @@ class CreateUsersTable extends Migration {
             table.string('right');
             table.integer('count').default(0);
             table.unique(['left', 'right']);
+        });
+
+        await Schema.create('entries', (table: Blueprint): void => {
+            table.id();
+            table.string('label');
+            table.integer('position').index();
         });
     }
 }
@@ -403,6 +415,45 @@ describe('Builder increment and decrement', (): void => {
 
     test('increments every record when unconstrained', async (): Promise<void> => {
         expect(await users().increment('visits')).toEqual(2);
+    });
+});
+
+describe('Builder writes that move records along the index they walk', (): void => {
+    /**
+     * Begin a query against the entries table.
+     */
+    function entries(): Builder<Entry> {
+        return connection.table<Entry>('entries');
+    }
+
+    beforeEach(async (): Promise<void> => {
+        await entries().insert(['a', 'b', 'c', 'd', 'e'].map((label: string, position: number): Partial<Entry> => ({ label, position })));
+    });
+
+    afterEach((): void => {
+        vi.restoreAllMocks();
+    });
+
+    test('makes room in an ordered list by shifting each position once', async (): Promise<void> => {
+        expect(await entries().where('position', '>=', 2).increment('position')).toEqual(3);
+        expect(await entries().orderBy('id').pluck('position')).toEqual([0, 1, 3, 4, 5]);
+    }, 2000);
+
+    test('shifts each of a limited run in index order once', async (): Promise<void> => {
+        expect(await entries().orderBy('position').limit(3).increment('position')).toEqual(3);
+        expect(await entries().orderBy('id').pluck('position')).toEqual([1, 2, 3, 3, 4]);
+    }, 2000);
+
+    test('walks the index once when the write leaves its column alone', async (): Promise<void> => {
+        const walks: MockInstance[] = [
+            vi.spyOn(IDBIndex.prototype, 'openCursor'),
+            vi.spyOn(IDBIndex.prototype, 'openKeyCursor'),
+            vi.spyOn(IDBObjectStore.prototype, 'openCursor'),
+        ];
+
+        expect(await entries().where('position', '>=', 2).update({ label: 'moved' })).toEqual(3);
+        expect(walks.map((walk: MockInstance): number => walk.mock.calls.length)).toEqual([1, 0, 0]);
+        expect(await entries().orderBy('id').pluck('label')).toEqual(['a', 'b', 'moved', 'moved', 'moved']);
     });
 });
 
