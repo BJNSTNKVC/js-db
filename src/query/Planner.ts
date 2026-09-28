@@ -119,7 +119,7 @@ export class Planner {
                 return null;
             }
 
-            return { constraint, ...target, range: null, values: constraint.values };
+            return { constraint, ...target, range: null, values: this.#distinct(constraint.values) };
         }
 
         if (constraint.type === 'between') {
@@ -208,6 +208,21 @@ export class Planner {
             default:
                 return IDBKeyRange.only(value);
         }
+    }
+
+    /**
+     * Drop the values that repeat an earlier one, comparing them as keys.
+     */
+    static #distinct(values: readonly unknown[]): unknown[] {
+        const positions: number[] = values
+            .map((_: unknown, position: number): number => position)
+            .sort((a: number, b: number): number => indexedDB.cmp(values[a], values[b]) || a - b);
+
+        const repeated: Set<number> = new Set<number>(positions.filter(
+            (position: number, rank: number): boolean => rank > 0 && indexedDB.cmp(values[positions[rank - 1] as number], values[position]) === 0,
+        ));
+
+        return values.filter((_: unknown, position: number): boolean => !repeated.has(position));
     }
 
     /**

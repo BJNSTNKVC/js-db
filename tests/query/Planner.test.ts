@@ -122,6 +122,15 @@ describe('Planner key ranges', (): void => {
         expect(plan.values).toEqual([1, 2]);
     });
 
+    test.each([
+        ['numbers', [1, 2, 1], [1, 2]],
+        ['strings', ['a@b.c', 'a@b.c'], ['a@b.c']],
+        ['dates', [new Date(1), new Date(2), new Date(1)], [new Date(1), new Date(2)]],
+        ['arrays', [[1, 'a'], [1, 'a'], [1, 'b']], [[1, 'a'], [1, 'b']]],
+    ] as [string, unknown[], unknown[]][])('looks up repeated %s once', (_: string, values: unknown[], expected: unknown[]): void => {
+        expect(Planner.plan([{ type: 'in', column: 'id', values, conjunction: 'and', not: false }], [], users).values).toEqual(expected);
+    });
+
     test('prefers the key path over an index', (): void => {
         const plan: Plan = Planner.plan([basic('email', '=', 'a@b.c'), basic('id', '=', 7)], [], users);
 

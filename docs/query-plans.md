@@ -22,6 +22,8 @@ Each resolves to a description of the plan chosen:
 - `orderBy` on a single indexed, **non-nullable** column cursors that index, which lets `limit`
   short-circuit the scan. Nullable columns are excluded because an IndexedDB index drops records
   with no value for its key path, which would silently lose rows.
+- `whereIn` on the key path or an index becomes one point lookup per distinct value, so a repeated
+  value never returns, counts or writes a record twice.
 - When a range and an order want different indexes, the range wins and the sort happens in memory.
 - Any top-level `orWhere` forces a full scan.
 - `count()` with no residual constraints uses `count()` on the store or index, reading no records.
