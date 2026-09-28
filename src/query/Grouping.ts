@@ -95,7 +95,9 @@ export class Grouping<T, G extends (keyof T & string)[], A extends Aggregations 
      * Limit the number of groups the query returns.
      */
     limit(value: number): this {
-        this.#limit = value;
+        if (Number.isFinite(value) && value >= 0) {
+            this.#limit = Math.trunc(value);
+        }
 
         return this;
     }
@@ -104,7 +106,7 @@ export class Grouping<T, G extends (keyof T & string)[], A extends Aggregations 
      * Skip the given number of groups.
      */
     offset(value: number): this {
-        this.#offset = value;
+        this.#offset = Number.isFinite(value) && value >= 0 ? Math.trunc(value) : 0;
 
         return this;
     }

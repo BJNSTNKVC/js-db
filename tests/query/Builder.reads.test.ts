@@ -4,7 +4,8 @@ import { Migration } from '../../src/migrations/Migration';
 import { Schema } from '../../src/schema/Schema';
 import { Blueprint } from '../../src/schema/Blueprint';
 import { Dispatcher } from '../../src/events/Dispatcher';
-import { RecordsNotFoundException, TableNotFoundException } from '../../src/exceptions';
+import { RecordsNotFoundException, SchemaException, TableNotFoundException } from '../../src/exceptions';
+import { Executor } from '../../src/query/Executor';
 import type { Builder } from '../../src/query/Builder';
 import type { QueryExecuted } from '../../src/events';
 import type { MockInstance } from 'vitest';
@@ -100,6 +101,22 @@ function users(): Builder<User> {
  */
 async function names(query: Builder<User>): Promise<string[]> {
     return (await query.get()).map((user: User): string => user.name);
+}
+
+/**
+ * Fail a walk that keeps fetching pages long after the seeded table has run out.
+ */
+function bound(): void {
+    const fetch: Executor<User>['fetch'] = Executor.prototype.fetch;
+    let pages: number = 0;
+
+    vi.spyOn(Executor.prototype, 'fetch').mockImplementation(function (this: Executor<User>, keys: IDBValidKey[]): Promise<User[]> {
+        if (++pages > 100) {
+            throw new Error('The walk fetched more than 100 pages without finishing.');
+        }
+
+        return fetch.call(this, keys);
+    });
 }
 
 beforeAll(async (): Promise<void> => {
@@ -321,6 +338,30 @@ describe('Builder shaping', (): void => {
 
     test('offsets the result through skip', async (): Promise<void> => {
         expect(await names(users().orderBy('name').skip(4))).toEqual(['Erin']);
+    });
+
+    test('ignores a negative limit', async (): Promise<void> => {
+        expect(await names(users().orderBy('name').limit(-1))).toEqual(['Alice', 'Bob', 'Carol', 'Dave', 'Erin']);
+    });
+
+    test('keeps the earlier limit when a negative one follows', async (): Promise<void> => {
+        expect(await names(users().orderBy('name').limit(2).limit(-1))).toEqual(['Alice', 'Bob']);
+    });
+
+    test.each([NaN, Infinity])('ignores a limit of %s', async (limit: number): Promise<void> => {
+        expect(await names(users().orderBy('name').limit(limit))).toEqual(['Alice', 'Bob', 'Carol', 'Dave', 'Erin']);
+    });
+
+    test('treats a negative offset as none', async (): Promise<void> => {
+        expect(await names(users().orderBy('name').offset(-2))).toEqual(['Alice', 'Bob', 'Carol', 'Dave', 'Erin']);
+    });
+
+    test.each([NaN, Infinity])('treats an offset of %s as none', async (offset: number): Promise<void> => {
+        expect(await names(users().orderBy('name').offset(offset))).toEqual(['Alice', 'Bob', 'Carol', 'Dave', 'Erin']);
+    });
+
+    test('truncates a fractional limit and offset', async (): Promise<void> => {
+        expect(await names(users().orderBy('name').offset(1.5).limit(1.5))).toEqual(['Bob']);
     });
 
     test('pages the result', async (): Promise<void> => {
@@ -569,6 +610,18 @@ describe('Builder chunking', (): void => {
         });
 
         expect(seen).toEqual([0, 1, 2, 3, 4]);
+    });
+
+    test.each([0, -1, 1.5, NaN])('refuses a chunk size of %s', async (size: number): Promise<void> => {
+        const pages: User[][] = [];
+
+        bound();
+
+        await expect(users().orderBy('name').chunk(size, (records: User[]): void => {
+            pages.push(records);
+        })).rejects.toThrow(SchemaException);
+
+        expect(pages).toEqual([]);
     });
 
     test('stops walking one at a time when the callback returns false', async (): Promise<void> => {

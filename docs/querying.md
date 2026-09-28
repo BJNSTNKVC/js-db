@@ -187,6 +187,10 @@ DB.table<User>('users')
 `select()` projects in memory after the fetch. IndexedDB always returns whole records, so it shapes
 the result rather than saving any work.
 
+`limit` and `offset` read their values as Laravel does. `limit` ignores a negative or non-finite
+value and keeps any limit set before it, `offset` treats one as 0, and both truncate a fraction. So
+`offset(-2)` skips nothing, and a limited `update` or `delete` given `limit(-1)` writes every match.
+
 | Method                        | Effect                                                                        |
 |-------------------------------|-------------------------------------------------------------------------------|
 | `reorder()`                   | Clears every order, including a random one                                    |
@@ -256,6 +260,10 @@ const page = await DB.table<User>('users').orderBy('name').paginate(2, 15);
 { data: [ ... ], total: 132, perPage: 15, currentPage: 2, lastPage: 9 }
 ```
 
+As Laravel's paginator does, `paginate` reads a page that is below 1 or not a whole number as page
+1, so a page number taken straight from a URL cannot go out of range. A page size that is not a
+whole number of at least 1 throws `SchemaException`.
+
 `chunk` and `each` walk the result a page at a time, and stop early when the callback returns
 `false`:
 
@@ -275,6 +283,9 @@ out, so every record is delivered at most once, and only while it still matches.
 starts matching during the walk is not picked up. Since records can drop out, any page may be
 shorter than the size asked for. A page left empty is skipped, and the page numbers stay
 consecutive.
+
+`chunk` and `lazy` throw `SchemaException` for a size that is not a whole number of at least 1, as
+Laravel's `lazy` does, since a walk in pages of nothing would never end.
 
 ## Writes
 

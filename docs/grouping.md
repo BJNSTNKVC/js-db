@@ -65,6 +65,9 @@ await DB.table<User>('users')
     .get();
 ```
 
+They read their values as a query's `limit` and `offset` do: a negative or non-finite limit is
+ignored, such an offset is 0, and a fraction is truncated.
+
 Grouping happens in memory after the records are fetched, so the planner still applies to the
 `where` clauses that select them, and a grouped query reports the plan of that underlying fetch.
 

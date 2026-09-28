@@ -374,6 +374,30 @@ describe('Grouping shaping', (): void => {
 
         expect(rows.map((row: { role: string; total: number }): string => row.role)).toEqual(['member']);
     });
+
+    test('ignores a negative limit and treats a negative offset as none', async (): Promise<void> => {
+        const rows: { role: string; total: number }[] = await users()
+            .groupBy('role')
+            .aggregate({ total: { count: '*' } })
+            .orderBy('role')
+            .offset(-2)
+            .limit(-1)
+            .get();
+
+        expect(rows.map((row: { role: string; total: number }): string => row.role)).toEqual(['admin', 'member', 'owner']);
+    });
+
+    test('truncates a fractional limit and offset', async (): Promise<void> => {
+        const rows: { role: string; total: number }[] = await users()
+            .groupBy('role')
+            .aggregate({ total: { count: '*' } })
+            .orderBy('role')
+            .offset(0.5)
+            .limit(1.5)
+            .get();
+
+        expect(rows.map((row: { role: string; total: number }): string => row.role)).toEqual(['admin']);
+    });
 });
 
 describe('Grouping terminals', (): void => {

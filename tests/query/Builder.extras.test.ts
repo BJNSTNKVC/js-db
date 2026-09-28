@@ -1,9 +1,10 @@
-import { beforeAll, describe, expect, test } from 'vitest';
+import { afterEach, beforeAll, describe, expect, test, vi } from 'vitest';
 import { Connection } from '../../src/database/Connection';
 import { Migration } from '../../src/migrations/Migration';
 import { Schema } from '../../src/schema/Schema';
 import { Blueprint } from '../../src/schema/Blueprint';
-import { MultipleRecordsFoundException, RecordsNotFoundException, UniqueConstraintViolationException } from '../../src/exceptions';
+import { MultipleRecordsFoundException, RecordsNotFoundException, SchemaException, UniqueConstraintViolationException } from '../../src/exceptions';
+import { Executor } from '../../src/query/Executor';
 import type { Builder } from '../../src/query/Builder';
 import type { Paginated } from '../../src/query/types';
 
@@ -54,11 +55,31 @@ async function names(query: Builder<User>): Promise<string[]> {
     return (await query.get()).map((user: User): string => user.name);
 }
 
+/**
+ * Fail a walk that keeps fetching pages long after the seeded table has run out.
+ */
+function bound(): void {
+    const fetch: Executor<User>['fetch'] = Executor.prototype.fetch;
+    let pages: number = 0;
+
+    vi.spyOn(Executor.prototype, 'fetch').mockImplementation(function (this: Executor<User>, keys: IDBValidKey[]): Promise<User[]> {
+        if (++pages > 100) {
+            throw new Error('The walk fetched more than 100 pages without finishing.');
+        }
+
+        return fetch.call(this, keys);
+    });
+}
+
 beforeAll(async (): Promise<void> => {
     connection = new Connection('app', { database: 'builder-extras', migrations: [CreateUsersTable] });
 
     await connection.migrate();
     await users().insert(seed);
+});
+
+afterEach((): void => {
+    vi.restoreAllMocks();
 });
 
 describe('Builder.paginate', (): void => {
@@ -109,6 +130,17 @@ describe('Builder.paginate', (): void => {
         await query.paginate(1, 2);
 
         expect(await query.get()).toHaveLength(5);
+    });
+
+    test.each([-1, 0, 1.5, NaN])('reads a page of %s as the first', async (number: number): Promise<void> => {
+        const page: Paginated<User> = await users().orderBy('name').paginate(number, 2);
+
+        expect(page.data.map((user: User): string => user.name)).toEqual(['Alice', 'Bob']);
+        expect(page.currentPage).toEqual(1);
+    });
+
+    test.each([0, -1, 1.5, NaN])('refuses a page size of %s', async (size: number): Promise<void> => {
+        await expect(users().paginate(1, size)).rejects.toThrow(SchemaException);
     });
 });
 
@@ -186,6 +218,12 @@ describe('Builder.lazy', (): void => {
         }
 
         expect(seen).toHaveLength(25);
+    });
+
+    test.each([0, -1, 1.5, NaN])('refuses a size of %s', async (size: number): Promise<void> => {
+        bound();
+
+        await expect(users().orderBy('name').lazy(size).next()).rejects.toThrow(SchemaException);
     });
 });
 

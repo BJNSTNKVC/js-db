@@ -480,6 +480,11 @@ describe('Builder delete', (): void => {
         expect(await users().count()).toEqual(2);
     });
 
+    test('ignores a negative limit', async (): Promise<void> => {
+        expect(await users().where('role', 'member').limit(-1).delete()).toEqual(2);
+        expect(await users().pluck('name')).toEqual(['Alice']);
+    });
+
     test('deletes through an index range', async (): Promise<void> => {
         expect(await users().where('email', 'bob@example.com').delete()).toEqual(1);
     });

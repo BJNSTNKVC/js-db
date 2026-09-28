@@ -508,7 +508,9 @@ export class Builder<T = Record<string, unknown>> {
      * Limit the number of records the query returns.
      */
     limit(value: number): this {
-        this.#limit = value;
+        if (Number.isFinite(value) && value >= 0) {
+            this.#limit = Math.trunc(value);
+        }
 
         return this;
     }
@@ -524,7 +526,7 @@ export class Builder<T = Record<string, unknown>> {
      * Skip the given number of records.
      */
     offset(value: number): this {
-        this.#offset = value;
+        this.#offset = Number.isFinite(value) && value >= 0 ? Math.trunc(value) : 0;
 
         return this;
     }
@@ -759,6 +761,10 @@ export class Builder<T = Record<string, unknown>> {
      * Get a single page of records, alongside the totals a pager needs.
      */
     async paginate(page: number = 1, perPage: number = 15): Promise<Paginated<T>> {
+        this.#size('page size', perPage);
+
+        page = Number.isInteger(page) && page >= 1 ? page : 1;
+
         // Counted from a copy without the paging, since the total is what the query matches rather
         // than what this page returns.
         const counted: Builder<T> = this.clone();
@@ -782,6 +788,8 @@ export class Builder<T = Record<string, unknown>> {
      * Walk the records matching the query in chunks.
      */
     async chunk(size: number, callback: (records: T[], page: number) => unknown): Promise<boolean> {
+        this.#size('chunk size', size);
+
         const executor: Executor<T> = this.#executor();
 
         // A joined row is synthesised and has no key of its own, so its pages are sliced from the
@@ -822,6 +830,8 @@ export class Builder<T = Record<string, unknown>> {
      * Walk the records matching the query as an async iterable.
      */
     async *lazy(size: number = 100): AsyncGenerator<T, void, undefined> {
+        this.#size('chunk size', size);
+
         const executor: Executor<T> = this.#executor();
 
         // A joined row is synthesised and has no key to fetch it back by, so there is nothing to
@@ -1030,6 +1040,15 @@ export class Builder<T = Record<string, unknown>> {
      */
     #executor(): Executor<T> {
         return new Executor<T>(this.#connection, this.#query());
+    }
+
+    /**
+     * Refuse a size that is not a whole number of at least 1.
+     */
+    #size(name: string, size: number): void {
+        if (!Number.isInteger(size) || size < 1) {
+            throw new SchemaException(`The ${name} [${size}] is not a whole number of at least 1.`);
+        }
     }
 
     /**
