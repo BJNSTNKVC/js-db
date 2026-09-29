@@ -2,6 +2,8 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import { Connection } from '../../src/database/Connection';
 import { Migration } from '../../src/migrations/Migration';
 import { Migrator } from '../../src/migrations/Migrator';
+import { Repository } from '../../src/migrations/Repository';
+import { Registry } from '../../src/schema/Registry';
 import { Schema } from '../../src/schema/Schema';
 import { Blueprint } from '../../src/schema/Blueprint';
 import { Request } from '../../src/database/Request';
@@ -109,6 +111,19 @@ async function seed(connection: Connection, table: string, rows: Record<string, 
     await new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
         transaction.oncomplete = (): void => resolve();
         transaction.onerror = (): void => reject(transaction.error);
+    });
+}
+
+/**
+ * Delete a database, failing rather than waiting when an open handle blocks it.
+ */
+function drop(database: string): Promise<void> {
+    return new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
+        const request: IDBOpenDBRequest = indexedDB.deleteDatabase(database);
+
+        request.onsuccess = (): void => resolve();
+        request.onerror = (): void => reject(request.error);
+        request.onblocked = (): void => reject(new Error('An open handle blocked the delete.'));
     });
 }
 
@@ -284,6 +299,53 @@ describe('Connection migration mismatch', (): void => {
         connections.splice(0).forEach((connection: Connection): void => connection.disconnect());
 
         await expect(connect([CreatePostsTable, CreateUsersTable], database).open()).rejects.toBeInstanceOf(MigrationMismatchException);
+    });
+
+    test('lets the database be deleted after a mismatched open', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+
+        await connect([CreateUsersTable, CreatePostsTable], database).migrate();
+        connections.splice(0).forEach((connection: Connection): void => connection.disconnect());
+
+        await expect(connect([CreatePostsTable, CreateUsersTable], database).open()).rejects.toBeInstanceOf(MigrationMismatchException);
+        await expect(drop(database)).resolves.toBeUndefined();
+    });
+
+    test('lets a later open with the right migrations upgrade after a mismatched open', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+
+        await connect([CreateUsersTable, CreatePostsTable], database).migrate();
+        connections.splice(0).forEach((connection: Connection): void => connection.disconnect());
+
+        await expect(connect([CreatePostsTable, CreateUsersTable], database).open()).rejects.toBeInstanceOf(MigrationMismatchException);
+        await expect(connect([CreateUsersTable, CreatePostsTable, CreateTagsTable], database).migrate()).resolves.toEqual(['CreateTagsTable']);
+    });
+
+    test('lets the database be deleted after disconnecting a mismatched connection', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+
+        await connect([CreateUsersTable, CreatePostsTable], database).migrate();
+        connections.splice(0).forEach((connection: Connection): void => connection.disconnect());
+
+        const connection: Connection = connect([CreatePostsTable, CreateUsersTable], database);
+
+        await expect(connection.open()).rejects.toBeInstanceOf(MigrationMismatchException);
+
+        connection.disconnect();
+
+        await expect(drop(database)).resolves.toBeUndefined();
+    });
+
+    test('runs fresh on a connection whose open failed with a mismatch', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+
+        await connect([CreateUsersTable, CreatePostsTable], database).migrate();
+        connections.splice(0).forEach((connection: Connection): void => connection.disconnect());
+
+        const connection: Connection = connect([CreatePostsTable, CreateUsersTable], database);
+
+        await expect(connection.open()).rejects.toBeInstanceOf(MigrationMismatchException);
+        await expect(connection.fresh()).resolves.toEqual(['CreatePostsTable', 'CreateUsersTable']);
     });
 });
 
@@ -563,6 +625,57 @@ describe('Connection platform failures', (): void => {
 
         spy.mockRestore();
     });
+
+    test('lets the database be deleted after the stored version holds no reserved tables', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+
+        await new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
+            const request: IDBOpenDBRequest = indexedDB.open(database, 2);
+
+            request.onsuccess = (): void => {
+                request.result.close();
+
+                resolve();
+            };
+
+            request.onerror = (): void => reject(request.error);
+        });
+
+        await expect(connect([CreateUsersTable], database).open()).rejects.toMatchObject({ name: 'NotFoundError' });
+        await expect(drop(database)).resolves.toBeUndefined();
+    });
+
+    test('lets the database be deleted after reading the migration records fails', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+
+        await connect([CreateUsersTable], database).migrate();
+        connections.splice(0).forEach((connection: Connection): void => connection.disconnect());
+
+        const error: Error = new Error('The records could not be read.');
+        const spy: MockInstance = vi.spyOn(Repository, 'ran').mockRejectedValueOnce(error);
+
+        await expect(connect([CreateUsersTable], database).open()).rejects.toBe(error);
+
+        spy.mockRestore();
+
+        await expect(drop(database)).resolves.toBeUndefined();
+    });
+
+    test('lets the database be deleted after reading the schemas fails', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+
+        await connect([CreateUsersTable], database).migrate();
+        connections.splice(0).forEach((connection: Connection): void => connection.disconnect());
+
+        const error: Error = new Error('The schemas could not be read.');
+        const spy: MockInstance = vi.spyOn(Registry, 'all').mockRejectedValueOnce(error);
+
+        await expect(connect([CreateUsersTable], database).open()).rejects.toBe(error);
+
+        spy.mockRestore();
+
+        await expect(drop(database)).resolves.toBeUndefined();
+    });
 });
 
 describe('Migrator.alive outside a migration', (): void => {
@@ -595,24 +708,31 @@ describe('Connection strictness', (): void => {
 });
 
 describe('Migration transaction hazard', (): void => {
-    test('fails when a migration awaits work outside the transaction', async (): Promise<void> => {
-        const Slow: MigrationConstructor = migration('SlowMigration', async (): Promise<void> => {
-            const context: MigrationContext = Migrator.alive();
+    const Slow: MigrationConstructor = migration('SlowMigration', async (): Promise<void> => {
+        const context: MigrationContext = Migrator.alive();
 
-            // A migration would really await a fetch or a timer, and the transaction commits under it
-            // either way. A timer is a race though, since it and the commit are both macrotasks, so
-            // the transaction's own event is awaited here to establish the same state exactly.
-            await new Promise<void>((resolve: () => void): void => {
-                context.transaction.addEventListener('complete', (): void => resolve());
-                context.transaction.addEventListener('abort', (): void => resolve());
-            });
-
-            await Schema.create('slow', (table: Blueprint): void => {
-                table.id();
-            });
+        // A migration would really await a fetch or a timer, and the transaction commits under it
+        // either way. A timer is a race though, since it and the commit are both macrotasks, so
+        // the transaction's own event is awaited here to establish the same state exactly.
+        await new Promise<void>((resolve: () => void): void => {
+            context.transaction.addEventListener('complete', (): void => resolve());
+            context.transaction.addEventListener('abort', (): void => resolve());
         });
 
+        await Schema.create('slow', (table: Blueprint): void => {
+            table.id();
+        });
+    });
+
+    test('fails when a migration awaits work outside the transaction', async (): Promise<void> => {
         await expect(connect([Slow]).open()).rejects.toBeInstanceOf(MigrationTransactionClosedException);
+    });
+
+    test('lets the database be deleted after a migration fails past its commit', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+
+        await expect(connect([Slow], database).open()).rejects.toBeInstanceOf(MigrationTransactionClosedException);
+        await expect(drop(database)).resolves.toBeUndefined();
     });
 });
 

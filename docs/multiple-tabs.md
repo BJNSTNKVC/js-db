@@ -20,3 +20,6 @@ DB.onDatabaseVersionChanged((event: DatabaseVersionChanged): void => {
     }
 });
 ```
+
+An open that fails, for instance with `MigrationMismatchException`, closes the handle it was given,
+so a tab running old code never blocks another tab's upgrade, and `fresh()` can still run in it.

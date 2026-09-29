@@ -471,25 +471,31 @@ export class Connection {
      * Finish opening: await the migrations, verify them and cache the schemas.
      */
     async #ready(database: IDBDatabase, runner: Promise<string[]> | null): Promise<IDBDatabase> {
-        this.#migrated = runner === null ? [] : await runner;
+        try {
+            this.#migrated = runner === null ? [] : await runner;
 
-        const transaction: IDBTransaction = database.transaction([Repository.table, Registry.table], 'readonly');
-        const records: Promise<MigrationRecord[]> = Repository.ran(transaction);
-        const schemas: Promise<TableSchema[]> = Registry.all(transaction);
+            const transaction: IDBTransaction = database.transaction([Repository.table, Registry.table], 'readonly');
+            const records: Promise<MigrationRecord[]> = Repository.ran(transaction);
+            const schemas: Promise<TableSchema[]> = Registry.all(transaction);
 
-        const [ran, registry]: [MigrationRecord[], TableSchema[]] = await Promise.all([records, schemas]);
+            const [ran, registry]: [MigrationRecord[], TableSchema[]] = await Promise.all([records, schemas]);
 
-        Migrator.verify(ran, Migrator.names(this.migrations));
+            Migrator.verify(ran, Migrator.names(this.migrations));
 
-        this.#schemas = new Map<string, TableSchema>(registry.map((schema: TableSchema): [string, TableSchema] => [schema.table, schema]));
-        this.#database = database;
+            this.#schemas = new Map<string, TableSchema>(registry.map((schema: TableSchema): [string, TableSchema] => [schema.table, schema]));
+            this.#database = database;
 
-        database.onversionchange = (event: IDBVersionChangeEvent): void => {
-            this.disconnect();
+            database.onversionchange = (event: IDBVersionChangeEvent): void => {
+                this.disconnect();
 
-            Dispatcher.dispatch(new DatabaseVersionChanged(this.#config.database, event.newVersion));
-        };
+                Dispatcher.dispatch(new DatabaseVersionChanged(this.#config.database, event.newVersion));
+            };
 
-        return database;
+            return database;
+        } catch (error: unknown) {
+            database.close();
+
+            throw error;
+        }
     }
 }
