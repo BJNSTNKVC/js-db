@@ -657,14 +657,14 @@ export class Builder<T = Record<string, unknown>> {
     /**
      * Get the record with the given key.
      */
-    async find(key: IDBValidKey): Promise<T | null> {
+    async find(key: IDBValidKey | null | undefined): Promise<T | null> {
         return this.#executor().find(key);
     }
 
     /**
      * Get the record with the given key, or fail.
      */
-    async findOrFail(key: IDBValidKey): Promise<T> {
+    async findOrFail(key: IDBValidKey | null | undefined): Promise<T> {
         const record: T | null = await this.find(key);
 
         if (record === null) {

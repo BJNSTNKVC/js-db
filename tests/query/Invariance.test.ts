@@ -4,12 +4,16 @@ import { Migration } from '../../src/migrations/Migration';
 import { Schema } from '../../src/schema/Schema';
 import { Blueprint } from '../../src/schema/Blueprint';
 import type { Builder } from '../../src/query/Builder';
+import type { Operator } from '../../src/query/types';
 
 interface Item {
     id: number;
     name: string;
     role: string | null;
     visits: number;
+    score: number | null;
+    active: boolean | null;
+    seen: Date | null;
 }
 
 type Copy = 'indexed' | 'plain';
@@ -22,12 +26,68 @@ type Write = [string, (query: Builder<Item>) => Promise<number>, (row: Item) => 
 
 type Condition = [string, (query: Builder<Item>) => Builder<Item>, (row: Item) => Truth];
 
+type Typed = 'id' | 'role' | 'visits' | 'score' | 'active' | 'seen';
+
+type Kind = 'integer' | 'float' | 'boolean' | 'datetime' | 'string';
+
+type Sample = [Typed, unknown[], [unknown, unknown][]];
+
+const OPERATORS: Operator[] = ['=', '==', '===', '!=', '<>', '!==', '<', '>', '<=', '>='];
+
+const KINDS: Record<Typed, Kind> = { id: 'integer', role: 'string', visits: 'integer', score: 'float', active: 'boolean', seen: 'datetime' };
+
 const ROWS: Item[] = [
-    { id: 3, name: 'Carol', role: 'a', visits: 0 },
-    { id: 1, name: 'Alice', role: 'a', visits: 2 },
-    { id: 4, name: 'Dave', role: 'b', visits: 1 },
-    { id: 2, name: 'Bob', role: null, visits: 5 },
-    { id: 5, name: 'Erin', role: 'c', visits: 0 },
+    { id: 3, name: 'Carol', role: 'a', visits: 0, score: 1.5, active: true, seen: day('2024-03-01') },
+    { id: 1, name: 'Alice', role: 'a', visits: 2, score: null, active: false, seen: day('2024-01-15') },
+    { id: 4, name: 'Dave', role: 'b', visits: 1, score: 0, active: true, seen: day('2023-12-31') },
+    { id: 2, name: 'Bob', role: null, visits: 5, score: -3.25, active: null, seen: null },
+    { id: 5, name: 'Erin', role: 'c', visits: 0, score: 2.5, active: false, seen: day('2024-01-15') },
+];
+
+const SAMPLES: Sample[] = [
+    ['id', [1, '1', 3, '3', '9', 'x'], [[1, '3'], ['3', 1]]],
+    ['visits', [2, '2', 0, '0', 3, '3', -1, 1.5, '1.5', ''], [['1', 2], ['5', '1']]],
+    ['score', [1.5, '1.5', 0, '0', -1, '-3.25', 'x'], [['0', 2.5], [2.5, '0']]],
+    ['active', [true, false, 1, 0, 'true', 'false', 'no'], [[false, 'true'], ['true', false]]],
+    ['seen', [day('2024-01-15'), day('2024-01-15').getTime(), '2024-01-15', '2024-01-15T00:00:00.000Z', day('2024-01-01'), 'garbage'], [['2024-01-01', day('2024-03-01')], [day('2024-03-01'), '2024-01-01']]],
+    ['role', ['a', 'A', 'b', 'c'], [['a', 'b'], ['c', 'a']]],
+];
+
+const CASES: Condition[] = SAMPLES.flatMap(([column, values, bounds]: Sample): Condition[] => [
+    ...values.flatMap((value: unknown): Condition[] => OPERATORS.map((operator: Operator): Condition => [
+        `where('${column}', '${operator}', ${shown(value)})`,
+        (query: Builder<Item>): Builder<Item> => query.where(column, operator, value),
+        (row: Item): Truth => compare(row[column], operator, strict(operator) ? value : prepared(value, KINDS[column])),
+    ])),
+    [
+        `whereIn('${column}', [${values.map(shown).join(', ')}])`,
+        (query: Builder<Item>): Builder<Item> => query.whereIn(column, values),
+        (row: Item): Truth => within(row[column], values.map((value: unknown): unknown => prepared(value, KINDS[column]))),
+    ],
+    [
+        `whereNotIn('${column}', [${values.map(shown).join(', ')}])`,
+        (query: Builder<Item>): Builder<Item> => query.whereNotIn(column, values),
+        (row: Item): Truth => not(within(row[column], values.map((value: unknown): unknown => prepared(value, KINDS[column])))),
+    ],
+    ...bounds.flatMap(([from, to]: [unknown, unknown]): Condition[] => [
+        [
+            `whereBetween('${column}', [${shown(from)}, ${shown(to)}])`,
+            (query: Builder<Item>): Builder<Item> => query.whereBetween(column, [from, to]),
+            (row: Item): Truth => between(row[column], prepared(from, KINDS[column]), prepared(to, KINDS[column])),
+        ],
+        [
+            `whereNotBetween('${column}', [${shown(from)}, ${shown(to)}])`,
+            (query: Builder<Item>): Builder<Item> => query.whereNotBetween(column, [from, to]),
+            (row: Item): Truth => not(between(row[column], prepared(from, KINDS[column]), prepared(to, KINDS[column]))),
+        ],
+    ]),
+]);
+
+const EXTRAS: Condition[] = [
+    ['whereIn(\'id\', [\'1\'])', (query: Builder<Item>): Builder<Item> => query.whereIn('id', ['1']), (row: Item): Truth => row.id === 1],
+    ['whereIn(\'visits\', [\'0\', \'2\'])', (query: Builder<Item>): Builder<Item> => query.whereIn('visits', ['0', '2']), (row: Item): Truth => [0, 2].includes(row.visits)],
+    ['whereDate(\'seen\', \'\')', (query: Builder<Item>): Builder<Item> => query.whereDate('seen', ''), (): Truth => false],
+    ['whereDate(\'seen\', \'garbage\')', (query: Builder<Item>): Builder<Item> => query.whereDate('seen', 'garbage'), (): Truth => false],
 ];
 
 const LOOKUPS: Lookup[] = [
@@ -62,6 +122,9 @@ class CreateItemsTables extends Migration {
             table.string('name');
             table.string('role').nullable().index();
             table.integer('visits').index();
+            table.float('score').nullable().index();
+            table.boolean('active').nullable().index();
+            table.datetime('seen').nullable().index();
         });
 
         await Schema.create('plain', (table: Blueprint): void => {
@@ -69,12 +132,36 @@ class CreateItemsTables extends Migration {
             table.string('name');
             table.string('role').nullable();
             table.integer('visits');
+            table.float('score').nullable();
+            table.boolean('active').nullable();
+            table.datetime('seen').nullable();
         });
     }
 }
 
 let connection: Connection;
 let sequence: number = 0;
+
+/**
+ * Get the moment a UTC day begins.
+ */
+function day(text: string): Date {
+    return new Date(`${text}T00:00:00Z`);
+}
+
+/**
+ * Describe a value so that a test name tells it apart.
+ */
+function shown(value: unknown): string {
+    return value instanceof Date ? `new Date('${value.toISOString()}')` : JSON.stringify(value);
+}
+
+/**
+ * Determine whether an operator compares without converting.
+ */
+function strict(operator: Operator): boolean {
+    return operator === '===' || operator === '!==';
+}
 
 /**
  * Determine whether a value is null or missing.
@@ -91,16 +178,84 @@ function comparable(value: unknown): unknown {
 }
 
 /**
- * Apply the documented semantics of a range operator to one value, three-valued.
+ * Convert a value given for a column of the given kind, or leave it as given when it does not convert.
  */
-function compare(held: unknown, operator: '<' | '>=', given: unknown): Truth {
+function prepared(value: unknown, kind: Kind): unknown {
+    if (kind === 'boolean') {
+        return typeof value === 'string' && ['false', '0'].includes(value) ? false : Boolean(value);
+    }
+
+    if (kind === 'string') {
+        return value;
+    }
+
+    if (kind === 'datetime') {
+        const date: Date = new Date(value as string | number | Date);
+        const readable: boolean = typeof value === 'string' || typeof value === 'number' || value instanceof Date;
+
+        return readable && !Number.isNaN(date.getTime()) ? date : value;
+    }
+
+    const number: number = typeof value === 'number' ? value : (typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN);
+
+    return Number.isFinite(number) && (kind === 'float' || Number.isInteger(number)) ? number : value;
+}
+
+/**
+ * Apply the documented semantics of an operator to one value, three-valued.
+ */
+function compare(held: unknown, operator: Operator, given: unknown): Truth {
     if (absent(held) || absent(given)) {
         return null;
     }
 
-    return operator === '<'
-        ? (comparable(held) as number) < (comparable(given) as number)
-        : (comparable(held) as number) >= (comparable(given) as number);
+    const a: unknown = comparable(held);
+    const b: unknown = comparable(given);
+
+    switch (operator) {
+        case '=':
+        case '==':
+            return a == b;
+
+        case '===':
+            return a === b;
+
+        case '!=':
+        case '<>':
+            return a != b;
+
+        case '!==':
+            return a !== b;
+
+        case '<':
+            return (a as number) < (b as number);
+
+        case '>':
+            return (a as number) > (b as number);
+
+        case '<=':
+            return (a as number) <= (b as number);
+
+        default:
+            return (a as number) >= (b as number);
+    }
+}
+
+/**
+ * Apply the documented semantics of whereBetween to one value, three-valued.
+ */
+function between(held: unknown, from: unknown, to: unknown): Truth {
+    const lower: Truth = compare(held, '>=', from);
+    const upper: Truth = compare(held, '<=', to);
+
+    return lower === false || upper === false ? false : (lower === null || upper === null ? null : true);
+}
+
+/**
+ * Negate a truth, leaving unknown unknown.
+ */
+function not(truth: Truth): Truth {
+    return truth === null ? null : !truth;
 }
 
 /**
@@ -121,6 +276,13 @@ function within(held: unknown, values: unknown[]): Truth {
  */
 function kept(column: 'id' | 'role', values: unknown[]): Item[] {
     return ROWS.filter((row: Item): boolean => within(row[column], values) === true);
+}
+
+/**
+ * Get the ids of the given rows in order.
+ */
+function ids(rows: Item[]): number[] {
+    return rows.map((row: Item): number => row.id).sort((a: number, b: number): number => a - b);
 }
 
 /**
@@ -200,4 +362,17 @@ describe.each(CONDITIONS)('a write %s on the column whose index drives it', (_: 
         expect(affected).toEqual({ indexed: expected.length, plain: expected.length });
         expect({ indexed: await raw('indexed'), plain: await raw('plain') }).toEqual({ indexed: sorted(left), plain: sorted(left) });
     }, 2000);
+});
+
+describe.each([...CASES, ...EXTRAS])('%s', (_: string, constrain: (query: Builder<Item>) => Builder<Item>, holds: (row: Item) => Truth): void => {
+    const expected: number[] = ids(ROWS.filter((row: Item): boolean => holds(row) === true));
+
+    test('gives the same rows through an index, through a scan and from the model', async (): Promise<void> => {
+        const answers: Record<Copy, { rows: number[]; count: number }> = await both(async (query: Builder<Item>): Promise<{ rows: number[]; count: number }> => ({
+            rows : ids(await constrain(query.clone()).get()),
+            count: await constrain(query).count(),
+        }));
+
+        expect(answers).toEqual({ indexed: { rows: expected, count: expected.length }, plain: { rows: expected, count: expected.length } });
+    });
 });

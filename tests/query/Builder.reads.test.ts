@@ -48,6 +48,10 @@ class CreateUsersTable extends Migration {
             table.string('label');
             table.datetime('at').nullable().index();
         });
+
+        await Schema.create('tallies', (table: Blueprint): void => {
+            table.integer('count');
+        });
     }
 }
 
@@ -464,6 +468,42 @@ describe('Builder terminals', (): void => {
         await expect(users().findOrFail(9999)).rejects.toBeInstanceOf(RecordsNotFoundException);
     });
 
+    test('finds a record by a key given as a string, as a route parameter arrives', async (): Promise<void> => {
+        const alice: User = await users().where('name', 'Alice').firstOrFail();
+
+        expect((await users().find(String(alice.id)))?.name).toEqual('Alice');
+    });
+
+    test('finds nothing for a string that is not a key of the key path\'s type', async (): Promise<void> => {
+        expect(await users().find('alice')).toBeNull();
+    });
+
+    test.each([null, undefined])('finds nothing for %o without touching the store', async (key: null | undefined): Promise<void> => {
+        const read: MockInstance = vi.spyOn(IDBObjectStore.prototype, 'get');
+
+        expect(await users().find(key)).toBeNull();
+        expect(read).not.toHaveBeenCalled();
+    });
+
+    test.each([
+        ['a boolean', true],
+        ['an object', { id: 1 }],
+        ['an invalid date', new Date('')],
+    ])('finds nothing for %s, which is not a key', async (_: string, key: unknown): Promise<void> => {
+        expect(await users().find(key as IDBValidKey)).toBeNull();
+    });
+
+    test('fails for a null key', async (): Promise<void> => {
+        await expect(users().findOrFail(null)).rejects.toBeInstanceOf(RecordsNotFoundException);
+    });
+
+    test('finds a record by the key a table without a key path generated', async (): Promise<void> => {
+        await connection.table('tallies').insert({ count: 3 });
+
+        expect(await connection.table('tallies').find(1)).toEqual({ count: 3 });
+        expect(await connection.table('tallies').find(null)).toBeNull();
+    });
+
     test('gets a single column value', async (): Promise<void> => {
         expect(await users().where('name', 'Alice').value('email')).toEqual('alice@example.com');
     });
@@ -641,6 +681,9 @@ describe('Builder chunking', (): void => {
 describe('Builder plans', (): void => {
     test.each([
         ['key', (query: Builder<User>): Builder<User> => query.where('id', 1)],
+        ['key', (query: Builder<User>): Builder<User> => query.where('id', '1')],
+        ['index:users_age_index', (query: Builder<User>): Builder<User> => query.where('age', '>', '30')],
+        ['scan', (query: Builder<User>): Builder<User> => query.where('age', '>', 'thirty')],
         ['index:users_email_unique', (query: Builder<User>): Builder<User> => query.where('email', 'alice@example.com')],
         ['scan', (query: Builder<User>): Builder<User> => query.where('role', 'admin')],
     ] as [string, (query: Builder<User>) => Builder<User>][])('explains a query as %s', async (plan: string, constrain: (query: Builder<User>) => Builder<User>): Promise<void> => {

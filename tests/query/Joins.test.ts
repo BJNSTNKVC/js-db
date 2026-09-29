@@ -775,3 +775,81 @@ describe('Writing through a join', (): void => {
         expect(seen).toEqual([['join', 2]]);
     });
 });
+
+interface Person {
+    id: number;
+    name: string;
+    active: boolean;
+    born: Date;
+}
+
+interface Ticket {
+    person_id: number;
+    active: string;
+    code: string;
+}
+
+interface Pass {
+    name: string;
+    born: Date;
+    code: string;
+}
+
+class CreateTypedTables extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        await Schema.create('people', (table: Blueprint): void => {
+            table.id();
+            table.string('name');
+            table.boolean('active');
+            table.datetime('born');
+        });
+
+        await Schema.create('tickets', (table: Blueprint): void => {
+            table.id();
+            table.integer('person_id');
+            table.string('active');
+            table.string('code');
+        });
+    }
+}
+
+describe('Values compared on a joined query', (): void => {
+    let typed: Connection;
+
+    /**
+     * Join the people to their tickets, returning the codes the given constraints keep.
+     */
+    async function codes(constrain: (query: Builder<Pass>) => Builder<Pass>): Promise<string[]> {
+        const query: Builder<Pass> = typed.table<Person>('people').join<Pass>('tickets', 'people.id', '=', 'tickets.person_id');
+
+        return (await constrain(query).orderBy('code').get()).map((row: Pass): string => row.code);
+    }
+
+    beforeAll(async (): Promise<void> => {
+        typed = new Connection('app', { database: 'joins-typed', migrations: [CreateTypedTables] });
+
+        await typed.migrate();
+
+        await typed.table<Person>('people').insert([
+            { name: 'Alice', active: true, born: new Date('1990-05-01T00:00:00.000Z') },
+            { name: 'Bob', active: false, born: new Date('1985-02-11T00:00:00.000Z') },
+        ]);
+
+        await typed.table<Ticket>('tickets').insert([
+            { person_id: 1, active: 'true', code: 'A1' },
+            { person_id: 1, active: 'yes', code: 'A2' },
+            { person_id: 2, active: 'true', code: 'B1' },
+        ]);
+    });
+
+    test('converts each value with the schema of the table its column belongs to', async (): Promise<void> => {
+        expect(await codes((query: Builder<Pass>): Builder<Pass> => query.where('people.active', 'true').where('tickets.active', 'true'))).toEqual(['A1']);
+    });
+
+    test('converts a value given for an unqualified column', async (): Promise<void> => {
+        expect(await codes((query: Builder<Pass>): Builder<Pass> => query.where('born', '>', '1988-01-01T00:00:00.000Z'))).toEqual(['A1', 'A2']);
+    });
+});

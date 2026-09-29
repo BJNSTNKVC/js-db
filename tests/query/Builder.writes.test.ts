@@ -72,6 +72,12 @@ class CreateUsersTable extends Migration {
             table.string('label');
             table.integer('position').index();
         });
+
+        await Schema.create('codes', (table: Blueprint): void => {
+            table.id();
+            table.integer('code').unique();
+            table.string('label');
+        });
     }
 }
 
@@ -353,6 +359,13 @@ describe('Builder upsert', (): void => {
 
     test('refuses a compound target that is not a unique index', async (): Promise<void> => {
         await expect(users().upsert([{ name: 'Alice', email: 'alice@example.com' }], ['name', 'role'])).rejects.toBeInstanceOf(SchemaException);
+    });
+
+    test('merges into the record holding an integer conflict key given as a string', async (): Promise<void> => {
+        await connection.table('codes').insert({ code: 5, label: 'A' });
+
+        expect(await connection.table('codes').upsert([{ code: '5', label: 'B' }], 'code')).toEqual(1);
+        expect(await connection.table('codes').get()).toEqual([{ id: 1, code: 5, label: 'B' }]);
     });
 
     test('refuses to merge the key path', async (): Promise<void> => {

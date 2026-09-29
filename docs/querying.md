@@ -76,6 +76,37 @@ means `09:30:00`. `whereDate` becomes a range and can be served by an index. The
 Operators: `=`, `==`, `===`, `!=`, `<>`, `!==`, `<`, `>`, `<=`, `>=`, `like`, `not like`. `==` is
 loose and `===` is strict.
 
+A value compared with a declared column is first converted to that column's type, so a value that
+arrives as a string from a form, a URL or storage matches what the typed value would. This applies
+to `where` and its `or` and `not` forms with every operator except `===`, `!==`, `like` and
+`not like`, to every value of `whereIn` and `whereNotIn`, and to both bounds of `whereBetween` and
+`whereNotBetween`:
+
+| Column type              | Converts                                                    | Example                                    |
+|--------------------------|-------------------------------------------------------------|--------------------------------------------|
+| `integer`, `decimal`     | A whole number, or a non-blank string holding one           | `where('age', '>=', '18')` compares 18     |
+| `float`                  | A finite number, or a non-blank string holding one          | `where('price', '<', '9.5')` compares 9.5  |
+| `date`, `datetime`       | Any date, number or string `new Date` reads as a valid date | `where('published_at', '>', '2026-02-01')` |
+| `boolean`                | Any value, read as an insert stores it                      | `where('active', 'true')` compares `true`  |
+| `string`, `enum`, `json` | Nothing, the value is compared as given                     |                                            |
+
+A date string therefore matches the moment it names, and `'true'` or `'false'` compared with a
+boolean column matches the rows holding `true` or `false`. The moment is the one `new Date` reads,
+so a date-only string such as `'2026-02-01'` is midnight UTC, not local midnight. To match a whole
+day, use `whereDate`. A boolean column reads a string the way
+an insert stores it: `'false'`, `'0'` and `''` are `false` and every other string is `true`, so
+`where('active', 'no')` matches the active rows, just as inserting `'no'` stores `true`.
+
+A value that does not convert cleanly, such as `'1.5'` or `''` for an integer column or `'soon'` for
+a date column, is compared as given, the same loose way as before. `===` and `!==` never convert,
+since strict means the value's type matters, so `where('age', '===', '18')` matches nothing. Nor
+does a path into a JSON column, which has no declared type, or a column the table does not declare.
+On a joined query each value is converted with the schema of the table its column belongs to.
+
+Whether an index serves the query never changes which rows it returns. A converted value can be
+looked up through an index, and a value that did not convert is checked against every record the
+query reads. See [Query plans](query-plans.md).
+
 Constraints follow SQL's three-valued logic: a comparison against `null` is unknown, and negating
 unknown leaves it unknown. So a record whose `age` is `null` satisfies neither
 `whereBetween('age', [18, 65])` nor `whereNotBetween('age', [18, 65])`. Only `whereNull` matches it.
@@ -246,6 +277,11 @@ await DB.table<User>('users').max('age');
 | `sole()`                                      | `T`, or throws `RecordsNotFoundException` / `MultipleRecordsFoundException` |
 | `paginate(page?, perPage?)`                   | `{ data, total, perPage, currentPage, lastPage }`                           |
 
+`find` converts its key to the type of the key path column first, as `where` does, so
+`find(route.params.id)` finds the record even though a route parameter is always a string. A key
+that is `null`, `undefined` or anything else IndexedDB cannot use as a key, such as a boolean,
+returns `null` without reading the store, and `findOrFail` throws `RecordsNotFoundException` for it.
+
 `min` and `max` read the answer straight off the index when the column has one and the query is
 unconstrained, so they cost one cursor rather than a full scan.
 
@@ -317,7 +353,9 @@ A violated unique index surfaces as `UniqueConstraintViolationException` naming 
 index, rather than a bare `DOMException`.
 
 `upsert` requires its conflict target to be the key path or a unique index, because IndexedDB cannot
-enforce anything else. Any other column throws `SchemaException`.
+enforce anything else. Any other column throws `SchemaException`. The conflict key is coerced the way
+an insert coerces it before it is looked up, so `upsert([{ code: '5' }], 'code')` on an integer
+column merges into the record holding 5 rather than inserting a second one.
 
 The key path may not be updated, so `update`, `upsert` and `increment` all refuse it.
 

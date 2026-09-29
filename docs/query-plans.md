@@ -29,6 +29,14 @@ Each resolves to a description of the plan chosen:
   that moves ahead of the walk is never reached again, so moving an item in an ordered list with
   `where('position', '>=', n).increment('position')` shifts each position once. A write that leaves
   the column alone keeps the single walk.
+- A constraint drives the key path or an index only when its value is a key of the type the column
+  stores, after the conversion described in [Querying](querying.md): a whole number for an integer
+  or decimal column, a number for a float, a valid date for a date or datetime, a string for a
+  string or enum, and any valid key for a JSON column. Anything else, including every boolean, an
+  object, an invalid date or a value that did not convert, is checked against every record the
+  query reads instead, so an index never changes which rows come back.
+- A `whereBetween` whose bounds are the wrong way round, such as `whereBetween('age', [65, 18])`,
+  matches nothing, and is planned as an empty set of lookups rather than as a range.
 - When a range and an order want different indexes, the range wins and the sort happens in memory.
 - Any top-level `orWhere` forces a full scan.
 - `count()` with no residual constraints uses `count()` on the store or index, reading no records.

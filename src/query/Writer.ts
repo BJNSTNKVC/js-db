@@ -67,7 +67,14 @@ export class Writer {
             return;
         }
 
-        const key: IDBValidKey = this.#keyOf(columns, value);
+        const prepared: Record<string, unknown> = Enforcer.updatable(
+            Object.fromEntries(columns.map((column: string): [string, unknown] => [column, value[column]])),
+            schema,
+            strict,
+            new Date(),
+        );
+
+        const key: IDBValidKey = this.#keyOf(columns, prepared);
         const existing: Record<string, unknown> | undefined = await Request.settle(store.index(target.name).get(IDBKeyRange.only(key)) as IDBRequest<Record<string, unknown> | undefined>);
 
         if (existing === undefined) {

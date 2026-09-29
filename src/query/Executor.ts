@@ -10,7 +10,7 @@ import { Predicate } from './Predicate';
 import { Signature } from './Signature';
 import { Writer } from './Writer';
 import type { Connection } from '../database/Connection';
-import type { ColumnSchema, IndexSchema, TableSchema } from '../schema/types';
+import type { ColumnSchema, ColumnType, IndexSchema, TableSchema } from '../schema/types';
 import type { Constraint, JoinClause, Order, Plan, Projection, Query } from './types';
 
 type Entry<T> = { record: T; key: IDBValidKey };
@@ -44,7 +44,7 @@ export class Executor<T> {
     async explain(): Promise<string> {
         const schema: TableSchema = await this.#connection.schema(this.#query.table);
 
-        return Planner.describe(Planner.plan(this.#query.constraints, this.#orders(), schema));
+        return Planner.describe(Planner.plan(this.#prepared(schema), this.#orders(), schema));
     }
 
     /**
@@ -65,11 +65,12 @@ export class Executor<T> {
      * Get the records held under the given keys, skipping any deleted or no longer matching since.
      */
     async fetch(keys: IDBValidKey[]): Promise<T[]> {
+        const schema: TableSchema = await this.#connection.schema(this.#query.table);
         const store: IDBObjectStore = await this.#store('readonly');
 
         // Every constraint is checked rather than only the residual, since the one that drove the
         // scan is exactly what a record changed after the keys were taken may no longer meet.
-        const matches: (record: Record<string, unknown>) => boolean = Predicate.compile(this.#query.constraints);
+        const matches: (record: Record<string, unknown>) => boolean = Predicate.compile(this.#prepared(schema));
 
         const records: (T | undefined)[] = await Promise.all(
             keys.map((key: IDBValidKey): Promise<T | undefined> => Request.settle(store.get(key) as IDBRequest<T | undefined>)),
@@ -83,10 +84,18 @@ export class Executor<T> {
     /**
      * Get the record with the given key.
      */
-    async find(key: IDBValidKey): Promise<T | null> {
+    async find(key: IDBValidKey | null | undefined): Promise<T | null> {
+        const schema: TableSchema = await this.#connection.schema(this.#query.table);
+        const column: ColumnSchema | undefined = schema.columns.find((candidate: ColumnSchema): boolean => candidate.name === schema.key);
+        const prepared: unknown = column === undefined ? key : Planner.convert(key, column.type);
+
+        if (!Planner.keyable(prepared)) {
+            return null;
+        }
+
         const store: IDBObjectStore = await this.#store('readonly');
         const started: number = performance.now();
-        const record: T | undefined = await Request.settle(store.get(key) as IDBRequest<T | undefined>);
+        const record: T | undefined = await Request.settle(store.get(prepared as IDBValidKey) as IDBRequest<T | undefined>);
 
         this.#emit('key', started, record === undefined ? 0 : 1);
 
@@ -98,7 +107,7 @@ export class Executor<T> {
      */
     async count(): Promise<number> {
         const schema: TableSchema = await this.#connection.schema(this.#query.table);
-        const plan: Plan = Planner.plan(this.#query.constraints, this.#orders(), schema);
+        const plan: Plan = Planner.plan(this.#prepared(schema), this.#orders(), schema);
 
         if (plan.residual.length > 0 || plan.values !== null) {
             return (await this.records()).length;
@@ -230,7 +239,7 @@ export class Executor<T> {
         }
 
         const schema: TableSchema = await this.#connection.schema(this.#query.table);
-        const plan: Plan = Planner.plan(this.#query.constraints, this.#orders(), schema);
+        const plan: Plan = Planner.plan(this.#prepared(schema), this.#orders(), schema);
         const store: IDBObjectStore = await this.#store('readwrite');
         const started: number = performance.now();
         const matches: (record: Record<string, unknown>) => boolean = Predicate.compile(plan.residual);
@@ -377,6 +386,17 @@ export class Executor<T> {
     }
 
     /**
+     * Get the constraints with each value compared to a column of this table converted into its type.
+     */
+    #prepared(schema: TableSchema): Constraint[] {
+        const types: Map<string, ColumnType> = new Map<string, ColumnType>(
+            schema.columns.map((column: ColumnSchema): [string, ColumnType] => [column.name, column.type]),
+        );
+
+        return Planner.prepare(this.#query.constraints, types);
+    }
+
+    /**
      * Get the single column index that can answer an unconstrained extreme, if there is one.
      */
     async #sole(column: string): Promise<IndexSchema | null> {
@@ -402,7 +422,7 @@ export class Executor<T> {
         }
 
         const schema: TableSchema = await this.#connection.schema(this.#query.table);
-        const plan: Plan = Planner.plan(this.#query.constraints, this.#orders(), schema);
+        const plan: Plan = Planner.plan(this.#prepared(schema), this.#orders(), schema);
         const store: IDBObjectStore = await this.#store('readonly');
         const started: number = performance.now();
         const matches: (record: Record<string, unknown>) => boolean = Predicate.compile(plan.residual);
@@ -542,15 +562,41 @@ export class Executor<T> {
      */
     async #tables(): Promise<Map<string, string[]>> {
         const tables: Map<string, string[]> = new Map<string, string[]>();
-        const names: string[] = [this.#query.table, ...this.#query.joins.map((clause: JoinClause): string => clause.table)];
 
-        for (const name of names) {
-            const schema: TableSchema = await this.#connection.schema(name);
-
+        for (const [name, schema] of await this.#schemas()) {
             tables.set(name, schema.columns.map((column: ColumnSchema): string => column.name));
         }
 
         return tables;
+    }
+
+    /**
+     * Get the schema of every table the query reads, keyed by table.
+     */
+    async #schemas(): Promise<Map<string, TableSchema>> {
+        const schemas: Map<string, TableSchema> = new Map<string, TableSchema>();
+        const names: string[] = [this.#query.table, ...this.#query.joins.map((clause: JoinClause): string => clause.table)];
+
+        for (const name of names) {
+            schemas.set(name, await this.#connection.schema(name));
+        }
+
+        return schemas;
+    }
+
+    /**
+     * Get the constraints qualified by table, each value converted into the type of the column it is compared with.
+     */
+    async #qualified(tables: Map<string, string[]>): Promise<Constraint[]> {
+        const types: Map<string, ColumnType> = new Map<string, ColumnType>();
+
+        for (const [name, schema] of await this.#schemas()) {
+            for (const column of schema.columns) {
+                types.set(`${name}.${column.name}`, column.type);
+            }
+        }
+
+        return Planner.prepare(this.#query.constraints.map((constraint: Constraint): Constraint => Joiner.qualified(constraint, tables)), types);
     }
 
     /**
@@ -570,7 +616,7 @@ export class Executor<T> {
     /**
      * Run the joins and keep the rows the constraints match, each carrying the key of its base record.
      */
-    async #combined(tables: Map<string, string[]>, stores: (table: string) => IDBObjectStore): Promise<Row[]> {
+    async #combined(tables: Map<string, string[]>, constraints: Constraint[], stores: (table: string) => IDBObjectStore): Promise<Row[]> {
         const store: IDBObjectStore = stores(this.#query.table);
 
         const [records, keys]: [Record<string, unknown>[], IDBValidKey[]] = await Promise.all([
@@ -592,8 +638,6 @@ export class Executor<T> {
             rows = Joiner.join(rows, Joiner.qualify(other, clause.table), clause, columns);
         }
 
-        const constraints: Constraint[] = this.#query.constraints.map((constraint: Constraint): Constraint => Joiner.qualified(constraint, tables));
-
         return rows.filter(Predicate.compile(constraints));
     }
 
@@ -602,9 +646,10 @@ export class Executor<T> {
      */
     async #joined(): Promise<Record<string, unknown>[]> {
         const tables: Map<string, string[]> = await this.#tables();
+        const constraints: Constraint[] = await this.#qualified(tables);
         const stores: (table: string) => IDBObjectStore = await this.#stores([...tables.keys()], 'readonly');
         const started: number = performance.now();
-        const kept: Row[] = await this.#combined(tables, stores);
+        const kept: Row[] = await this.#combined(tables, constraints, stores);
         const orders: Order[] = this.#query.orders.map((order: Order): Order => ({ ...order, column: Columns.resolve(order.column, tables) }));
 
         const sorted: Row[] = this.#query.random
@@ -626,12 +671,13 @@ export class Executor<T> {
         }
 
         const tables: Map<string, string[]> = await this.#tables();
+        const constraints: Constraint[] = await this.#qualified(tables);
         const stores: (table: string) => IDBObjectStore = await this.#stores([...tables.keys()], 'readwrite');
         const store: IDBObjectStore = stores(this.#query.table);
         const started: number = performance.now();
         const keys: Set<IDBValidKey> = new Set<IDBValidKey>();
 
-        for (const row of await this.#combined(tables, stores)) {
+        for (const row of await this.#combined(tables, constraints, stores)) {
             if (row[KEY] !== undefined) {
                 keys.add(row[KEY]);
             }
