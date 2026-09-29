@@ -29,11 +29,56 @@ await Schema.table('users', (table: Blueprint): void => {
     table.dropColumn('legacy');
     table.renameColumn('name', 'full_name');
     table.dropIndex('users_age_index');
-    table.index(['full_name']);
+    table.index(['email', 'full_name']);
 });
 ```
 
 `Schema.rename` is implemented as create-copy-drop, so it is O(n) in the number of records.
+
+## Indexes follow renamed and dropped columns
+
+IndexedDB cannot change the columns an index covers, so `renameColumn` and `dropColumn` rebuild or
+delete the indexes over the column in the same migration:
+
+| Index over the column                      | `renameColumn('email', 'mail')`                            | `dropColumn('email')`                |
+|--------------------------------------------|------------------------------------------------------------|--------------------------------------|
+| `users_email_unique`, a generated name     | Rebuilt over `mail` as `users_mail_unique`                 | Deleted with the column              |
+| `by_email`, a name chosen by hand          | Rebuilt over `mail`, keeping the name `by_email`           | Deleted with the column              |
+| `users_team_email_index`, a compound index | Rebuilt over `['team', 'mail']` as `users_team_mail_index` | Refused while it still covers `team` |
+
+A rebuilt index keeps its other columns, their order, and whether it is unique or multi entry, so a
+unique rule holds under the new name and `upsert(rows, 'mail')` accepts the column as its conflict
+target. An index over columns the blueprint drops together is deleted with them.
+
+Dropping a column that a compound index still needs would quietly lose that index's rule, so it is
+refused with `SchemaException` and the migration rolls back:
+
+```
+SchemaException: Column [email] of table [users] may not be dropped while index
+[users_team_email_index] covers it. Drop the index first.
+```
+
+Dropping the index first, in the same blueprint or an earlier one, lets the drop through:
+
+```ts
+await Schema.table('users', (table: Blueprint): void => {
+    table.dropIndex('users_team_email_index');
+    table.dropColumn('email');
+});
+```
+
+Before 2.6.1 both operations left the index over the old column, where no record holds a value any
+more. A database that renamed or dropped an indexed column then keeps that stale index until a
+migration drops it by name and declares the one intended:
+
+```ts
+await Schema.table('users', (table: Blueprint): void => {
+    table.dropIndex('users_email_unique');
+    table.unique('mail');
+});
+```
+
+`getIndexes()` lists what a table holds, so it shows whether a database needs the repair.
 
 ## Changing columns
 

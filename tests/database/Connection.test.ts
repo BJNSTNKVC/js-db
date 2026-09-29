@@ -1238,6 +1238,254 @@ describe('Schema.table column changes', (): void => {
     });
 });
 
+describe('Schema.table renamed and dropped columns', (): void => {
+    const CreateIndexedUsersTable: MigrationConstructor = migration('CreateIndexedUsersTable', async (): Promise<void> => {
+        await Schema.create('users', (table: Blueprint): void => {
+            table.id();
+            table.string('email').unique();
+            table.string('name').index();
+            table.string('city').nullable();
+            table.integer('age').nullable();
+            table.string('nickname').nullable().index('by_nickname');
+            table.string('note').nullable();
+            table.index(['city', 'age']);
+        });
+    });
+
+    const people: Record<string, unknown>[] = [
+        { email: 'a@x', name: 'Alice', city: 'Oslo', age: 30, nickname: 'al', note: 'first' },
+        { email: 'b@x', name: 'Bob', city: 'Rome', age: 40, nickname: 'bo', note: 'second' },
+    ];
+
+    const before: string[] = ['by_nickname(nickname)', 'users_city_age_index(city,age)', 'users_email_unique(email) unique', 'users_name_index(name)'];
+
+    /**
+     * Migrate a users table holding two people, then alter it once with each given callback.
+     */
+    async function altered(callbacks: ((table: Blueprint) => void)[], database: string = `connection-${++sequence}`): Promise<Connection> {
+        const first: Connection = connect([CreateIndexedUsersTable], database);
+
+        await first.migrate();
+        await seed(first, 'users', people);
+
+        first.disconnect();
+        connections.splice(connections.indexOf(first), 1);
+
+        const AlterUsersTable: MigrationConstructor = migration('AlterUsersTable', async (): Promise<void> => {
+            for (const callback of callbacks) {
+                await Schema.table('users', callback);
+            }
+        });
+
+        const second: Connection = connect([CreateIndexedUsersTable, AlterUsersTable], database);
+
+        await second.migrate();
+
+        return second;
+    }
+
+    /**
+     * Describe the indexes the registry lists for the users table.
+     */
+    async function listed(connection: Connection): Promise<string[]> {
+        return (await connection.getIndexes('users'))
+            .map((index: IndexSchema): string => `${index.name}(${index.columns.join(',')})${index.unique ? ' unique' : ''}`)
+            .sort();
+    }
+
+    /**
+     * Describe the indexes the users store really has.
+     */
+    async function stored(connection: Connection): Promise<string[]> {
+        const store: IDBObjectStore = (await connection.open()).transaction('users', 'readonly').objectStore('users');
+
+        return Array.from(store.indexNames)
+            .map((name: string): IDBIndex => store.index(name))
+            .map((index: IDBIndex): string => `${index.name}(${([] as string[]).concat(index.keyPath).join(',')})${index.unique ? ' unique' : ''}`);
+    }
+
+    /**
+     * Rename one key of every person, as a rewrite should.
+     */
+    function renamed(from: string, to: string): Record<string, unknown>[] {
+        return people.map((person: Record<string, unknown>, position: number): Record<string, unknown> => {
+            const { [from]: value, ...rest } = person;
+
+            return { id: position + 1, ...rest, [to]: value };
+        });
+    }
+
+    /**
+     * Drop keys from every person, as a rewrite should.
+     */
+    function dropped(...columns: string[]): Record<string, unknown>[] {
+        return people.map((person: Record<string, unknown>, position: number): Record<string, unknown> => ({
+            id: position + 1,
+            ...Object.fromEntries(Object.entries(person).filter(([column]: [string, unknown]): boolean => !columns.includes(column))),
+        }));
+    }
+
+    test('moves a unique index onto the renamed column, in the registry and the store', async (): Promise<void> => {
+        const connection: Connection = await altered([(table: Blueprint): void => {
+            table.renameColumn('email', 'mail');
+        }]);
+
+        const after: string[] = ['by_nickname(nickname)', 'users_city_age_index(city,age)', 'users_mail_unique(mail) unique', 'users_name_index(name)'];
+
+        expect(await listed(connection)).toEqual(after);
+        expect(await stored(connection)).toEqual(after);
+        expect(await records(connection, 'users')).toEqual(renamed('email', 'mail'));
+    });
+
+    test('refuses a duplicate of a renamed unique column', async (): Promise<void> => {
+        const connection: Connection = await altered([(table: Blueprint): void => {
+            table.renameColumn('email', 'mail');
+        }]);
+
+        await expect(connection.table('users').insert({ mail: 'a@x', name: 'Again' })).rejects.toBeInstanceOf(UniqueConstraintViolationException);
+        expect(await connection.table('users').count()).toEqual(2);
+    });
+
+    test('upserts by a renamed unique column', async (): Promise<void> => {
+        const connection: Connection = await altered([(table: Blueprint): void => {
+            table.renameColumn('email', 'mail');
+        }]);
+
+        expect(await connection.table('users').upsert([{ mail: 'b@x', name: 'Bobby' }], 'mail')).toEqual(1);
+        expect(await connection.table('users').orderBy('id').pluck('name')).toEqual(['Alice', 'Bobby']);
+    });
+
+    test('serves lookups on a renamed column through its moved plain index', async (): Promise<void> => {
+        const connection: Connection = await altered([(table: Blueprint): void => {
+            table.renameColumn('name', 'full_name');
+        }]);
+
+        expect(await connection.table('users').where('full_name', 'Alice').explain()).toEqual('index:users_full_name_index');
+        expect(await connection.table('users').where('full_name', 'Alice').pluck('email')).toEqual(['a@x']);
+        expect(await records(connection, 'users')).toEqual(renamed('name', 'full_name'));
+    });
+
+    test('renames a column inside a compound index, keeping its other columns and their order', async (): Promise<void> => {
+        const connection: Connection = await altered([(table: Blueprint): void => {
+            table.renameColumn('age', 'years');
+        }]);
+
+        const after: string[] = ['by_nickname(nickname)', 'users_city_years_index(city,years)', 'users_email_unique(email) unique', 'users_name_index(name)'];
+
+        expect(await listed(connection)).toEqual(after);
+        expect(await stored(connection)).toEqual(after);
+        expect(await records(connection, 'users')).toEqual(renamed('age', 'years'));
+    });
+
+    test('keeps the name of a hand-named index through a rename', async (): Promise<void> => {
+        const connection: Connection = await altered([(table: Blueprint): void => {
+            table.renameColumn('nickname', 'handle');
+        }]);
+
+        const after: string[] = ['by_nickname(handle)', 'users_city_age_index(city,age)', 'users_email_unique(email) unique', 'users_name_index(name)'];
+
+        expect(await listed(connection)).toEqual(after);
+        expect(await stored(connection)).toEqual(after);
+        expect(await connection.table('users').where('handle', 'bo').explain()).toEqual('index:by_nickname');
+        expect(await records(connection, 'users')).toEqual(renamed('nickname', 'handle'));
+    });
+
+    test('drops a unique index with its column, so a column added again under the name is plain', async (): Promise<void> => {
+        const connection: Connection = await altered([
+            (table: Blueprint): void => {
+                table.dropColumn('email');
+            },
+            (table: Blueprint): void => {
+                table.string('email').nullable();
+            },
+        ]);
+
+        expect(await listed(connection)).toEqual(['by_nickname(nickname)', 'users_city_age_index(city,age)', 'users_name_index(name)']);
+        expect(await records(connection, 'users')).toEqual(dropped('email'));
+
+        await connection.table('users').insert([{ name: 'P', email: 'x@x' }, { name: 'Q', email: 'x@x' }]);
+
+        expect(await connection.table('users').where('email', 'x@x').count()).toEqual(2);
+    });
+
+    test('refuses to drop a column a compound index still needs, rolling the migration back', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+
+        await expect(altered([(table: Blueprint): void => {
+            table.dropColumn('age');
+        }], database)).rejects.toThrow(new SchemaException('Column [age] of table [users] may not be dropped while index [users_city_age_index] covers it. Drop the index first.'));
+
+        connections.splice(0).forEach((connection: Connection): void => connection.disconnect());
+
+        const AlterUsersTable: MigrationConstructor = migration('AlterUsersTable', (): void => {});
+        const status: MigrationStatus[] = await connect([CreateIndexedUsersTable, AlterUsersTable], database).status();
+
+        expect(status.map((entry: MigrationStatus): boolean => entry.ran)).toEqual([true, false]);
+
+        connections.splice(0).forEach((connection: Connection): void => connection.disconnect());
+
+        const restored: Connection = connect([CreateIndexedUsersTable], database);
+
+        expect((await restored.getColumns('users')).map((column: ColumnSchema): string => column.name)).toContain('age');
+        expect(await listed(restored)).toEqual(before);
+        expect(await stored(restored)).toEqual(before);
+        expect(await records(restored, 'users')).toEqual(dropped());
+    });
+
+    test('drops a column once the same migration drops the compound index that needs it', async (): Promise<void> => {
+        const connection: Connection = await altered([(table: Blueprint): void => {
+            table.dropIndex('users_city_age_index');
+            table.dropColumn('age');
+        }]);
+
+        expect(await stored(connection)).toEqual(['by_nickname(nickname)', 'users_email_unique(email) unique', 'users_name_index(name)']);
+        expect(await records(connection, 'users')).toEqual(dropped('age'));
+    });
+
+    test.each([
+        ['renaming', (table: Blueprint): void => table.renameColumn('note', 'memo'), renamed('note', 'memo')],
+        ['dropping', (table: Blueprint): void => table.dropColumn('note'), dropped('note')],
+    ] as [string, (table: Blueprint) => void, Record<string, unknown>[]][])('leaves every index alone when %s a column no index covers', async (_name: string, callback: (table: Blueprint) => void, rows: Record<string, unknown>[]): Promise<void> => {
+        const connection: Connection = await altered([callback]);
+
+        expect(await listed(connection)).toEqual(before);
+        expect(await stored(connection)).toEqual(before);
+        expect(await records(connection, 'users')).toEqual(rows);
+    });
+
+    test('repairs an index left over a column renamed before indexes followed it', async (): Promise<void> => {
+        const CreateStaleUsersTable: MigrationConstructor = migration('CreateStaleUsersTable', async (): Promise<void> => {
+            await Schema.create('users', (table: Blueprint): void => {
+                table.id();
+                table.string('mail');
+                table.unique('email');
+            });
+        });
+
+        const RepairUsersTable: MigrationConstructor = migration('RepairUsersTable', async (): Promise<void> => {
+            await Schema.table('users', (table: Blueprint): void => {
+                table.dropIndex('users_email_unique');
+                table.unique('mail');
+            });
+        });
+
+        const database: string = `connection-${++sequence}`;
+        const first: Connection = connect([CreateStaleUsersTable], database);
+
+        await first.migrate();
+        await seed(first, 'users', [{ mail: 'a@x' }, { mail: 'b@x' }]);
+
+        first.disconnect();
+        connections.splice(connections.indexOf(first), 1);
+
+        const connection: Connection = connect([CreateStaleUsersTable, RepairUsersTable], database);
+
+        expect(await listed(connection)).toEqual(['users_mail_unique(mail) unique']);
+        expect(await stored(connection)).toEqual(['users_mail_unique(mail) unique']);
+        await expect(connection.table('users').insert({ mail: 'a@x' })).rejects.toBeInstanceOf(UniqueConstraintViolationException);
+    });
+});
+
 describe('Schema.drop', (): void => {
     test('drops a table', async (): Promise<void> => {
         const DropPosts: MigrationConstructor = migration('DropPosts', async (): Promise<void> => {

@@ -7,7 +7,7 @@
 - [Seeding](seeding.md): seeders, which connection they write to, running them safely on every boot,
   and rebuilding from scratch
 - [Defining a schema](schema.md): column types and modifiers, altering and changing columns,
-  decimals, enums, and reserved tables
+  indexes over renamed and dropped columns, decimals, enums, and reserved tables
 - [Querying](querying.md): constraints, JSON columns, shaping, terminals and writes
 - [Joins](joins.md): inner, left, right and cross joins, and what they cost
 - [Grouping](grouping.md): `groupBy`, typed aggregates and `having`

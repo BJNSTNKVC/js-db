@@ -2,6 +2,8 @@ import { SchemaException } from '../exceptions';
 import { ColumnDefinition } from './ColumnDefinition';
 import type { BlueprintOperations, ChangedColumn, ColumnSchema, ColumnType, Enumerable, IndexSchema, RenamedColumn, RequestedIndex, TableSchema } from './types';
 
+type IndexChanges = { indexes: IndexSchema[]; created: IndexSchema[]; removed: string[] };
+
 export class Blueprint {
     /**
      * The name of the table.
@@ -231,13 +233,15 @@ export class Blueprint {
      * Get the operations the blueprint performs against the existing table.
      */
     operations(): BlueprintOperations {
+        const indexes: IndexChanges = this.#indexChanges();
+
         return {
             added    : this.#added().map((column: ColumnDefinition): ColumnSchema => column.toSchema()),
             dropped  : this.#dropped,
             renamed  : this.#renamed,
             changed  : this.#changes(),
-            indexed  : this.#createdIndexes(),
-            unindexed: this.#removedIndexes(),
+            indexed  : indexes.created,
+            unindexed: indexes.removed,
         };
     }
 
@@ -276,7 +280,7 @@ export class Blueprint {
         const over: string[] = Array.isArray(columns) ? columns : [columns];
 
         const index: IndexSchema = {
-            name      : name ?? `${this.#table}_${over.join('_')}_${unique ? 'unique' : 'index'}`,
+            name      : name ?? this.#generated(over, unique),
             columns   : over,
             unique    : unique,
             multiEntry: false,
@@ -285,6 +289,13 @@ export class Blueprint {
         this.#indexes.push(index);
 
         return index;
+    }
+
+    /**
+     * Get the name generated for an index over the given columns.
+     */
+    #generated(columns: string[], unique: boolean): string {
+        return `${this.#table}_${columns.join('_')}_${unique ? 'unique' : 'index'}`;
     }
 
     /**
@@ -423,7 +434,7 @@ export class Blueprint {
      */
     #requested(column: string, requested: RequestedIndex): IndexSchema {
         return {
-            name      : requested.name ?? `${this.#table}_${column}_${requested.unique ? 'unique' : 'index'}`,
+            name      : requested.name ?? this.#generated([column], requested.unique),
             columns   : [column],
             unique    : requested.unique,
             multiEntry: requested.multiEntry,
@@ -434,12 +445,7 @@ export class Blueprint {
      * Get the indexes of the table once the blueprint is applied.
      */
     #resolvedIndexes(): IndexSchema[] {
-        const removed: string[] = this.#removedIndexes();
-
-        const kept: IndexSchema[] = this.#indexesOf()
-            .filter((index: IndexSchema): boolean => !removed.includes(index.name));
-
-        const indexes: IndexSchema[] = [...kept, ...this.#createdIndexes()];
+        const indexes: IndexSchema[] = this.#indexChanges().indexes;
         const seen: Set<string> = new Set<string>();
 
         for (const index of indexes) {
@@ -454,59 +460,60 @@ export class Blueprint {
     }
 
     /**
-     * Get the existing indexes over a changed column alone, which the change declares afresh.
+     * Work out the indexes of the table once the blueprint is applied, those to create and the names of those to delete.
      */
-    #redeclared(): IndexSchema[] {
+    #indexChanges(): IndexChanges {
+        const renamed: Map<string, string> = new Map(this.#renamed.map((rename: RenamedColumn): [string, string] => [rename.from, rename.to]));
+
         const changed: string[] = this.#columns
             .filter((column: ColumnDefinition): boolean => column.changed)
             .map((column: ColumnDefinition): string => column.name);
 
-        return this.#indexesOf().filter((index: IndexSchema): boolean => index.columns.length === 1
-            && changed.includes(index.columns[0] as string)
-            && !this.#unindexed.includes(index.name));
-    }
-
-    /**
-     * Get the redeclared indexes the blueprint declares again exactly as they stand.
-     */
-    #retained(): IndexSchema[] {
         const declared: IndexSchema[] = this.#declaredIndexes();
+        const kept: IndexSchema[] = [];
+        const moved: IndexSchema[] = [];
+        const removed: string[] = [...this.#unindexed];
 
-        return this.#redeclared().filter((index: IndexSchema): boolean => declared.some((candidate: IndexSchema): boolean => this.#same(index, candidate)));
-    }
+        for (const index of this.#indexesOf().filter((existing: IndexSchema): boolean => !this.#unindexed.includes(existing.name))) {
+            const dropped: string[] = index.columns.filter((column: string): boolean => this.#dropped.includes(column));
 
-    /**
-     * Get the names of the indexes to delete, whether dropped or left out of a changed column.
-     */
-    #removedIndexes(): string[] {
-        const retained: IndexSchema[] = this.#retained();
+            if (dropped.length === index.columns.length) {
+                removed.push(index.name);
 
-        const omitted: string[] = this.#redeclared()
-            .filter((index: IndexSchema): boolean => !retained.includes(index))
-            .map((index: IndexSchema): string => index.name);
-
-        return [...this.#unindexed, ...omitted];
-    }
-
-    /**
-     * Get the indexes to create, leaving out those a changed column keeps as they stand.
-     */
-    #createdIndexes(): IndexSchema[] {
-        // Each retained index stands in for one declaration only, so declaring it twice is still
-        // reported as a duplicate rather than quietly collapsing.
-        const pending: IndexSchema[] = this.#retained();
-
-        return this.#declaredIndexes().filter((index: IndexSchema): boolean => {
-            const position: number = pending.findIndex((retained: IndexSchema): boolean => this.#same(retained, index));
-
-            if (position === -1) {
-                return true;
+                continue;
             }
 
-            pending.splice(position, 1);
+            if (dropped.length > 0) {
+                throw new SchemaException(`Column [${dropped[0]}] of table [${this.#table}] may not be dropped while index [${index.name}] covers it. Drop the index first.`);
+            }
 
-            return false;
-        });
+            const columns: string[] = index.columns.map((column: string): string => renamed.get(column) ?? column);
+            const name: string = index.name === this.#generated(index.columns, index.unique) ? this.#generated(columns, index.unique) : index.name;
+            const carried: IndexSchema = { ...index, name, columns };
+
+            if (carried.columns.length === 1 && changed.includes(carried.columns[0] as string)) {
+                const position: number = declared.findIndex((candidate: IndexSchema): boolean => this.#same(carried, candidate));
+
+                if (position === -1) {
+                    removed.push(index.name);
+
+                    continue;
+                }
+
+                // Each carried index stands in for one declaration only, so declaring it twice is
+                // still reported as a duplicate rather than quietly collapsing.
+                declared.splice(position, 1);
+            }
+
+            kept.push(carried);
+
+            if (!this.#same(index, carried)) {
+                removed.push(index.name);
+                moved.push(carried);
+            }
+        }
+
+        return { indexes: [...kept, ...declared], created: [...moved, ...declared], removed };
     }
 
     /**

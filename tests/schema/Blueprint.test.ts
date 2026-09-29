@@ -565,3 +565,140 @@ describe('Blueprint column changes', (): void => {
         expect((): TableSchema => blueprint.toSchema()).toThrow(new SchemaException('Index [users_name_index] is declared more than once on table [users].'));
     });
 });
+
+describe('Blueprint renamed and dropped columns', (): void => {
+    const existing: TableSchema = {
+        table     : 'users',
+        key       : 'id',
+        increments: true,
+        timestamps: false,
+        columns   : [
+            { name: 'id', type: 'integer', nullable: false, default: undefined, hasDefault: false, primary: true, increments: true, places: null, values: null },
+            { name: 'email', type: 'string', nullable: false, default: undefined, hasDefault: false, primary: false, increments: false, places: null, values: null },
+            { name: 'name', type: 'string', nullable: false, default: undefined, hasDefault: false, primary: false, increments: false, places: null, values: null },
+            { name: 'city', type: 'string', nullable: true, default: undefined, hasDefault: false, primary: false, increments: false, places: null, values: null },
+            { name: 'age', type: 'integer', nullable: true, default: undefined, hasDefault: false, primary: false, increments: false, places: null, values: null },
+            { name: 'nickname', type: 'string', nullable: true, default: undefined, hasDefault: false, primary: false, increments: false, places: null, values: null },
+            { name: 'note', type: 'string', nullable: true, default: undefined, hasDefault: false, primary: false, increments: false, places: null, values: null },
+        ],
+        indexes   : [
+            { name: 'users_email_unique', columns: ['email'], unique: true, multiEntry: false },
+            { name: 'users_name_index', columns: ['name'], unique: false, multiEntry: false },
+            { name: 'users_city_age_index', columns: ['city', 'age'], unique: false, multiEntry: false },
+            { name: 'by_nickname', columns: ['nickname'], unique: false, multiEntry: false },
+        ],
+    };
+
+    test('moves a single column index onto the new name, regenerating the name it was generated with', (): void => {
+        const blueprint: Blueprint = new Blueprint('users', existing);
+
+        blueprint.renameColumn('email', 'mail');
+
+        const moved: IndexSchema = { name: 'users_mail_unique', columns: ['mail'], unique: true, multiEntry: false };
+
+        expect(blueprint.toSchema().indexes).toEqual([moved, ...existing.indexes.slice(1)]);
+        expect(blueprint.operations().unindexed).toEqual(['users_email_unique']);
+        expect(blueprint.operations().indexed).toEqual([moved]);
+    });
+
+    test('renames a column inside a compound index, keeping its other columns and their order', (): void => {
+        const blueprint: Blueprint = new Blueprint('users', existing);
+
+        blueprint.renameColumn('age', 'years');
+
+        const moved: IndexSchema = { name: 'users_city_years_index', columns: ['city', 'years'], unique: false, multiEntry: false };
+
+        expect(blueprint.toSchema().indexes[2]).toEqual(moved);
+        expect(blueprint.operations().unindexed).toEqual(['users_city_age_index']);
+        expect(blueprint.operations().indexed).toEqual([moved]);
+    });
+
+    test('keeps the name of a hand-named index through a rename', (): void => {
+        const blueprint: Blueprint = new Blueprint('users', existing);
+
+        blueprint.renameColumn('nickname', 'handle');
+
+        const moved: IndexSchema = { name: 'by_nickname', columns: ['handle'], unique: false, multiEntry: false };
+
+        expect(blueprint.toSchema().indexes[3]).toEqual(moved);
+        expect(blueprint.operations().unindexed).toEqual(['by_nickname']);
+        expect(blueprint.operations().indexed).toEqual([moved]);
+    });
+
+    test('drops an index over the dropped column alone', (): void => {
+        const blueprint: Blueprint = new Blueprint('users', existing);
+
+        blueprint.dropColumn('email');
+
+        expect(blueprint.toSchema().indexes).toEqual(existing.indexes.slice(1));
+        expect(blueprint.operations().unindexed).toEqual(['users_email_unique']);
+        expect(blueprint.operations().indexed).toEqual([]);
+    });
+
+    test('refuses to drop a column a compound index still needs', (): void => {
+        const blueprint: Blueprint = new Blueprint('users', existing);
+
+        blueprint.dropColumn('age');
+
+        const refusal: SchemaException = new SchemaException('Column [age] of table [users] may not be dropped while index [users_city_age_index] covers it. Drop the index first.');
+
+        expect((): TableSchema => blueprint.toSchema()).toThrow(refusal);
+        expect((): BlueprintOperations => blueprint.operations()).toThrow(refusal);
+    });
+
+    test('drops a column once the same blueprint drops the compound index that needs it', (): void => {
+        const blueprint: Blueprint = new Blueprint('users', existing);
+
+        blueprint.dropColumn('age');
+        blueprint.dropIndex('users_city_age_index');
+
+        expect(blueprint.toSchema().indexes.map((index: IndexSchema): string => index.name)).toEqual(['users_email_unique', 'users_name_index', 'by_nickname']);
+        expect(blueprint.operations().unindexed).toEqual(['users_city_age_index']);
+    });
+
+    test('drops a compound index along with every column it covers', (): void => {
+        const blueprint: Blueprint = new Blueprint('users', existing);
+
+        blueprint.dropColumn('city', 'age');
+
+        expect(blueprint.toSchema().indexes.map((index: IndexSchema): string => index.name)).toEqual(['users_email_unique', 'users_name_index', 'by_nickname']);
+        expect(blueprint.operations().unindexed).toEqual(['users_city_age_index']);
+    });
+
+    test.each([
+        ['renaming', (blueprint: Blueprint): void => blueprint.renameColumn('note', 'memo')],
+        ['dropping', (blueprint: Blueprint): void => blueprint.dropColumn('note')],
+    ] as [string, (blueprint: Blueprint) => void][])('leaves every index alone when %s a column no index covers', (_name: string, alter: (blueprint: Blueprint) => void): void => {
+        const blueprint: Blueprint = new Blueprint('users', existing);
+
+        alter(blueprint);
+
+        expect(blueprint.toSchema().indexes).toEqual(existing.indexes);
+        expect(blueprint.operations().unindexed).toEqual([]);
+        expect(blueprint.operations().indexed).toEqual([]);
+    });
+
+    test('deletes a moved index a change under the new name leaves out', (): void => {
+        const blueprint: Blueprint = new Blueprint('users', existing);
+
+        blueprint.renameColumn('name', 'title');
+        blueprint.string('title').nullable().change();
+
+        expect(blueprint.toSchema().indexes.map((index: IndexSchema): string => index.name)).toEqual(['users_email_unique', 'users_city_age_index', 'by_nickname']);
+        expect(blueprint.operations().unindexed).toEqual(['users_name_index']);
+        expect(blueprint.operations().indexed).toEqual([]);
+    });
+
+    test('moves an index once when a change under the new name declares it again', (): void => {
+        const blueprint: Blueprint = new Blueprint('users', existing);
+
+        blueprint.renameColumn('name', 'title');
+        blueprint.string('title').nullable().index().change();
+
+        const moved: IndexSchema = { name: 'users_title_index', columns: ['title'], unique: false, multiEntry: false };
+
+        expect(blueprint.toSchema().indexes[1]).toEqual(moved);
+        expect(blueprint.operations().unindexed).toEqual(['users_name_index']);
+        expect(blueprint.operations().indexed).toEqual([moved]);
+    });
+});
