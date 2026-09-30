@@ -16,6 +16,11 @@ interface Item {
     seen: Date | null;
 }
 
+interface Ranked extends Item {
+    rank: number | null;
+    tier?: number;
+}
+
 type Copy = 'indexed' | 'plain';
 
 type Truth = boolean | null;
@@ -31,6 +36,16 @@ type Typed = 'id' | 'role' | 'visits' | 'score' | 'active' | 'seen';
 type Kind = 'integer' | 'float' | 'boolean' | 'datetime' | 'string';
 
 type Sample = [Typed, unknown[], [unknown, unknown][]];
+
+type Ranking = 'rank' | 'tier';
+
+type Direction = 'asc' | 'desc';
+
+type Page = [number, number | null];
+
+type Ordering = [Ranking, Direction, Page];
+
+type Reorder = [string, Ranking, Direction, Page, (query: Builder<Ranked>) => Promise<number>, (row: Ranked) => Ranked | null];
 
 const OPERATORS: Operator[] = ['=', '==', '===', '!=', '<>', '!==', '<', '>', '<=', '>='];
 
@@ -112,6 +127,32 @@ const SHIFTS: Write[] = [
     ['an update of that column', (query: Builder<Item>): Promise<number> => query.update({ visits: 1 }), (row: Item): Item => ({ ...row, visits: 1 })],
 ];
 
+const RANKS: Record<number, number | null> = { 1: null, 2: 4, 3: 2, 4: 1, 5: 3 };
+
+const TIERS: Record<number, number> = { 1: 10, 3: 20, 4: 40, 5: 30 };
+
+const RANKED: Ranked[] = ROWS.map((row: Item): Ranked => ({ ...row, rank: RANKS[row.id] as number | null }));
+
+const TIERED: Ranked[] = RANKED.map((row: Ranked): Ranked => row.id in TIERS ? { ...row, tier: TIERS[row.id] as number } : row);
+
+const ORDERINGS: Ordering[] = [
+    ['rank', 'asc', [0, null]],
+    ['rank', 'desc', [0, null]],
+    ['tier', 'asc', [0, null]],
+    ['tier', 'desc', [0, null]],
+    ['rank', 'asc', [0, 1]],
+    ['rank', 'desc', [3, 2]],
+    ['tier', 'asc', [0, 2]],
+    ['tier', 'desc', [4, null]],
+];
+
+const REORDERS: Reorder[] = [
+    ['delete', 'rank', 'asc', [0, 1], (query: Builder<Ranked>): Promise<number> => query.delete(), (): null => null],
+    ['delete', 'tier', 'desc', [4, null], (query: Builder<Ranked>): Promise<number> => query.delete(), (): null => null],
+    ['update of the ordering column', 'rank', 'asc', [0, 2], (query: Builder<Ranked>): Promise<number> => query.update({ rank: 9 }), (row: Ranked): Ranked => ({ ...row, rank: 9 })],
+    ['increment', 'tier', 'asc', [0, 1], (query: Builder<Ranked>): Promise<number> => query.increment('visits'), (row: Ranked): Ranked => ({ ...row, visits: row.visits + 1 })],
+];
+
 class CreateItemsTables extends Migration {
     /**
      * Run the migration.
@@ -135,6 +176,36 @@ class CreateItemsTables extends Migration {
             table.float('score').nullable();
             table.boolean('active').nullable();
             table.datetime('seen').nullable();
+        });
+    }
+}
+
+class AddRankToItemsTables extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        await Schema.table('indexed', (table: Blueprint): void => {
+            table.integer('rank').index();
+        });
+
+        await Schema.table('plain', (table: Blueprint): void => {
+            table.integer('rank');
+        });
+    }
+}
+
+class AddTierToItemsTables extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        await Schema.table('indexed', (table: Blueprint): void => {
+            table.integer('tier').index();
+        });
+
+        await Schema.table('plain', (table: Blueprint): void => {
+            table.integer('tier');
         });
     }
 }
@@ -272,6 +343,40 @@ function within(held: unknown, values: unknown[]): Truth {
 }
 
 /**
+ * Apply the documented order to rows, which puts a null or missing value first ascending and last descending.
+ */
+function ordered(rows: Ranked[], column: Ranking, direction: Direction): Ranked[] {
+    const sign: number = direction === 'desc' ? -1 : 1;
+
+    return [...rows].sort((a: Ranked, b: Ranked): number => {
+        const left: number | null | undefined = a[column];
+        const right: number | null | undefined = b[column];
+
+        if (absent(left) || absent(right)) {
+            return sign * (Number(!absent(left)) - Number(!absent(right)));
+        }
+
+        return sign * ((left as number) - (right as number));
+    });
+}
+
+/**
+ * Apply an offset and a limit to rows.
+ */
+function paged<R>(rows: R[], [offset, limit]: Page): R[] {
+    return rows.slice(offset, limit === null ? undefined : offset + limit);
+}
+
+/**
+ * Order a query and apply an offset and a limit to it.
+ */
+function arranged<T extends Item>(query: Builder<T>, column: Ranking, direction: Direction, [offset, limit]: Page): Builder<T> {
+    const sorted: Builder<T> = query.orderBy(column, direction).offset(offset);
+
+    return limit === null ? sorted : sorted.limit(limit);
+}
+
+/**
  * Get the rows the reference model keeps for a whereIn.
  */
 function kept(column: 'id' | 'role', values: unknown[]): Item[] {
@@ -295,10 +400,10 @@ function sorted(rows: Item[]): Item[] {
 /**
  * Run one query against both copies of the table.
  */
-async function both<R>(run: (query: Builder<Item>) => Promise<R>): Promise<Record<Copy, R>> {
+async function both<R, T extends Item = Item>(run: (query: Builder<T>) => Promise<R>): Promise<Record<Copy, R>> {
     return {
-        indexed: await run(connection.table<Item>('indexed')),
-        plain  : await run(connection.table<Item>('plain')),
+        indexed: await run(connection.table<T>('indexed')),
+        plain  : await run(connection.table<T>('plain')),
     };
 }
 
@@ -374,5 +479,49 @@ describe.each([...CASES, ...EXTRAS])('%s', (_: string, constrain: (query: Builde
         }));
 
         expect(answers).toEqual({ indexed: { rows: expected, count: expected.length }, plain: { rows: expected, count: expected.length } });
+    });
+});
+
+describe('ordering through an index that leaves records out', (): void => {
+    beforeEach(async (): Promise<void> => {
+        const database: string = `invariance-loose-${++sequence}`;
+        const first: Connection = new Connection('app', { database, migrations: [CreateItemsTables, AddRankToItemsTables], strict: false });
+
+        await first.migrate();
+        await first.table<Ranked>('indexed').insert(RANKED);
+        await first.table<Ranked>('plain').insert(RANKED);
+
+        first.disconnect();
+
+        connection = new Connection('app', { database, migrations: [CreateItemsTables, AddRankToItemsTables, AddTierToItemsTables], strict: false });
+
+        await connection.migrate();
+
+        for (const [id, tier] of Object.entries(TIERS)) {
+            await both((query: Builder<Ranked>): Promise<number> => query.where('id', Number(id)).update({ tier }));
+        }
+    });
+
+    test.each(ORDERINGS)('orderBy(%s, %s) paged by %j gives the same rows through an index, through a scan and from the model', async (column: Ranking, direction: Direction, page: Page): Promise<void> => {
+        const expected: number[] = paged(ordered(TIERED, column, direction), page).map((row: Ranked): number => row.id);
+
+        const answers: Record<Copy, { rows: number[]; count: number }> = await both(async (query: Builder<Item>): Promise<{ rows: number[]; count: number }> => ({
+            rows : (await arranged(query.clone(), column, direction, page).get()).map((row: Item): number => row.id),
+            count: await query.orderBy(column, direction).count(),
+        }));
+
+        expect(answers).toEqual({ indexed: { rows: expected, count: TIERED.length }, plain: { rows: expected, count: TIERED.length } });
+    });
+
+    test.each(REORDERS)('a limited %s ordered by %s %s and paged by %j writes the same rows through an index, through a scan and in the model', async (_: string, column: Ranking, direction: Direction, page: Page, write: (query: Builder<Ranked>) => Promise<number>, change: (row: Ranked) => Ranked | null): Promise<void> => {
+        const chosen: Ranked[] = paged(ordered(TIERED, column, direction), page);
+        const left: Ranked[] = TIERED
+            .map((row: Ranked): Ranked | null => chosen.includes(row) ? change(row) : row)
+            .filter((row: Ranked | null): row is Ranked => row !== null);
+
+        const affected: Record<Copy, number> = await both((query: Builder<Ranked>): Promise<number> => write(arranged(query, column, direction, page)));
+
+        expect(affected).toEqual({ indexed: chosen.length, plain: chosen.length });
+        expect({ indexed: await raw('indexed'), plain: await raw('plain') }).toEqual({ indexed: sorted(left), plain: sorted(left) });
     });
 });

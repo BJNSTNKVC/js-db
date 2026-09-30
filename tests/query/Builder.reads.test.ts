@@ -55,6 +55,47 @@ class CreateUsersTable extends Migration {
     }
 }
 
+class CreateRanksTables extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        await Schema.create('ranks', (table: Blueprint): void => {
+            table.id();
+            table.string('name');
+            table.integer('rank').index();
+        });
+
+        await Schema.create('levels', (table: Blueprint): void => {
+            table.id();
+            table.string('name');
+            table.integer('level').index();
+        });
+
+        await Schema.create('flags', (table: Blueprint): void => {
+            table.id();
+            table.string('name');
+            table.boolean('active').index();
+        });
+    }
+}
+
+class AddTierToRanksTable extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        await Schema.table('ranks', (table: Blueprint): void => {
+            table.integer('tier').index();
+        });
+    }
+}
+
+interface Named {
+    id: number;
+    name: string;
+}
+
 interface Log {
     id: number;
     level: string;
@@ -732,6 +773,133 @@ describe('Builder plans', (): void => {
         await users().find(1);
 
         expect(seen).toEqual(['key']);
+    });
+});
+
+describe('Builder ordering through an index that leaves records out', (): void => {
+    let loose: Connection;
+
+    /**
+     * Begin a query against a table on the loose connection.
+     */
+    function table(name: string): Builder<Named> {
+        return loose.table<Named>(name);
+    }
+
+    /**
+     * Run a query, collecting the plans it announces.
+     */
+    async function planned(run: () => Promise<unknown>): Promise<string[]> {
+        const plans: string[] = [];
+        const listener: (event: Event) => void = ((event: QueryExecuted): void => {
+            plans.push(event.plan);
+        }) as (event: Event) => void;
+
+        Dispatcher.listen('db:query', listener);
+
+        try {
+            await run();
+        } finally {
+            Dispatcher.forget('db:query', listener);
+        }
+
+        return plans;
+    }
+
+    beforeAll(async (): Promise<void> => {
+        loose = new Connection('app', { database: 'builder-reads-ranks', migrations: [CreateRanksTables], strict: false });
+
+        await loose.migrate();
+        await loose.table('ranks').insert([{ name: 'Alice', rank: null }, { name: 'Bob', rank: 1 }, { name: 'Carol', rank: 2 }]);
+        await loose.table('levels').insert([{ name: 'Bob', level: 2 }, { name: 'Carol', level: 1 }]);
+        await loose.table('flags').insert([{ name: 'Alice', active: true }, { name: 'Bob', active: false }, { name: 'Carol', active: true }]);
+
+        const database: IDBDatabase = await loose.open();
+        const transaction: IDBTransaction = database.transaction('levels', 'readwrite');
+
+        transaction.objectStore('levels').add({ name: 'Alice' });
+
+        await new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
+            transaction.oncomplete = (): void => resolve();
+            transaction.onerror = (): void => reject(transaction.error);
+        });
+    });
+
+    test.each([
+        ['ranks', 'rank', 'asc', ['Alice', 'Bob', 'Carol']],
+        ['ranks', 'rank', 'desc', ['Carol', 'Bob', 'Alice']],
+        ['levels', 'level', 'asc', ['Alice', 'Carol', 'Bob']],
+        ['levels', 'level', 'desc', ['Bob', 'Carol', 'Alice']],
+        ['flags', 'active', 'asc', ['Bob', 'Alice', 'Carol']],
+        ['flags', 'active', 'desc', ['Alice', 'Carol', 'Bob']],
+    ] as [string, string, 'asc' | 'desc', string[]][])('orders every record of %s by %s %s', async (name: string, column: string, direction: 'asc' | 'desc', expected: string[]): Promise<void> => {
+        expect(await table(name).orderBy(column, direction).pluck('name')).toEqual(expected);
+    });
+
+    test('gets the first record in the requested order', async (): Promise<void> => {
+        expect((await table('ranks').orderBy('rank').first())?.name).toEqual('Alice');
+        expect((await table('levels').orderBy('level').first())?.name).toEqual('Alice');
+        expect((await table('ranks').orderBy('rank', 'desc').first())?.name).toEqual('Carol');
+    });
+
+    test('applies a limit and an offset in the requested order', async (): Promise<void> => {
+        expect(await table('ranks').orderBy('rank').limit(2).pluck('name')).toEqual(['Alice', 'Bob']);
+        expect(await table('ranks').orderBy('rank', 'desc').offset(2).limit(1).pluck('name')).toEqual(['Alice']);
+        expect(await table('flags').orderBy('active').limit(1).pluck('name')).toEqual(['Bob']);
+    });
+
+    test.each([
+        ['ranks', 'rank'],
+        ['levels', 'level'],
+        ['flags', 'active'],
+    ])('counts every record of %s ordered by %s', async (name: string, column: string): Promise<void> => {
+        expect(await table(name).orderBy(column).count()).toEqual(3);
+    });
+
+    test('sorts in memory once the index proves incomplete', async (): Promise<void> => {
+        expect(await planned((): Promise<unknown> => table('ranks').orderBy('rank').get())).toEqual(['scan']);
+        expect(await table('ranks').orderBy('rank').explain()).toEqual('scan');
+    });
+
+    test('still orders through an index that holds every record', async (): Promise<void> => {
+        expect(await planned((): Promise<unknown> => users().orderBy('name', 'desc').get())).toEqual(['index:users_name_index']);
+        expect(await users().orderBy('name', 'desc').explain()).toEqual('index:users_name_index');
+        expect(await names(users().orderBy('name', 'desc'))).toEqual(['Erin', 'Dave', 'Carol', 'Bob', 'Alice']);
+    });
+
+    test.each([
+        ['a range on the ordering column', 'index:ranks_rank_index', (query: Builder<Named>): Builder<Named> => query.where('rank', '>', 0).orderBy('rank'), ['Bob', 'Carol']],
+        ['a point lookup on the ordering column', 'index:ranks_rank_index', (query: Builder<Named>): Builder<Named> => query.where('rank', 2).orderBy('rank', 'desc'), ['Carol']],
+        ['point lookups on the ordering column', 'index:ranks_rank_index', (query: Builder<Named>): Builder<Named> => query.whereIn('rank', [2, 1]).orderBy('rank'), ['Bob', 'Carol']],
+        ['the key path', 'key', (query: Builder<Named>): Builder<Named> => query.orderBy('id', 'desc'), ['Carol', 'Bob', 'Alice']],
+    ] as [string, string, (query: Builder<Named>) => Builder<Named>, string[]][])('orders through %s without counting', async (_: string, plan: string, shape: (query: Builder<Named>) => Builder<Named>, expected: string[]): Promise<void> => {
+        const counts: MockInstance[] = [vi.spyOn(IDBIndex.prototype, 'count'), vi.spyOn(IDBObjectStore.prototype, 'count')];
+        let found: string[] = [];
+
+        expect(await planned(async (): Promise<void> => {
+            found = (await shape(table('ranks')).get()).map((record: Named): string => record.name);
+        })).toEqual([plan]);
+        expect(found).toEqual(expected);
+        expect(counts.map((count: MockInstance): number => count.mock.calls.length)).toEqual([0, 0]);
+    });
+
+    test('orders the rows that existed before a migration added the column', async (): Promise<void> => {
+        const first: Connection = new Connection('app', { database: 'builder-reads-tiers', migrations: [CreateRanksTables] });
+
+        await first.migrate();
+        await first.table('ranks').insert([{ name: 'Old One', rank: 1 }, { name: 'Old Two', rank: 2 }]);
+
+        first.disconnect();
+
+        const second: Connection = new Connection('app', { database: 'builder-reads-tiers', migrations: [CreateRanksTables, AddTierToRanksTable] });
+
+        await second.migrate();
+        await second.table('ranks').insert([{ name: 'New', rank: 3, tier: 1 }]);
+
+        expect(await second.table<Named>('ranks').orderBy('tier').pluck('name')).toEqual(['Old One', 'Old Two', 'New']);
+        expect(await second.table<Named>('ranks').orderBy('tier', 'desc').pluck('name')).toEqual(['New', 'Old One', 'Old Two']);
+
+        second.disconnect();
     });
 });
 

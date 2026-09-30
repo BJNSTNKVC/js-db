@@ -44,7 +44,7 @@ export class Executor<T> {
     async explain(): Promise<string> {
         const schema: TableSchema = await this.#connection.schema(this.#query.table);
 
-        return Planner.describe(Planner.plan(this.#prepared(schema), this.#orders(), schema));
+        return Planner.describe(await this.#planned(schema, await this.#store('readonly')));
     }
 
     /**
@@ -107,7 +107,7 @@ export class Executor<T> {
      */
     async count(): Promise<number> {
         const schema: TableSchema = await this.#connection.schema(this.#query.table);
-        const plan: Plan = Planner.plan(this.#prepared(schema), this.#orders(), schema);
+        const plan: Plan = Planner.plan(this.#prepared(schema), [], schema);
 
         if (plan.residual.length > 0 || plan.values !== null) {
             return (await this.records()).length;
@@ -239,9 +239,9 @@ export class Executor<T> {
         }
 
         const schema: TableSchema = await this.#connection.schema(this.#query.table);
-        const plan: Plan = Planner.plan(this.#prepared(schema), this.#orders(), schema);
         const store: IDBObjectStore = await this.#store('readwrite');
         const started: number = performance.now();
+        const plan: Plan = await this.#planned(schema, store);
         const matches: (record: Record<string, unknown>) => boolean = Predicate.compile(plan.residual);
         const limit: number | null = this.#query.limit;
         const offset: number = this.#query.offset;
@@ -397,6 +397,25 @@ export class Executor<T> {
     }
 
     /**
+     * Plan the query, setting the orders aside when the index they would walk leaves records out.
+     */
+    async #planned(schema: TableSchema, store: IDBObjectStore): Promise<Plan> {
+        const constraints: Constraint[] = this.#prepared(schema);
+        const plan: Plan = Planner.plan(constraints, this.#orders(), schema);
+
+        if (!plan.ordered || plan.index === null || plan.range !== null) {
+            return plan;
+        }
+
+        const [held, total]: [number, number] = await Promise.all([
+            Request.settle(store.index(plan.index).count()),
+            Request.settle(store.count()),
+        ]);
+
+        return held === total ? plan : Planner.plan(constraints, [], schema);
+    }
+
+    /**
      * Get the single column index that can answer an unconstrained extreme, if there is one.
      */
     async #sole(column: string): Promise<IndexSchema | null> {
@@ -422,9 +441,9 @@ export class Executor<T> {
         }
 
         const schema: TableSchema = await this.#connection.schema(this.#query.table);
-        const plan: Plan = Planner.plan(this.#prepared(schema), this.#orders(), schema);
         const store: IDBObjectStore = await this.#store('readonly');
         const started: number = performance.now();
+        const plan: Plan = await this.#planned(schema, store);
         const matches: (record: Record<string, unknown>) => boolean = Predicate.compile(plan.residual);
 
         const collected: Entry<T>[] = plan.values === null

@@ -26,6 +26,12 @@ interface User {
     updated_at: Date | null;
 }
 
+interface Ranked {
+    id: number;
+    name: string;
+    rank: number | null;
+}
+
 interface Entry {
     id: number;
     label: string;
@@ -77,6 +83,19 @@ class CreateUsersTable extends Migration {
             table.id();
             table.integer('code').unique();
             table.string('label');
+        });
+    }
+}
+
+class CreateRanksTable extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        await Schema.create('ranks', (table: Blueprint): void => {
+            table.id();
+            table.string('name');
+            table.integer('rank').index();
         });
     }
 }
@@ -576,6 +595,63 @@ describe('Builder ordered writes with a limit or offset', (): void => {
         expect(await users().orderBy('email', 'desc').limit(1).delete()).toEqual(1);
         expect(seen).toEqual([['index:users_email_unique', 1]]);
         expect(await users().orderBy('name').pluck('name')).toEqual(['Alice', 'Bob']);
+    });
+});
+
+describe('Builder ordered writes through an index that leaves records out', (): void => {
+    let loose: Connection;
+
+    /**
+     * Begin a query against the ranks table on the loose connection.
+     */
+    function ranks(): Builder<Ranked> {
+        return loose.table<Ranked>('ranks');
+    }
+
+    beforeEach(async (): Promise<void> => {
+        loose = new Connection('app', { database: `builder-writes-ranks-${++sequence}`, migrations: [CreateRanksTable], strict: false });
+
+        await loose.migrate();
+        await ranks().insert([{ name: 'Alice', rank: null }, { name: 'Bob', rank: 1 }, { name: 'Carol', rank: 2 }]);
+    });
+
+    afterEach((): void => {
+        loose.disconnect();
+    });
+
+    test('deletes the first record in the requested order', async (): Promise<void> => {
+        expect(await ranks().orderBy('rank').limit(1).delete()).toEqual(1);
+        expect(await ranks().pluck('name')).toEqual(['Bob', 'Carol']);
+    });
+
+    test('skips the offset in a descending order', async (): Promise<void> => {
+        expect(await ranks().orderBy('rank', 'desc').offset(2).delete()).toEqual(1);
+        expect(await ranks().pluck('name')).toEqual(['Bob', 'Carol']);
+    });
+
+    test('updates the first record when the write changes the ordering column', async (): Promise<void> => {
+        expect(await ranks().orderBy('rank').limit(1).update({ rank: 5 })).toEqual(1);
+        expect(await ranks().pluck('rank')).toEqual([5, 1, 2]);
+    });
+
+    test('deletes the first record in the requested order inside a transaction', async (): Promise<void> => {
+        await loose.transaction(async (transaction: Transaction): Promise<void> => {
+            expect(await transaction.table<Ranked>('ranks').orderBy('rank').limit(1).delete()).toEqual(1);
+        });
+
+        expect(await ranks().pluck('name')).toEqual(['Bob', 'Carol']);
+    });
+
+    test('announces the write as the scan it falls back to', async (): Promise<void> => {
+        const seen: [string, number][] = [];
+
+        Dispatcher.listen('db:query', ((event: QueryExecuted): void => {
+            seen.push([event.plan, event.records]);
+        }) as (event: Event) => void, true);
+
+        await ranks().orderBy('rank').limit(1).delete();
+
+        expect(seen).toEqual([['scan', 1]]);
     });
 });
 
