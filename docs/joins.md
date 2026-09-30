@@ -86,11 +86,14 @@ await DB.table('users')
 
 ## What joins cost, and what they do not support
 
-IndexedDB has no join, so every one is performed in memory. A single equality condition uses a hash
-join, and anything else falls back to a nested loop. The `where` clauses still narrow each table through
-the planner, but the join itself reads both sides in full, so memory is proportional to the tables
-involved. That is fine at the data volumes a browser holds, and worth knowing before joining two
-large tables.
+IndexedDB has no join, so every one is performed in memory. A single equality between a column of
+the joined table and one of the tables before it uses a hash join when both columns hold values of
+one type, and anything else falls back to a nested loop. Either way a condition matches the rows
+`whereColumn` would, so a number matches the same number held as a string, two dates match when they
+name the same moment, and a null or missing value matches nothing. The `where` clauses still narrow
+each table through the planner, but the join itself reads both sides in full, so memory is
+proportional to the tables involved. That is fine at the data volumes a browser holds, and worth
+knowing before joining two large tables.
 
 `orderBy` on a joined query always sorts in memory, since the row is synthesised and no index covers
 it, and `chunk` slices the materialised result rather than walking keys.

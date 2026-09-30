@@ -2,6 +2,11 @@ import { Columns } from './Columns';
 import { Predicate } from './Predicate';
 import type { Conjunction, Constraint, JoinClause, JoinCondition, Projection } from './types';
 
+interface Hash {
+    probe: string;
+    rows: Map<unknown, Record<string, unknown>[]>;
+}
+
 export class Joiner {
     /**
      * Prefix every key of the given records with the table that owns it.
@@ -88,14 +93,14 @@ export class Joiner {
      * Pair each row of the driving side with the rows of the other that satisfy the conditions.
      */
     static #matched(driving: Record<string, unknown>[], other: Record<string, unknown>[], clause: JoinClause, columns: string[]): Record<string, unknown>[] {
-        const hashed: Map<unknown, Record<string, unknown>[]> | null = this.#hashable(clause) ? this.#hash(other, clause) : null;
+        const hash: Hash | null = this.#hash(driving, other, clause);
         const matches: (row: Record<string, unknown>) => boolean = Predicate.compile(this.#constraints(clause));
         const joined: Record<string, unknown>[] = [];
 
         for (const row of driving) {
-            const candidates: Record<string, unknown>[] = hashed === null
+            const candidates: Record<string, unknown>[] = hash === null
                 ? other
-                : hashed.get(Columns.read(row, (clause.conditions[0] as JoinCondition).first)) ?? [];
+                : hash.rows.get(this.#key(Columns.read(row, hash.probe))) ?? [];
 
             const paired: Record<string, unknown>[] = candidates
                 .map((candidate: Record<string, unknown>): Record<string, unknown> => ({ ...row, ...candidate }))
@@ -116,27 +121,36 @@ export class Joiner {
     }
 
     /**
-     * Determine whether the conditions reduce to a single equality, which a hash can serve.
+     * Index the other side by its join column, when a lookup there finds every row the conditions match.
      */
-    static #hashable(clause: JoinClause): boolean {
-        const condition: JoinCondition | undefined = clause.conditions[0];
+    static #hash(driving: Record<string, unknown>[], other: Record<string, unknown>[], clause: JoinClause): Hash | null {
+        const sides: [string, string] | null = this.#sides(clause);
 
-        return clause.conditions.length === 1 && condition?.operator === '=';
-    }
+        if (sides === null) {
+            return null;
+        }
 
-    /**
-     * Index the other side by the value its join column holds.
-     */
-    static #hash(records: Record<string, unknown>[], clause: JoinClause): Map<unknown, Record<string, unknown>[]> {
-        const column: string = (clause.conditions[0] as JoinCondition).second;
-        const hashed: Map<unknown, Record<string, unknown>[]> = new Map<unknown, Record<string, unknown>[]>();
+        const [probe, column]: [string, string] = sides;
+        const probes: unknown[] = driving.map((row: Record<string, unknown>): unknown => this.#key(Columns.read(row, probe)));
+        const keys: unknown[] = other.map((record: Record<string, unknown>): unknown => this.#key(Columns.read(record, column)));
 
-        for (const record of records) {
-            const key: unknown = Columns.read(record, column);
-            const bucket: Record<string, unknown>[] | undefined = hashed.get(key);
+        if (new Set([...probes, ...keys].filter((key: unknown): boolean => !this.#missing(key)).map((key: unknown): string => typeof key)).size > 1) {
+            return null;
+        }
+
+        const rows: Map<unknown, Record<string, unknown>[]> = new Map<unknown, Record<string, unknown>[]>();
+
+        for (const [index, record] of other.entries()) {
+            const key: unknown = keys[index];
+
+            if (this.#missing(key)) {
+                continue;
+            }
+
+            const bucket: Record<string, unknown>[] | undefined = rows.get(key);
 
             if (bucket === undefined) {
-                hashed.set(key, [record]);
+                rows.set(key, [record]);
 
                 continue;
             }
@@ -144,7 +158,42 @@ export class Joiner {
             bucket.push(record);
         }
 
-        return hashed;
+        return { probe, rows };
+    }
+
+    /**
+     * Get the column the driving side looks up by and the one the other side is indexed by, when the conditions reduce to a single equality between the joined table and the rest.
+     */
+    static #sides(clause: JoinClause): [string, string] | null {
+        const condition: JoinCondition | undefined = clause.conditions[0];
+
+        if (clause.conditions.length !== 1 || condition?.operator !== '=') {
+            return null;
+        }
+
+        const joined: (column: string) => boolean = (column: string): boolean => column.startsWith(`${clause.table}.`);
+
+        if (joined(condition.first) === joined(condition.second)) {
+            return null;
+        }
+
+        const [inside, outside]: [string, string] = joined(condition.first) ? [condition.first, condition.second] : [condition.second, condition.first];
+
+        return clause.type === 'right' ? [inside, outside] : [outside, inside];
+    }
+
+    /**
+     * Reduce a join value to the form the comparison sees, so a date becomes its time.
+     */
+    static #key(value: unknown): unknown {
+        return value instanceof Date ? value.getTime() : value;
+    }
+
+    /**
+     * Determine whether a join value is null or missing, which matches nothing.
+     */
+    static #missing(value: unknown): boolean {
+        return value === null || value === undefined;
     }
 
     /**

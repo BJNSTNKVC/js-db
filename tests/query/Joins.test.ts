@@ -1,14 +1,16 @@
-import { beforeAll, beforeEach, describe, expect, test } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { Connection } from '../../src/database/Connection';
 import { Migration } from '../../src/migrations/Migration';
 import { Schema } from '../../src/schema/Schema';
 import { Blueprint } from '../../src/schema/Blueprint';
 import { Dispatcher } from '../../src/events/Dispatcher';
 import { SchemaException } from '../../src/exceptions';
+import { Predicate } from '../../src/query/Predicate';
 import type { Builder } from '../../src/query/Builder';
 import type { Transaction } from '../../src/database/Transaction';
 import type { Join } from '../../src/query/Join';
 import type { QueryExecuted } from '../../src/events';
+import type { Constraint } from '../../src/query/types';
 
 interface User {
     id: number;
@@ -851,5 +853,214 @@ describe('Values compared on a joined query', (): void => {
 
     test('converts a value given for an unqualified column', async (): Promise<void> => {
         expect(await codes((query: Builder<Pass>): Builder<Pass> => query.where('born', '>', '1988-01-01T00:00:00.000Z'))).toEqual(['A1', 'A2']);
+    });
+});
+
+interface Author {
+    id: number;
+    name: string;
+    joined: Date | null;
+}
+
+interface Entry {
+    id: number;
+    user_id: number | null;
+    author: string | null;
+    day: Date | null;
+    title: string;
+}
+
+interface Authored {
+    name: string | null;
+    title: string | null;
+}
+
+type Matching = Exclude<JoinKind, 'cross'>;
+
+class CreateAuthoredTables extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        await Schema.create('users', (table: Blueprint): void => {
+            table.id();
+            table.string('name');
+            table.datetime('joined').nullable();
+        });
+
+        await Schema.create('posts', (table: Blueprint): void => {
+            table.id();
+            table.integer('user_id').nullable();
+            table.string('author').nullable();
+            table.date('day').nullable();
+            table.string('title');
+        });
+    }
+}
+
+class AddOwnerToUsersTable extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        await Schema.table('users', (table: Blueprint): void => {
+            table.integer('owner').default('2');
+        });
+    }
+}
+
+const PAIRINGS: [string, string, string][] = [
+    ['a number against a string id', 'users.id', 'posts.author'],
+    ['two dates', 'users.joined', 'posts.day'],
+];
+
+const MATCHED: Record<Matching, string[]> = {
+    inner: ['Alice:First', 'Alice:Second', 'Bob:Third'],
+    left : ['Alice:First', 'Alice:Second', 'Bob:Third', 'Carol:null', 'Dave:null'],
+    right: ['Alice:First', 'Alice:Second', 'Bob:Third', 'null:Fourth'],
+};
+
+describe('Joins across the types the columns hold', (): void => {
+    let authored: Connection;
+
+    /**
+     * Begin a query against the users table of the authored database.
+     */
+    function authors(): Builder<Author> {
+        return authored.table<Author>('users');
+    }
+
+    /**
+     * Join the users to their posts on the given columns, in the order given, once or several times over.
+     */
+    function paired(kind: Matching, columns: [string, string], times: number = 1): Builder<Authored> {
+        const method: 'join' | 'leftJoin' | 'rightJoin' = kind === 'inner' ? 'join' : `${kind}Join`;
+
+        return authors()[method]<Authored>('posts', (join: Join): void => {
+            for (let index: number = 0; index < times; index++) {
+                join.on(columns[0], '=', columns[1]);
+            }
+        });
+    }
+
+    /**
+     * Get the name and title of every row a joined query returns, sorted.
+     */
+    async function rows(query: Builder<Authored>): Promise<string[]> {
+        return (await query.get()).map((row: Authored): string => `${row.name}:${row.title}`).sort();
+    }
+
+    /**
+     * Count the rows the join conditions are tested against while the given query runs.
+     */
+    async function tested(query: Builder<Authored>): Promise<number> {
+        const compile: typeof Predicate.compile = Predicate.compile.bind(Predicate);
+        let count: number = 0;
+
+        const spy = vi.spyOn(Predicate, 'compile').mockImplementation((constraints: readonly Constraint[]): ((record: Record<string, unknown>) => boolean) => {
+            const matches: (record: Record<string, unknown>) => boolean = compile(constraints);
+
+            if (constraints.length === 0 || constraints.some((constraint: Constraint): boolean => constraint.type !== 'column')) {
+                return matches;
+            }
+
+            return (record: Record<string, unknown>): boolean => {
+                count++;
+
+                return matches(record);
+            };
+        });
+
+        try {
+            await query.get();
+        } finally {
+            spy.mockRestore();
+        }
+
+        return count;
+    }
+
+    beforeEach(async (): Promise<void> => {
+        authored = new Connection('app', { database: `joins-authored-${++databases}`, migrations: [CreateAuthoredTables] });
+
+        await authored.migrate();
+
+        await authors().insert([
+            { name: 'Alice', joined: new Date('2024-01-01T00:00:00.000Z') },
+            { name: 'Bob', joined: new Date('2024-02-01T00:00:00.000Z') },
+            { name: 'Carol', joined: new Date('2024-03-01T00:00:00.000Z') },
+            { name: 'Dave', joined: null },
+        ]);
+
+        await authored.table<Entry>('posts').insert([
+            { user_id: 1, author: '1', day: new Date('2024-01-01T00:00:00.000Z'), title: 'First' },
+            { user_id: 1, author: '1', day: new Date('2024-01-01T00:00:00.000Z'), title: 'Second' },
+            { user_id: 2, author: '2', day: new Date('2024-02-01T00:00:00.000Z'), title: 'Third' },
+            { user_id: null, author: null, day: null, title: 'Fourth' },
+        ]);
+    });
+
+    describe.each(PAIRINGS)('on %s', (_: string, first: string, second: string): void => {
+        describe.each([
+            ['users', [first, second]],
+            ['posts', [second, first]],
+        ] as [string, [string, string]][])('written with the %s column first', (_side: string, columns: [string, string]): void => {
+            test.each(['inner', 'left', 'right'] as Matching[])('matches every pair through a %s join', async (kind: Matching): Promise<void> => {
+                expect(await rows(paired(kind, columns))).toEqual(MATCHED[kind]);
+            });
+
+            test.each(['inner', 'left', 'right'] as Matching[])('gives a %s join the rows of the same join with its condition repeated', async (kind: Matching): Promise<void> => {
+                expect(await rows(paired(kind, columns))).toEqual(await rows(paired(kind, columns, 2)));
+            });
+        });
+
+        test.each([
+            ['inner', [first, second]],
+            ['right', [second, first]],
+        ] as [Matching, [string, string]][])('updates the users a %s join keeps', async (kind: Matching, columns: [string, string]): Promise<void> => {
+            expect(await paired(kind, columns).update({ name: 'Author' })).toEqual(2);
+            expect((await authors().orderBy('id').get()).map((author: Author): string => author.name)).toEqual(['Author', 'Author', 'Carol', 'Dave']);
+        });
+
+        test.each([
+            ['inner', [first, second]],
+            ['right', [second, first]],
+        ] as [Matching, [string, string]][])('deletes the users a %s join keeps', async (kind: Matching, columns: [string, string]): Promise<void> => {
+            expect(await paired(kind, columns).delete()).toEqual(2);
+            expect((await authors().orderBy('id').get()).map((author: Author): string => author.name)).toEqual(['Carol', 'Dave']);
+        });
+    });
+
+    test('matches a condition between two columns of the joined table', async (): Promise<void> => {
+        const columns: [string, string] = ['posts.user_id', 'posts.id'];
+
+        expect(await rows(paired('inner', columns))).toEqual(['Alice:First', 'Bob:First', 'Carol:First', 'Dave:First']);
+        expect(await rows(paired('inner', columns))).toEqual(await rows(paired('inner', columns, 2)));
+    });
+
+    test.each([
+        ['two integers', 'inner', ['users.id', 'posts.user_id']],
+        ['two integers', 'inner', ['posts.user_id', 'users.id']],
+        ['two integers', 'right', ['users.id', 'posts.user_id']],
+        ['two integers', 'right', ['posts.user_id', 'users.id']],
+        ['two dates', 'inner', ['users.joined', 'posts.day']],
+        ['two dates', 'right', ['posts.day', 'users.joined']],
+    ] as [string, Matching, [string, string]][])('tests a join on %s through a %s join on %j only against the rows holding its value', async (_: string, kind: Matching, columns: [string, string]): Promise<void> => {
+        expect(await tested(paired(kind, columns))).toEqual(3);
+        expect(await tested(paired(kind, columns, 2))).toEqual(16);
+    });
+
+    test('tests every pair when the columns hold values of different types', async (): Promise<void> => {
+        expect(await tested(paired('inner', ['users.id', 'posts.author']))).toEqual(16);
+    });
+
+    test('matches a value a migration stored unconverted, though both columns are declared integers', async (): Promise<void> => {
+        authored.disconnect();
+
+        authored = new Connection('app', { database: `joins-authored-${databases}`, migrations: [CreateAuthoredTables, AddOwnerToUsersTable] });
+
+        await authored.migrate();
+
+        expect(await rows(paired('inner', ['users.owner', 'posts.user_id']))).toEqual(['Alice:Third', 'Bob:Third', 'Carol:Third', 'Dave:Third']);
     });
 });
