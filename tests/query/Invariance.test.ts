@@ -3,6 +3,7 @@ import { Connection } from '../../src/database/Connection';
 import { Migration } from '../../src/migrations/Migration';
 import { Schema } from '../../src/schema/Schema';
 import { Blueprint } from '../../src/schema/Blueprint';
+import { UniqueConstraintViolationException } from '../../src/exceptions';
 import type { Builder } from '../../src/query/Builder';
 import type { Operator } from '../../src/query/types';
 
@@ -19,6 +20,10 @@ interface Item {
 interface Ranked extends Item {
     rank: number | null;
     tier?: number;
+}
+
+interface Coded extends Item {
+    code: number;
 }
 
 type Copy = 'indexed' | 'plain';
@@ -46,6 +51,8 @@ type Page = [number, number | null];
 type Ordering = [Ranking, Direction, Page];
 
 type Reorder = [string, Ranking, Direction, Page, (query: Builder<Ranked>) => Promise<number>, (row: Ranked) => Ranked | null];
+
+type Collision = [string, (query: Builder<Coded>) => Promise<number>];
 
 const OPERATORS: Operator[] = ['=', '==', '===', '!=', '<>', '!==', '<', '>', '<=', '>='];
 
@@ -153,6 +160,13 @@ const REORDERS: Reorder[] = [
     ['increment', 'tier', 'asc', [0, 1], (query: Builder<Ranked>): Promise<number> => query.increment('visits'), (row: Ranked): Ranked => ({ ...row, visits: row.visits + 1 })],
 ];
 
+const CODED: Coded[] = ROWS.map((row: Item): Coded => ({ ...row, code: row.id * 10 }));
+
+const COLLISIONS: Collision[] = [
+    ['update', (query: Builder<Coded>): Promise<number> => query.orderBy('visits', 'desc').limit(1).update({ code: 10 })],
+    ['increment', (query: Builder<Coded>): Promise<number> => query.orderBy('visits', 'desc').limit(1).increment('code', -10)],
+];
+
 class CreateItemsTables extends Migration {
     /**
      * Run the migration.
@@ -206,6 +220,21 @@ class AddTierToItemsTables extends Migration {
 
         await Schema.table('plain', (table: Blueprint): void => {
             table.integer('tier');
+        });
+    }
+}
+
+class AddCodeToItemsTables extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        await Schema.table('indexed', (table: Blueprint): void => {
+            table.integer('code').unique();
+        });
+
+        await Schema.table('plain', (table: Blueprint): void => {
+            table.integer('code').unique();
         });
     }
 }
@@ -523,5 +552,29 @@ describe('ordering through an index that leaves records out', (): void => {
 
         expect(affected).toEqual({ indexed: chosen.length, plain: chosen.length });
         expect({ indexed: await raw('indexed'), plain: await raw('plain') }).toEqual({ indexed: sorted(left), plain: sorted(left) });
+    });
+});
+
+describe('unique violations on a unique column both copies hold', (): void => {
+    beforeEach(async (): Promise<void> => {
+        connection = new Connection('app', { database: `invariance-coded-${++sequence}`, migrations: [CreateItemsTables, AddCodeToItemsTables] });
+
+        await connection.migrate();
+        await connection.table<Coded>('indexed').insert(CODED);
+        await connection.table<Coded>('plain').insert(CODED);
+    });
+
+    test.each(COLLISIONS)('a limited %s that collides fails the same way through an index, through a scan and in the model', async (_: string, write: (query: Builder<Coded>) => Promise<number>): Promise<void> => {
+        const failures: Record<Copy, unknown> = await both((query: Builder<Coded>): Promise<unknown> => write(query).then(
+            (affected: number): unknown => affected,
+            (error: unknown): unknown => error instanceof UniqueConstraintViolationException ? error.message : error,
+        ));
+
+        expect(failures).toEqual({
+            indexed: new UniqueConstraintViolationException('indexed', 'indexed_code_unique').message,
+            plain  : new UniqueConstraintViolationException('plain', 'plain_code_unique').message,
+        });
+
+        expect({ indexed: await raw('indexed'), plain: await raw('plain') }).toEqual({ indexed: sorted(CODED), plain: sorted(CODED) });
     });
 });

@@ -1,6 +1,7 @@
 import { SchemaException, UniqueConstraintViolationException } from '../exceptions';
 import { Request } from '../database/Request';
 import { Enforcer } from '../schema/Enforcer';
+import { Signature } from './Signature';
 import type { IndexSchema, TableSchema } from '../schema/types';
 
 export class Writer {
@@ -13,15 +14,35 @@ export class Writer {
         try {
             return await Request.settle(store.add(prepared), true);
         } catch (error: unknown) {
-            if (error instanceof DOMException && error.name === 'ConstraintError') {
-                const index: string | null = await this.#violated(store, schema, prepared);
+            throw await this.attributed(store, schema, prepared, null, error);
+        }
+    }
 
-                if (index !== null) {
-                    throw new UniqueConstraintViolationException(schema.table, index);
-                }
+    /**
+     * Get the error a failed write reports, naming the unique index the record collided with when it can be found.
+     */
+    static async attributed(store: IDBObjectStore, schema: TableSchema, record: Record<string, unknown>, previous: Record<string, unknown> | null, error: unknown): Promise<unknown> {
+        if (error instanceof DOMException && error.name === 'ConstraintError') {
+            const index: string | null = await this.#violated(store, schema, record, previous);
+
+            if (index !== null) {
+                return new UniqueConstraintViolationException(schema.table, index);
             }
+        }
 
-            throw error;
+        return error;
+    }
+
+    /**
+     * Get the error a failed write reports, rolling back the transaction when the write opened it.
+     */
+    static async failed(store: IDBObjectStore, schema: TableSchema, record: Record<string, unknown>, previous: Record<string, unknown> | null, error: unknown, rollback: boolean): Promise<unknown> {
+        try {
+            return await this.attributed(store, schema, record, previous, error);
+        } finally {
+            if (rollback) {
+                store.transaction.abort();
+            }
         }
     }
 
@@ -60,9 +81,20 @@ export class Writer {
     /**
      * Insert a record, or merge it into the one already holding its conflict key.
      */
-    static async merge(store: IDBObjectStore, schema: TableSchema, strict: boolean, columns: string[], target: IndexSchema | null, value: Record<string, unknown>, update?: string[]): Promise<void> {
+    static async merge(store: IDBObjectStore, schema: TableSchema, strict: boolean, columns: string[], target: IndexSchema | null, value: Record<string, unknown>, update: string[] | undefined, rollback: boolean): Promise<void> {
         if (target === null) {
-            await Request.settle(store.put(Enforcer.insertable(value, schema, strict, new Date())));
+            const record: Record<string, unknown> = Enforcer.insertable(value, schema, strict, new Date());
+
+            try {
+                await Request.settle(store.put(record), true);
+            } catch (error: unknown) {
+                const key: unknown = record[schema.key as string];
+                const previous: Record<string, unknown> | undefined = this.#keyable(key)
+                    ? await Request.settle(store.get(key as IDBValidKey) as IDBRequest<Record<string, unknown> | undefined>)
+                    : undefined;
+
+                throw await this.failed(store, schema, record, previous ?? null, error, rollback);
+            }
 
             return;
         }
@@ -87,15 +119,21 @@ export class Writer {
             ? value
             : Object.fromEntries(update.map((column: string): [string, unknown] => [column, value[column]]));
 
-        await Request.settle(store.put({ ...existing, ...this.changes(changes, schema, strict) }));
+        const record: Record<string, unknown> = { ...existing, ...this.changes(changes, schema, strict) };
+
+        try {
+            await Request.settle(store.put(record), true);
+        } catch (error: unknown) {
+            throw await this.failed(store, schema, record, existing, error, rollback);
+        }
     }
 
     /**
      * Find the unique index the record collides with, or null when it cannot be attributed.
      */
-    static async #violated(store: IDBObjectStore, schema: TableSchema, record: Record<string, unknown>): Promise<string | null> {
+    static async #violated(store: IDBObjectStore, schema: TableSchema, record: Record<string, unknown>, previous: Record<string, unknown> | null): Promise<string | null> {
         // A generated key is absent from the record, and an absent value is not a valid range.
-        if (schema.key !== null && this.#keyable(record[schema.key])) {
+        if (previous === null && schema.key !== null && this.#keyable(record[schema.key])) {
             if (await Request.settle(store.count(IDBKeyRange.only(record[schema.key] as IDBValidKey))) > 0) {
                 return schema.key;
             }
@@ -103,6 +141,11 @@ export class Writer {
 
         for (const index of schema.indexes.filter((candidate: IndexSchema): boolean => candidate.unique)) {
             if (!index.columns.every((column: string): boolean => this.#keyable(record[column]))) {
+                continue;
+            }
+
+            // The record a failed write would have replaced still holds its own entry in the index.
+            if (previous !== null && this.#unchanged(index.columns, record, previous)) {
                 continue;
             }
 
@@ -114,6 +157,14 @@ export class Writer {
         }
 
         return null;
+    }
+
+    /**
+     * Determine whether the record holds the same values as the previous one in the given columns.
+     */
+    static #unchanged(columns: string[], record: Record<string, unknown>, previous: Record<string, unknown>): boolean {
+        return Signature.ofValues(columns.map((column: string): unknown => record[column]))
+            === Signature.ofValues(columns.map((column: string): unknown => previous[column]));
     }
 
     /**

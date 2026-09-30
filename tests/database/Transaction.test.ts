@@ -1,10 +1,10 @@
-import { beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { Connection } from '../../src/database/Connection';
 import { Migration } from '../../src/migrations/Migration';
 import { Schema } from '../../src/schema/Schema';
 import { Blueprint } from '../../src/schema/Blueprint';
 import { Dispatcher } from '../../src/events/Dispatcher';
-import { SchemaException } from '../../src/exceptions';
+import { SchemaException, UniqueConstraintViolationException } from '../../src/exceptions';
 import type { Transaction } from '../../src/database/Transaction';
 import type { TransactionRolledBack } from '../../src/events';
 
@@ -301,13 +301,31 @@ describe('Transaction that outlives its request queue', (): void => {
 });
 
 describe('Transaction aborted by a failed request', (): void => {
-    test('surfaces the request failure and rolls the transaction back', async (): Promise<void> => {
+    afterEach((): void => {
+        vi.restoreAllMocks();
+    });
+
+    test('reports a violated unique index and rolls the transaction back', async (): Promise<void> => {
         await expect(connection.transaction(async (transaction: Transaction): Promise<void> => {
             await transaction.table('tags').insert({ slug: 'a', label: 'x' });
-
-            // The put violates the unique index on label, which aborts the transaction.
             await transaction.table('tags').upsert([{ slug: 'b', label: 'x' }], 'slug');
-        })).rejects.toBeDefined();
+        })).rejects.toThrow(new UniqueConstraintViolationException('tags', 'tags_label_unique'));
+
+        expect(await connection.table('tags').count()).toEqual(0);
+    });
+
+    test('surfaces a failure no write handles and rolls the transaction back', async (): Promise<void> => {
+        vi.spyOn(IDBObjectStore.prototype, 'clear').mockImplementation(function (this: IDBObjectStore): IDBRequest<undefined> {
+            return this.add({ slug: 'a', label: 'y' }) as IDBRequest<unknown> as IDBRequest<undefined>;
+        });
+
+        const failure: Promise<void> = connection.transaction(async (transaction: Transaction): Promise<void> => {
+            await transaction.table('tags').insert({ slug: 'a', label: 'x' });
+            await transaction.table('tags').truncate();
+        });
+
+        await expect(failure).rejects.toBeInstanceOf(DOMException);
+        await expect(failure).rejects.toHaveProperty('name', 'ConstraintError');
 
         expect(await connection.table('tags').count()).toEqual(0);
     });

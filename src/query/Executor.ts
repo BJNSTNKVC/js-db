@@ -19,6 +19,13 @@ const KEY: unique symbol = Symbol('key');
 
 type Row = Record<string, unknown> & { [KEY]?: IDBValidKey };
 
+type Change = (record: Record<string, unknown>) => Record<string, unknown>;
+
+type Writes = {
+    last: Promise<void>;
+    failure: { record: Record<string, unknown>; previous: Record<string, unknown>; error: unknown } | null;
+};
+
 export class Executor<T> {
     /**
      * The connection the query runs on.
@@ -222,7 +229,7 @@ export class Executor<T> {
         const started: number = performance.now();
 
         for (const value of values) {
-            await Writer.merge(store, schema, this.#connection.strict, columns, target, value as Record<string, unknown>, update);
+            await Writer.merge(store, schema, this.#connection.strict, columns, target, value as Record<string, unknown>, update, this.#query.transaction === null);
         }
 
         this.#emit('upsert', started, values.length);
@@ -231,11 +238,11 @@ export class Executor<T> {
     }
 
     /**
-     * Apply a change to every record matching the query, in the order the query asks for.
+     * Rewrite every record matching the query through the change, or delete it when there is none, in the order the query asks for.
      */
-    async modify(apply: (cursor: IDBCursorWithValue) => void, changes: readonly string[] = []): Promise<number> {
+    async modify(change: Change | null, changes: readonly string[] = []): Promise<number> {
         if (this.#query.joins.length > 0) {
-            return this.#rewrite(apply);
+            return this.#rewrite(change);
         }
 
         const schema: TableSchema = await this.#connection.schema(this.#query.table);
@@ -249,6 +256,8 @@ export class Executor<T> {
 
         const arranged: boolean = this.#query.random || this.#query.orders.length > 0;
         const collects: boolean = !plan.ordered && arranged && (limit !== null || offset > 0);
+        const writes: Writes = { last: Promise.resolve(), failure: null };
+        const apply: (cursor: IDBCursorWithValue) => void = this.#writer(change, writes);
 
         let seen: number = 0;
         let affected: number = 0;
@@ -259,6 +268,10 @@ export class Executor<T> {
                 : await this.#points(store, plan, matches);
 
             for (const entry of this.#paged(this.#sorted(collected))) {
+                if (writes.failure !== null) {
+                    break;
+                }
+
                 await Request.walk(store.openCursor(IDBKeyRange.only(entry.key)), (cursor: IDBCursorWithValue): void => {
                     apply(cursor);
 
@@ -266,12 +279,18 @@ export class Executor<T> {
                 });
             }
 
+            await this.#landed(store, schema, writes);
+
             this.#emit(Planner.describe(plan), started, affected);
 
             return affected;
         }
 
         const visit: (cursor: IDBCursorWithValue) => boolean = (cursor: IDBCursorWithValue): boolean => {
+            if (writes.failure !== null) {
+                return false;
+            }
+
             if (!matches(cursor.value as Record<string, unknown>)) {
                 return true;
             }
@@ -296,13 +315,15 @@ export class Executor<T> {
             await Request.walk(source.openCursor(plan.range, plan.direction), visit);
         } else {
             for (const value of lookups) {
-                if (ceiling !== null && seen >= ceiling) {
+                if (writes.failure !== null || (ceiling !== null && seen >= ceiling)) {
                     break;
                 }
 
                 await Request.walk(target.openCursor(IDBKeyRange.only(value as IDBValidKey)), visit);
             }
         }
+
+        await this.#landed(store, schema, writes);
 
         this.#emit(Planner.describe(plan), started, affected);
 
@@ -682,9 +703,9 @@ export class Executor<T> {
     }
 
     /**
-     * Apply a change to each record of this table that the joined rows keep, once however many rows hold it.
+     * Rewrite each record of this table that the joined rows keep through the change, or delete it when there is none, once however many rows hold it.
      */
-    async #rewrite(apply: (cursor: IDBCursorWithValue) => void): Promise<number> {
+    async #rewrite(change: Change | null): Promise<number> {
         if (this.#query.random || this.#query.orders.length > 0 || this.#query.limit !== null || this.#query.offset > 0) {
             throw new SchemaException(`Table [${this.#query.table}] does not support ordering, a limit or an offset on a write through a join.`);
         }
@@ -695,6 +716,8 @@ export class Executor<T> {
         const store: IDBObjectStore = stores(this.#query.table);
         const started: number = performance.now();
         const keys: Set<IDBValidKey> = new Set<IDBValidKey>();
+        const writes: Writes = { last: Promise.resolve(), failure: null };
+        const apply: (cursor: IDBCursorWithValue) => void = this.#writer(change, writes);
 
         for (const row of await this.#combined(tables, constraints, stores)) {
             if (row[KEY] !== undefined) {
@@ -705,6 +728,10 @@ export class Executor<T> {
         let affected: number = 0;
 
         for (const key of keys) {
+            if (writes.failure !== null) {
+                break;
+            }
+
             await Request.walk(store.openCursor(IDBKeyRange.only(key)), (cursor: IDBCursorWithValue): void => {
                 apply(cursor);
 
@@ -712,9 +739,44 @@ export class Executor<T> {
             });
         }
 
+        await this.#landed(store, await this.#connection.schema(this.#query.table), writes);
+
         this.#emit('join', started, affected);
 
         return affected;
+    }
+
+    /**
+     * Get the write to apply under a cursor, noting in the writes the last one issued and the first that fails.
+     */
+    #writer(change: Change | null, writes: Writes): (cursor: IDBCursorWithValue) => void {
+        return (cursor: IDBCursorWithValue): void => {
+            if (change === null) {
+                cursor.delete();
+
+                return;
+            }
+
+            const previous: Record<string, unknown> = cursor.value as Record<string, unknown>;
+            const record: Record<string, unknown> = change(previous);
+
+            writes.last = Request.settle(cursor.update(record), true).then((): void => undefined, (error: unknown): void => {
+                writes.failure = { record, previous, error };
+            });
+        };
+    }
+
+    /**
+     * Wait for the last write to land, then throw the error the first failed one reports.
+     */
+    async #landed(store: IDBObjectStore, schema: TableSchema, writes: Writes): Promise<void> {
+        // Requests on a transaction complete in the order they were made, so the last write landing
+        // means every earlier one has, including any the walk stopped short of waiting for.
+        await writes.last;
+
+        if (writes.failure !== null) {
+            throw await Writer.failed(store, schema, writes.failure.record, writes.failure.previous, writes.failure.error, this.#query.transaction === null);
+        }
     }
 
     /**

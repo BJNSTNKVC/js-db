@@ -350,7 +350,11 @@ declares `timestamps()`, coerces declared column types, and throws
 `updated_at` is touched.
 
 A violated unique index surfaces as `UniqueConstraintViolationException` naming the table and the
-index, rather than a bare `DOMException`.
+index, rather than a bare `DOMException`, whether the write is an `insert`, an `update`, an `upsert`,
+an `increment` or a `decrement`. An `update`, `increment` or `decrement` that collides on any of the
+records it matches writes none of them. Inside `DB.transaction`, the exception aborts the whole
+transaction as it leaves the callback. IndexedDB cannot undo one write alone, so a callback that
+catches it keeps whatever the failed write changed before the collision.
 
 `upsert` requires its conflict target to be the key path or a unique index, because IndexedDB cannot
 enforce anything else. Any other column throws `SchemaException`. The conflict key is coerced the way

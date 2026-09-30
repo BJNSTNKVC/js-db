@@ -887,9 +887,7 @@ export class Builder<T = Record<string, unknown>> {
     async update(values: Partial<T>): Promise<number> {
         const prepared: Record<string, unknown> = await this.#changes(values);
 
-        return this.#executor().modify((cursor: IDBCursorWithValue): void => {
-            cursor.update({ ...cursor.value as Record<string, unknown>, ...prepared });
-        }, Object.keys(prepared));
+        return this.#executor().modify((record: Record<string, unknown>): Record<string, unknown> => ({ ...record, ...prepared }), Object.keys(prepared));
     }
 
     /**
@@ -936,9 +934,7 @@ export class Builder<T = Record<string, unknown>> {
      * Delete every record matching the query.
      */
     async delete(): Promise<number> {
-        return this.#executor().modify((cursor: IDBCursorWithValue): void => {
-            cursor.delete();
-        });
+        return this.#executor().modify(null);
     }
 
     /**
@@ -955,12 +951,11 @@ export class Builder<T = Record<string, unknown>> {
         const own: string = await this.#own(column);
         const prepared: Record<string, unknown> = await this.#changes(extra);
 
-        return this.#executor().modify((cursor: IDBCursorWithValue): void => {
-            const record: Record<string, unknown> = { ...cursor.value as Record<string, unknown> };
-            const current: number = Number(record[own] ?? 0);
-
-            cursor.update({ ...record, ...prepared, [own]: current + amount });
-        }, [own, ...Object.keys(prepared)]);
+        return this.#executor().modify((record: Record<string, unknown>): Record<string, unknown> => ({
+            ...record,
+            ...prepared,
+            [own]: Number(record[own] ?? 0) + amount,
+        }), [own, ...Object.keys(prepared)]);
     }
 
     /**

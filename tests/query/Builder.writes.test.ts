@@ -834,6 +834,167 @@ describe('Builder constraint attribution across nullable unique indexes', (): vo
     });
 });
 
+describe('Builder unique violations on every write', (): void => {
+    type Table = (name: string) => Builder<Record<string, unknown>>;
+
+    type Collision = [string, (table: Table) => Promise<unknown>, string, string];
+
+    const COLLISIONS: Collision[] = [
+        [
+            'an insert',
+            (table: Table): Promise<unknown> => table('users').insert({ name: 'Eve', email: 'carol@example.com' }),
+            'users',
+            'users_email_unique',
+        ],
+        [
+            'an upsert that inserts',
+            (table: Table): Promise<unknown> => table('nullables').upsert([{ nickname: 'al', email: 'eve@example.com' }], 'email'),
+            'nullables',
+            'nullables_nickname_unique',
+        ],
+        [
+            'an update',
+            (table: Table): Promise<unknown> => table('users').where('name', 'Bob').update({ email: 'carol@example.com' }),
+            'users',
+            'users_email_unique',
+        ],
+        [
+            'an upsert whose update breaks another unique index',
+            (table: Table): Promise<unknown> => table('nullables').upsert([{ nickname: 'al', email: 'bob@example.com' }], 'email'),
+            'nullables',
+            'nullables_nickname_unique',
+        ],
+        [
+            'an upsert whose update breaks a unique index checked after its conflict target',
+            (table: Table): Promise<unknown> => table('nullables').upsert([{ nickname: 'bo', email: 'alice@example.com' }], 'nickname'),
+            'nullables',
+            'nullables_email_unique',
+        ],
+        [
+            'an upsert on the key path that breaks a unique index',
+            (table: Table): Promise<unknown> => table('users').upsert([{ id: 2, name: 'Bob', email: 'carol@example.com' }], 'id'),
+            'users',
+            'users_email_unique',
+        ],
+        [
+            'an upsert on the key path that inserts under a free key',
+            (table: Table): Promise<unknown> => table('users').upsert([{ id: 9, name: 'Eve', email: 'carol@example.com' }], 'id'),
+            'users',
+            'users_email_unique',
+        ],
+        [
+            'an upsert on the key path that inserts under a generated key',
+            (table: Table): Promise<unknown> => table('users').upsert([{ name: 'Eve', email: 'carol@example.com' }], 'id'),
+            'users',
+            'users_email_unique',
+        ],
+        [
+            'an increment',
+            (table: Table): Promise<unknown> => table('codes').where('code', 3).increment('code'),
+            'codes',
+            'codes_code_unique',
+        ],
+        [
+            'a collision on the second of several matched rows',
+            (table: Table): Promise<unknown> => table('codes').increment('code'),
+            'codes',
+            'codes_code_unique',
+        ],
+        [
+            'a collision with a row the same write changed',
+            (table: Table): Promise<unknown> => table('users').update({ email: 'same@example.com' }),
+            'users',
+            'users_email_unique',
+        ],
+        [
+            'an update ordered and limited through an index',
+            (table: Table): Promise<unknown> => table('nullables').orderBy('email').limit(1).update({ nickname: 'bo' }),
+            'nullables',
+            'nullables_nickname_unique',
+        ],
+        [
+            'an update of the column whose index it walks',
+            (table: Table): Promise<unknown> => table('users').where('email', 'bob@example.com').update({ email: 'carol@example.com' }),
+            'users',
+            'users_email_unique',
+        ],
+        [
+            'an update ordered and limited by a column no index serves',
+            (table: Table): Promise<unknown> => table('users').orderBy('name', 'desc').limit(3).update({ email: 'same@example.com' }),
+            'users',
+            'users_email_unique',
+        ],
+        [
+            'an update through a join',
+            (table: Table): Promise<unknown> => table('users').join('codes', 'users.visits', '=', 'codes.code').update({ email: 'same@example.com' }),
+            'users',
+            'users_email_unique',
+        ],
+    ];
+
+    /**
+     * Get every record of the tables the writes touch, in key order.
+     */
+    async function snapshot(): Promise<Record<string, unknown>[][]> {
+        return Promise.all(['users', 'nullables', 'codes'].map((name: string): Promise<Record<string, unknown>[]> => connection.table(name).orderBy('id').get()));
+    }
+
+    beforeEach(async (): Promise<void> => {
+        await users().insert([
+            { name: 'Alice', email: 'alice@example.com', visits: 1 },
+            { name: 'Bob', email: 'bob@example.com', visits: 3 },
+            { name: 'Carol', email: 'carol@example.com', visits: 4 },
+        ]);
+
+        await connection.table('nullables').insert([
+            { nickname: 'al', email: 'alice@example.com' },
+            { nickname: 'bo', email: 'bob@example.com' },
+        ]);
+
+        await connection.table('codes').insert([
+            { code: 1, label: 'A' },
+            { code: 3, label: 'B' },
+            { code: 4, label: 'C' },
+        ]);
+    });
+
+    test.each(COLLISIONS)('%s throws naming the index and leaves every row as it was', async (_: string, write: (table: Table) => Promise<unknown>, table: string, index: string): Promise<void> => {
+        const before: Record<string, unknown>[][] = await snapshot();
+        const failure: Promise<unknown> = write((name: string): Builder<Record<string, unknown>> => connection.table(name));
+
+        await expect(failure).rejects.toBeInstanceOf(UniqueConstraintViolationException);
+        await expect(failure).rejects.toThrow(new UniqueConstraintViolationException(table, index));
+
+        expect(await snapshot()).toEqual(before);
+    });
+
+    test.each(COLLISIONS)('%s inside a transaction rejects and rolls the whole transaction back', async (_: string, write: (table: Table) => Promise<unknown>, table: string, index: string): Promise<void> => {
+        const before: Record<string, unknown>[][] = await snapshot();
+
+        const failure: Promise<void> = connection.transaction(async (transaction: Transaction): Promise<void> => {
+            await transaction.table('users').insert({ name: 'Dave', email: 'dave@example.com' });
+
+            await write((name: string): Builder<Record<string, unknown>> => transaction.table(name));
+        });
+
+        await expect(failure).rejects.toBeInstanceOf(UniqueConstraintViolationException);
+        await expect(failure).rejects.toThrow(new UniqueConstraintViolationException(table, index));
+
+        expect(await snapshot()).toEqual(before);
+    });
+
+    test('ignores a collision inside a transaction and keeps the rest', async (): Promise<void> => {
+        await connection.transaction(async (transaction: Transaction): Promise<void> => {
+            expect(await transaction.table('users').insertOrIgnore([
+                { name: 'Dave', email: 'dave@example.com' },
+                { name: 'Eve', email: 'carol@example.com' },
+            ])).toEqual(1);
+        });
+
+        expect(await users().orderBy('id').pluck('name')).toEqual(['Alice', 'Bob', 'Carol', 'Dave']);
+    });
+});
+
 describe('Builder writes through key path point lookups', (): void => {
     test('updates several records by key', async (): Promise<void> => {
         await users().insert([
