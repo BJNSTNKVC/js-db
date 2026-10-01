@@ -87,5 +87,9 @@ export type Aggregations = Record<string, Aggregation>;
 
 export type Aggregated<A extends Aggregation> = A extends { count: unknown } ? number : number | null;
 
+type Stepped<K extends string> = K extends `${string}->${infer S}` ? Stepped<S> : K;
+
+type Named<K extends string> = K extends `${string}->${string}` ? Stepped<K> : K extends `${string}.${infer N}` ? N : K;
+
 export type Grouped<T, G extends (keyof T & string)[], A extends Aggregations> =
-    { [K in G[number]]: T[K] } & { [K in keyof A]: Aggregated<A[K]> };
+    { [K in G[number] as Named<K>]: T[K] } & { [K in keyof A]: Aggregated<A[K]> };

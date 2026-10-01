@@ -1205,3 +1205,195 @@ describe('Counting, paging and explaining a joined query', (): void => {
         expect(await through('right').where('posts.title', 'Stray').exists()).toEqual(true);
     });
 });
+
+interface Reader {
+    id: number;
+    name: string;
+    settings: { theme: string } | null;
+}
+
+interface Story {
+    id: number;
+    user_id: number;
+    title: string;
+    likes: number;
+}
+
+type Read = (query: Builder<Record<string, unknown>>) => Promise<unknown>;
+
+class CreateReadTables extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        await Schema.create('users', (table: Blueprint): void => {
+            table.id();
+            table.string('name');
+            table.json('settings').nullable();
+        });
+
+        await Schema.create('posts', (table: Blueprint): void => {
+            table.id();
+            table.integer('user_id');
+            table.string('title');
+            table.integer('likes');
+        });
+    }
+}
+
+describe('Qualified columns on a joined query', (): void => {
+    let read: Connection;
+
+    /**
+     * Join the users of the read database to their posts, ordered by user and then by post.
+     */
+    function posted(kind: 'inner' | 'left' = 'inner'): Builder<Record<string, unknown>> {
+        const query: Builder<Reader> = read.table<Reader>('users');
+        const joined: Builder<Record<string, unknown>> = kind === 'inner'
+            ? query.join('posts', 'users.id', '=', 'posts.user_id')
+            : query.leftJoin('posts', 'users.id', '=', 'posts.user_id');
+
+        return joined.orderBy('users.id').orderBy('posts.id');
+    }
+
+    beforeAll(async (): Promise<void> => {
+        read = new Connection('app', { database: 'joins-read', migrations: [CreateReadTables] });
+
+        await read.migrate();
+
+        await read.table<Reader>('users').insert([
+            { name: 'Alice', settings: { theme: 'dark' } },
+            { name: 'Bob', settings: { theme: 'light' } },
+            { name: 'Carol', settings: null },
+        ]);
+
+        await read.table<Story>('posts').insert([
+            { user_id: 1, title: 'First', likes: 3 },
+            { user_id: 1, title: 'Second', likes: 5 },
+            { user_id: 2, title: 'Hello', likes: 1 },
+        ]);
+    });
+
+    test.each([
+        ['pluck(\'users.name\')', (query: Builder<Record<string, unknown>>): Promise<unknown> => query.pluck('users.name'), ['Bob']],
+        ['value(\'users.name\')', (query: Builder<Record<string, unknown>>): Promise<unknown> => query.value('users.name'), 'Bob'],
+        ['pluck(\'posts.title\', \'users.name\')', (query: Builder<Record<string, unknown>>): Promise<unknown> => query.pluck('posts.title', 'users.name'), { Bob: 'Hello' }],
+        ['select(\'users.id as user_id\').pluck(\'user_id\')', (query: Builder<Record<string, unknown>>): Promise<unknown> => query.select('users.id as user_id').pluck('user_id'), [2]],
+    ] as [string, Read, unknown][])('%s reads the qualified column with Bob holding the only post', async (_: string, run: Read, expected: unknown): Promise<void> => {
+        expect(await run(posted().where('posts.title', 'Hello'))).toEqual(expected);
+    });
+
+    test('plucks a qualified column from every joined row', async (): Promise<void> => {
+        expect(await posted().pluck('users.name')).toEqual(['Alice', 'Alice', 'Bob']);
+        expect(await posted().pluck('posts.title')).toEqual(['First', 'Second', 'Hello']);
+    });
+
+    test('keys a pluck by a qualified column, keeping the last value of a repeated key as an unjoined pluck does', async (): Promise<void> => {
+        expect(await posted().pluck('posts.title', 'users.name')).toEqual({ Alice: 'Second', Bob: 'Hello' });
+        expect(await read.table<Story>('posts').pluck('title', 'user_id')).toEqual({ 1: 'Second', 2: 'Hello' });
+    });
+
+    test('gets a qualified value from the first joined row', async (): Promise<void> => {
+        expect(await posted().reorder('posts.likes', 'desc').value('posts.title')).toEqual('Second');
+        expect(await posted().reorder('posts.likes', 'desc').value('users.name')).toEqual('Alice');
+    });
+
+    test('follows a JSON path from a qualified column', async (): Promise<void> => {
+        expect(await posted().pluck('users.settings->theme')).toEqual(['dark', 'dark', 'light']);
+        expect(await posted().pluck('posts.title', 'users.settings->theme')).toEqual({ dark: 'Second', light: 'Hello' });
+        expect(await posted().reorder('posts.id', 'desc').value('users.settings->theme')).toEqual('light');
+    });
+
+    test('groups by a JSON path from a qualified column, named after its last step', async (): Promise<void> => {
+        const rows: { theme: unknown; total: number }[] = await posted()
+            .groupBy('users.settings->theme')
+            .aggregate({ total: { count: '*' } })
+            .get();
+
+        expect(rows).toEqual([
+            { theme: 'dark', total: 2 },
+            { theme: 'light', total: 1 },
+        ]);
+    });
+
+    test('reads an unqualified column off the flat row, where the later table wins a collision', async (): Promise<void> => {
+        expect(await posted().pluck('id')).toEqual([1, 2, 3]);
+        expect(await posted().pluck('title', 'name')).toEqual({ Alice: 'Second', Bob: 'Hello' });
+        expect(await posted().value('settings->theme')).toEqual('dark');
+    });
+
+    test('rejects an ambiguous unqualified column read alongside a qualified one, as select does', async (): Promise<void> => {
+        await expect(posted().pluck('posts.title', 'id')).rejects.toThrow(SchemaException);
+        await expect(posted().select('id').get()).rejects.toThrow(SchemaException);
+    });
+
+    test('rejects a qualified column of a table the query does not join', async (): Promise<void> => {
+        await expect(posted().pluck('teams.label')).rejects.toThrow(SchemaException);
+        await expect(posted().value('teams.label')).rejects.toThrow(SchemaException);
+    });
+
+    test('gets null from a joined query that matches nothing', async (): Promise<void> => {
+        expect(await posted().where('posts.title', 'Missing').value('users.name')).toBeNull();
+        expect(await posted().where('posts.title', 'Missing').pluck('users.name')).toEqual([]);
+    });
+
+    test('reads null from the side a left join is missing', async (): Promise<void> => {
+        expect(await posted('left').pluck('posts.title')).toEqual(['First', 'Second', 'Hello', null]);
+        expect(await posted('left').where('users.name', 'Carol').value('posts.title')).toBeNull();
+        expect(await posted('left').pluck('users.name', 'posts.title')).toEqual({ First: 'Alice', Second: 'Alice', Hello: 'Bob', null: 'Carol' });
+    });
+
+    test('groups by a qualified column, named after its last part', async (): Promise<void> => {
+        const rows: { name: unknown; total: number }[] = await posted()
+            .groupBy('users.name')
+            .aggregate({ total: { count: '*' } })
+            .get();
+
+        expect(rows).toEqual([
+            { name: 'Alice', total: 2 },
+            { name: 'Bob', total: 1 },
+        ]);
+    });
+
+    test('groups by two qualified columns that share a last part, letting the later one name the column as select does', async (): Promise<void> => {
+        expect(await posted().groupBy('users.id', 'posts.id').get()).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
+        expect(await posted().groupBy('posts.id', 'users.id').get()).toEqual([{ id: 1 }, { id: 1 }, { id: 2 }]);
+        expect(await posted().select('users.id', 'posts.id').get()).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
+    });
+
+    test('aggregates a qualified column in each group', async (): Promise<void> => {
+        const rows: Record<string, unknown>[] = await posted()
+            .groupBy('users.name')
+            .aggregate({
+                likes  : { sum: 'posts.likes' },
+                average: { avg: 'posts.likes' },
+                least  : { min: 'posts.likes' },
+                most   : { max: 'posts.likes' },
+                liked  : { count: 'posts.likes' },
+            })
+            .get();
+
+        expect(rows).toEqual([
+            { name: 'Alice', likes: 8, average: 4, least: 3, most: 5, liked: 2 },
+            { name: 'Bob', likes: 1, average: 1, least: 1, most: 1, liked: 1 },
+        ]);
+    });
+
+    test('constrains the groups by a qualified grouped column', async (): Promise<void> => {
+        const rows: Record<string, unknown>[] = await posted()
+            .groupBy('users.name')
+            .aggregate({ total: { count: '*' } })
+            .having('users.name', 'Alice')
+            .get();
+
+        expect(rows).toEqual([{ name: 'Alice', total: 2 }]);
+        expect(await posted().groupBy('users.name').having('name', 'Alice').orHaving('users.name', 'Bob').get()).toEqual([{ name: 'Alice' }, { name: 'Bob' }]);
+    });
+
+    test('groups by an unqualified column off the flat row', async (): Promise<void> => {
+        expect(await posted().groupBy('name').aggregate({ likes: { sum: 'likes' } }).get()).toEqual([
+            { name: 'Alice', likes: 8 },
+            { name: 'Bob', likes: 1 },
+        ]);
+    });
+});

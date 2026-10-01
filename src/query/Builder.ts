@@ -458,8 +458,15 @@ export class Builder<T = Record<string, unknown>> {
         records.#offset = 0;
 
         return new Grouping<T, G>(
-            async (): Promise<Record<string, unknown>[]> => await records.#executor().records() as Record<string, unknown>[],
+            async (read: string[]): Promise<Record<string, unknown>[]> => {
+                const query: Builder<T> = records.#qualifies(read)
+                    ? records.clone().select(read.map((column: string): string => `${column} as ${column}`))
+                    : records;
+
+                return await query.#executor().records() as Record<string, unknown>[];
+            },
             columns,
+            new Map<string, string>(columns.map((column: string): [string, string] => [column, this.#qualifies([column]) ? Columns.named(column) : column])),
         );
     }
 
@@ -679,6 +686,10 @@ export class Builder<T = Record<string, unknown>> {
      * Get a single column from the first record matching the query.
      */
     async value<V = unknown>(column: Key<T>): Promise<V | null> {
+        if (this.#qualifies([column])) {
+            return this.clone().select(`${column} as value`).value<V>('value');
+        }
+
         const record: T | null = await this.clone().first();
 
         if (record === null) {
@@ -694,6 +705,14 @@ export class Builder<T = Record<string, unknown>> {
     async pluck<V = unknown>(column: Key<T>): Promise<V[]>;
     async pluck<V = unknown>(column: Key<T>, key: Key<T>): Promise<Record<string, V>>;
     async pluck<V = unknown>(column: Key<T>, key?: Key<T>): Promise<V[] | Record<string, V>> {
+        if (key === undefined && this.#qualifies([column])) {
+            return this.clone().select(`${column} as value`).pluck<V>('value');
+        }
+
+        if (key !== undefined && this.#qualifies([column, key])) {
+            return this.clone().select(`${column} as value`, `${key} as key`).pluck<V>('value', 'key');
+        }
+
         const records: Record<string, unknown>[] = await this.#executor().records() as Record<string, unknown>[];
 
         if (key === undefined) {
@@ -1011,6 +1030,13 @@ export class Builder<T = Record<string, unknown>> {
         }
 
         return false;
+    }
+
+    /**
+     * Determine whether any of the given columns names its table on a joined query, where the flat row does not hold it.
+     */
+    #qualifies(columns: string[]): boolean {
+        return this.#joins.length > 0 && columns.some((column: string): boolean => Columns.qualified(column));
     }
 
     /**

@@ -56,6 +56,54 @@ const rows = await DB.table('users')
 
 `as` works on any query, joined or not.
 
+## Reading a qualified column
+
+`pluck` and `value` take a qualified column as `select` does, so they read the table it names
+rather than whichever one won the flat row. A qualified column can also lead a JSON path:
+
+```ts
+// Alice, whose theme is dark, wrote First and Second. Bob wrote Hello.
+const query = DB.table('users').join('posts', 'users.id', '=', 'posts.user_id').orderBy('posts.id');
+
+await query.pluck('users.name');
+await query.pluck('posts.title', 'users.name');
+await query.value('users.settings->theme');
+```
+
+```
+['Alice', 'Alice', 'Bob']
+{ Alice: 'Second', Bob: 'Hello' }
+'dark'
+```
+
+As on any query, a key that repeats keeps the last value it meets. A bare column still reads the
+flat row, so `pluck('id')` returns `posts.id`. Once one column of a `pluck` is qualified, the other
+is resolved the way `select` resolves it, so a bare column two tables share throws
+`SchemaException` there.
+
+`groupBy`, the columns an aggregate names and `having` take qualified columns too. A grouped column
+is named after its last part, the way `select('users.name')` is named `name`, and `having` accepts
+either name:
+
+```ts
+// Alice's posts have 3 and 5 likes, Bob's has 1.
+await DB.table('users')
+    .join('posts', 'users.id', '=', 'posts.user_id')
+    .groupBy('users.name')
+    .aggregate({ total: { count: '*' }, likes: { sum: 'posts.likes' } })
+    .having('users.name', 'Alice')
+    .get();
+```
+
+```
+[
+    { name: 'Alice', total: 2, likes: 8 }
+]
+```
+
+Two grouped columns that share a last part, as in `groupBy('users.id', 'posts.id')`, still group by
+both, but the row keeps the later one under `id`, as `select('users.id', 'posts.id')` does.
+
 ## Ambiguous columns are rejected, not guessed
 
 Once a join is in play, a bare column name that two tables share cannot be resolved, so it throws

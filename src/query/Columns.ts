@@ -58,18 +58,30 @@ export class Columns {
     static parse(expression: string): Projection {
         const alias: number = expression.toLowerCase().indexOf(' as ');
 
-        // Left unaliased, a path is named after its last step, as a qualified column is named without
-        // its table.
         if (alias === -1) {
-            const { column, path }: { column: string; path: string[] } = this.path(expression);
-
-            return { column: expression, alias: path.at(-1) ?? this.split(column).name };
+            return { column: expression, alias: this.named(expression) };
         }
 
         return {
             column: expression.slice(0, alias).trim(),
             alias : expression.slice(alias + 4).trim(),
         };
+    }
+
+    /**
+     * Get the name a column comes back under when nothing aliases it: the last step of its path, or else the column without its table.
+     */
+    static named(column: string): string {
+        const { column: name, path }: { column: string; path: string[] } = this.path(column);
+
+        return path.at(-1) ?? this.split(name).name;
+    }
+
+    /**
+     * Determine whether a column names the table that owns it.
+     */
+    static qualified(column: string): boolean {
+        return this.split(this.path(column).column).table !== null;
     }
 
     /**

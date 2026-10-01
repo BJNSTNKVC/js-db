@@ -3,11 +3,11 @@ import { Predicate } from './Predicate';
 import { Signature } from './Signature';
 import type { Aggregation, Aggregations, Conjunction, Constraint, Direction, Grouped, Key, Operator, Order } from './types';
 
-type Records = () => Promise<Record<string, unknown>[]>;
+type Records = (columns: string[]) => Promise<Record<string, unknown>[]>;
 
 export class Grouping<T, G extends (keyof T & string)[], A extends Aggregations = Record<string, never>> {
     /**
-     * Fetch the records matching the query the grouping was opened from.
+     * Fetch the records matching the query the grouping was opened from, able to read the given columns.
      */
     readonly #records: Records;
 
@@ -15,6 +15,11 @@ export class Grouping<T, G extends (keyof T & string)[], A extends Aggregations 
      * The columns the records are grouped by.
      */
     readonly #columns: G;
+
+    /**
+     * The name each grouped column takes in each group.
+     */
+    readonly #names: Map<string, string>;
 
     /**
      * The aggregations computed for each group.
@@ -44,16 +49,17 @@ export class Grouping<T, G extends (keyof T & string)[], A extends Aggregations 
     /**
      * Create a new grouping.
      */
-    constructor(records: Records, columns: G) {
+    constructor(records: Records, columns: G, names: Map<string, string>) {
         this.#records = records;
         this.#columns = columns;
+        this.#names = names;
     }
 
     /**
      * Compute the given aggregations for each group.
      */
     aggregate<N extends Aggregations>(aggregations: N): Grouping<T, G, N> {
-        const grouping: Grouping<T, G, N> = new Grouping<T, G, N>(this.#records, this.#columns);
+        const grouping: Grouping<T, G, N> = new Grouping<T, G, N>(this.#records, this.#columns, this.#names);
 
         grouping.#aggregations = aggregations;
         grouping.#constraints = this.#constraints;
@@ -115,7 +121,7 @@ export class Grouping<T, G extends (keyof T & string)[], A extends Aggregations 
      * Get every group matching the query.
      */
     async get(): Promise<Grouped<T, G, A>[]> {
-        const grouped: Map<string, Record<string, unknown>[]> = this.#grouped(await this.#records());
+        const grouped: Map<string, Record<string, unknown>[]> = this.#grouped(await this.#records(this.#read()));
         const rows: Record<string, unknown>[] = [];
 
         for (const members of grouped.values()) {
@@ -149,6 +155,15 @@ export class Grouping<T, G extends (keyof T & string)[], A extends Aggregations 
     }
 
     /**
+     * Get every column the grouped columns and the aggregates read from the records.
+     */
+    #read(): string[] {
+        const aggregated: string[] = Object.values(this.#aggregations).map((aggregation: Aggregation): string => Object.values(aggregation)[0] as string);
+
+        return [...this.#columns, ...aggregated.filter((column: string): boolean => column !== '*')];
+    }
+
+    /**
      * Collect the records into groups, keyed by their grouped column values.
      */
     #grouped(records: Record<string, unknown>[]): Map<string, Record<string, unknown>[]> {
@@ -178,7 +193,7 @@ export class Grouping<T, G extends (keyof T & string)[], A extends Aggregations 
         const first: Record<string, unknown> = members[0] as Record<string, unknown>;
 
         for (const column of this.#columns) {
-            row[column] = first[column];
+            row[this.#names.get(column) as string] = first[column];
         }
 
         for (const [alias, aggregation] of Object.entries(this.#aggregations)) {
@@ -241,7 +256,9 @@ export class Grouping<T, G extends (keyof T & string)[], A extends Aggregations 
             ? { operator: '=', value: parameters[0] }
             : { operator: parameters[0] as Operator, value: parameters[1] };
 
-        this.#constraints.push({ type: 'basic', column, operator: resolved.operator, value: resolved.value, conjunction, not: false });
+        const named: string = this.#names.get(column) ?? column;
+
+        this.#constraints.push({ type: 'basic', column: named, operator: resolved.operator, value: resolved.value, conjunction, not: false });
 
         return this;
     }
