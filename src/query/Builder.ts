@@ -4,6 +4,7 @@ import { Join } from './Join';
 import { Grouping } from './Grouping';
 import { Executor } from './Executor';
 import { Writer } from './Writer';
+import { Calendar } from '../schema/Calendar';
 import type { Connection } from '../database/Connection';
 import type { ColumnSchema, TableSchema } from '../schema/types';
 import type {
@@ -248,12 +249,12 @@ export class Builder<T = Record<string, unknown>> {
      * Constrain a date column to fall on a given day.
      */
     whereDate(column: Key<T>, value: Date | string): this {
-        const day: Date = new Date(value);
+        const day: Date = Calendar.read(value);
 
         // A day is expressed as the range it covers, so an indexed column can still drive the scan
         // and a stored time of day does not have to match.
-        const from: Date = new Date(day.getFullYear(), day.getMonth(), day.getDate());
-        const to: Date = new Date(from.getFullYear(), from.getMonth(), from.getDate() + 1);
+        const from: Date = Calendar.midnight(day.getFullYear(), day.getMonth(), day.getDate());
+        const to: Date = Calendar.midnight(day.getFullYear(), day.getMonth(), day.getDate() + 1);
 
         return this.#push({ type: 'between', column, from, to: new Date(to.getTime() - 1), conjunction: 'and', not: false });
     }

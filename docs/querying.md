@@ -70,8 +70,12 @@ DB.table<Post>('posts')
 ```
 
 `whereTime` compares zero padded `HH:MM:SS` strings, and pads `HH:MM` with `:00`, so `'09:30'`
-means `09:30:00`. `whereDate` becomes a range and can be served by an index. The other parts, and
-`whereTime`, are checked against every record the query reads. None of them has an `or` form.
+means `09:30:00`. `whereDate` reads a `YYYY-MM-DD` string as that calendar day in the local
+timezone, so `'2026-02-01'` matches 1 February wherever the code runs, and a day the calendar does
+not have, such as `'2026-02-30'`, matches nothing. It reads any other string as `new Date` does, and
+a `Date` by the local day it falls on. `whereDate` becomes a range and can be served by an index.
+The other parts, and `whereTime`, are checked against every record the query reads. None of them
+has an `or` form.
 
 Operators: `=`, `==`, `===`, `!=`, `<>`, `!==`, `<`, `>`, `<=`, `>=`, `like`, `not like`. `==` is
 loose and `===` is strict.
