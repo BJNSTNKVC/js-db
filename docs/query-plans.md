@@ -48,4 +48,8 @@ Each resolves to a description of the plan chosen:
   matches nothing, and is planned as an empty set of lookups rather than as a range.
 - When a range and an order want different indexes, the range wins and the sort happens in memory.
 - Any top-level `orWhere` forces a full scan.
-- `count()` with no residual constraints uses `count()` on the store or index, reading no records.
+- `count()` with no residual constraints uses `count()` on the store or index, reading no records,
+  unless the query joins.
+- A joined query reads every table it joins in full and runs the join in memory, so no index takes
+  part. `explain()` on one returns `'join'`, the plan the `QueryExecuted` event reports for it, and
+  `count()` counts the joined rows.

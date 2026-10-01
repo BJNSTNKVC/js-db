@@ -10,7 +10,7 @@ import type { Builder } from '../../src/query/Builder';
 import type { Transaction } from '../../src/database/Transaction';
 import type { Join } from '../../src/query/Join';
 import type { QueryExecuted } from '../../src/events';
-import type { Constraint } from '../../src/query/types';
+import type { Constraint, Paginated } from '../../src/query/types';
 
 interface User {
     id: number;
@@ -1062,5 +1062,146 @@ describe('Joins across the types the columns hold', (): void => {
         await authored.migrate();
 
         expect(await rows(paired('inner', ['users.owner', 'posts.user_id']))).toEqual(['Alice:Third', 'Bob:Third', 'Carol:Third', 'Dave:Third']);
+    });
+});
+
+interface Counted {
+    id: number;
+    name: string;
+    role: string;
+}
+
+interface Written {
+    name: string | null;
+    title: string | null;
+}
+
+class CreateCountedTables extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        await Schema.create('users', (table: Blueprint): void => {
+            table.id();
+            table.string('name');
+            table.string('role').index();
+        });
+
+        await Schema.create('posts', (table: Blueprint): void => {
+            table.id();
+            table.integer('user_id');
+            table.string('title');
+        });
+
+        await Schema.create('tags', (table: Blueprint): void => {
+            table.id();
+            table.string('word');
+        });
+    }
+}
+
+describe('Counting, paging and explaining a joined query', (): void => {
+    let counted: Connection;
+
+    /**
+     * Join the users of the counted database to their posts through the given kind of join.
+     */
+    function through(kind: JoinKind): Builder<Written> {
+        const query: Builder<Counted> = counted.table<Counted>('users');
+
+        if (kind === 'cross') {
+            return query.crossJoin<Written>('tags');
+        }
+
+        const method: 'join' | 'leftJoin' | 'rightJoin' = kind === 'inner' ? 'join' : `${kind}Join`;
+
+        return query[method]<Written>('posts', 'users.id', '=', 'posts.user_id');
+    }
+
+    beforeAll(async (): Promise<void> => {
+        counted = new Connection('app', { database: 'joins-counted', migrations: [CreateCountedTables] });
+
+        await counted.migrate();
+
+        await counted.table<Counted>('users').insert([
+            { name: 'Alice', role: 'admin' },
+            { name: 'Bob', role: 'admin' },
+            { name: 'Carol', role: 'guest' },
+        ]);
+
+        await counted.table<Post>('posts').insert([
+            { user_id: 1, title: 'First' },
+            { user_id: 1, title: 'Second' },
+            { user_id: 2, title: 'Third' },
+            { user_id: 2, title: 'Fourth' },
+            { user_id: 9, title: 'Stray' },
+        ]);
+
+        await counted.table<{ word: string }>('tags').insert([{ word: 'news' }, { word: 'tech' }]);
+    });
+
+    test.each([
+        ['an inner', 'inner', 4],
+        ['a left', 'left', 5],
+        ['a right', 'right', 5],
+        ['a cross', 'cross', 6],
+    ] as [string, JoinKind, number][])('counts the rows %s join returns', async (_: string, kind: JoinKind, rows: number): Promise<void> => {
+        expect((await through(kind).get()).length).toEqual(rows);
+        expect(await through(kind).count()).toEqual(rows);
+    });
+
+    test.each([
+        ['an indexed column of this table', (query: Builder<Written>): Builder<Written> => query.where('role', 'admin'), 4],
+        ['a qualified column of this table', (query: Builder<Written>): Builder<Written> => query.where('users.role', 'admin'), 4],
+        ['a column of the joined table', (query: Builder<Written>): Builder<Written> => query.where('posts.title', '!=', 'First'), 3],
+    ] as [string, (query: Builder<Written>) => Builder<Written>, number][])('counts the joined rows a constraint on %s keeps', async (_: string, constrain: (query: Builder<Written>) => Builder<Written>, rows: number): Promise<void> => {
+        expect((await constrain(through('inner')).get()).length).toEqual(rows);
+        expect(await constrain(through('inner')).count()).toEqual(rows);
+    });
+
+    test.each([
+        ['a limit', (query: Builder<Written>): Builder<Written> => query.limit(1)],
+        ['an offset', (query: Builder<Written>): Builder<Written> => query.offset(3)],
+        ['a limit and a constraint', (query: Builder<Written>): Builder<Written> => query.where('posts.title', '!=', 'Stray').limit(1)],
+    ] as [string, (query: Builder<Written>) => Builder<Written>][])('counts every joined row whatever %s, as an unconstrained count does', async (_: string, page: (query: Builder<Written>) => Builder<Written>): Promise<void> => {
+        expect(await page(through('inner')).count()).toEqual(4);
+    });
+
+    test('pages the joined rows and totals them', async (): Promise<void> => {
+        const first: Paginated<Written> = await through('inner').orderBy('posts.title').paginate(1, 3);
+        const second: Paginated<Written> = await through('inner').orderBy('posts.title').paginate(2, 3);
+
+        expect([first.total, first.lastPage, second.total, second.lastPage]).toEqual([4, 2, 4, 2]);
+        expect(first.data.map((row: Written): string => `${row.name}:${row.title}`)).toEqual(['Alice:First', 'Bob:Fourth', 'Alice:Second']);
+        expect(second.data.map((row: Written): string => `${row.name}:${row.title}`)).toEqual(['Bob:Third']);
+        expect([...first.data, ...second.data]).toEqual(await through('inner').orderBy('posts.title').get());
+    });
+
+    test.each([
+        ['without a constraint', (query: Builder<Written>): Builder<Written> => query],
+        ['with a constraint an index of this table could serve', (query: Builder<Written>): Builder<Written> => query.where('role', 'admin')],
+    ] as [string, (query: Builder<Written>) => Builder<Written>][])('explains a joined query %s as the join it runs', async (_: string, constrain: (query: Builder<Written>) => Builder<Written>): Promise<void> => {
+        const plans: string[] = [];
+        const listener: (event: Event) => void = ((event: QueryExecuted): void => {
+            plans.push(event.plan);
+        }) as (event: Event) => void;
+
+        Dispatcher.listen('db:query', listener);
+
+        try {
+            const explained: string = await constrain(through('inner')).explain();
+
+            await constrain(through('inner')).get();
+            await constrain(through('inner')).count();
+
+            expect([explained, ...plans]).toEqual(['join', 'join', 'join']);
+        } finally {
+            Dispatcher.forget('db:query', listener);
+        }
+    });
+
+    test('reports that no joined row exists when only the tables do', async (): Promise<void> => {
+        expect(await through('inner').where('posts.title', 'Stray').exists()).toEqual(false);
+        expect(await through('right').where('posts.title', 'Stray').exists()).toEqual(true);
     });
 });

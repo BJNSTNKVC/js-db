@@ -49,6 +49,10 @@ export class Executor<T> {
      * Describe the plan the query would run under.
      */
     async explain(): Promise<string> {
+        if (this.#query.joins.length > 0) {
+            return 'join';
+        }
+
         const schema: TableSchema = await this.#connection.schema(this.#query.table);
 
         return Planner.describe(await this.#planned(schema, await this.#store('readonly')));
@@ -113,6 +117,10 @@ export class Executor<T> {
      * Count the records matching the query.
      */
     async count(): Promise<number> {
+        if (this.#query.joins.length > 0) {
+            return this.#tally();
+        }
+
         const schema: TableSchema = await this.#connection.schema(this.#query.table);
         const plan: Plan = Planner.plan(this.#prepared(schema), [], schema);
 
@@ -700,6 +708,21 @@ export class Executor<T> {
         this.#emit('join', started, paged.length);
 
         return Joiner.flatten(paged, tables, this.#query.columns);
+    }
+
+    /**
+     * Count the rows the joins and the constraints keep, whatever the paging.
+     */
+    async #tally(): Promise<number> {
+        const tables: Map<string, string[]> = await this.#tables();
+        const constraints: Constraint[] = await this.#qualified(tables);
+        const stores: (table: string) => IDBObjectStore = await this.#stores([...tables.keys()], 'readonly');
+        const started: number = performance.now();
+        const count: number = (await this.#combined(tables, constraints, stores)).length;
+
+        this.#emit('join', started, count);
+
+        return count;
     }
 
     /**

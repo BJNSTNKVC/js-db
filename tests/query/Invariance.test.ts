@@ -26,6 +26,11 @@ interface Coded extends Item {
     code: number;
 }
 
+interface Note {
+    item_id: number;
+    body: string;
+}
+
 type Copy = 'indexed' | 'plain';
 
 type Truth = boolean | null;
@@ -162,6 +167,21 @@ const REORDERS: Reorder[] = [
 
 const CODED: Coded[] = ROWS.map((row: Item): Coded => ({ ...row, code: row.id * 10 }));
 
+const NOTES: Note[] = [
+    { item_id: 3, body: 'first' },
+    { item_id: 3, body: 'second' },
+    { item_id: 1, body: 'third' },
+    { item_id: 4, body: 'fourth' },
+    { item_id: 9, body: 'stray' },
+];
+
+const JOINS: Condition[] = [
+    ['with no constraint', (query: Builder<Item>): Builder<Item> => query, (): Truth => true],
+    ['on an indexed column', (query: Builder<Item>): Builder<Item> => query.where('role', 'a'), (row: Item): Truth => compare(row.role, '=', 'a')],
+    ['through a range on an indexed column', (query: Builder<Item>): Builder<Item> => query.where('visits', '>=', 1), (row: Item): Truth => compare(row.visits, '>=', 1)],
+    ['through point lookups on the key path', (query: Builder<Item>): Builder<Item> => query.whereIn('id', [1, 3]), (row: Item): Truth => within(row.id, [1, 3])],
+];
+
 const COLLISIONS: Collision[] = [
     ['update', (query: Builder<Coded>): Promise<number> => query.orderBy('visits', 'desc').limit(1).update({ code: 10 })],
     ['increment', (query: Builder<Coded>): Promise<number> => query.orderBy('visits', 'desc').limit(1).increment('code', -10)],
@@ -235,6 +255,18 @@ class AddCodeToItemsTables extends Migration {
 
         await Schema.table('plain', (table: Blueprint): void => {
             table.integer('code').unique();
+        });
+    }
+}
+
+class CreateNotesTable extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        await Schema.create('notes', (table: Blueprint): void => {
+            table.integer('item_id');
+            table.string('body');
         });
     }
 }
@@ -429,10 +461,10 @@ function sorted(rows: Item[]): Item[] {
 /**
  * Run one query against both copies of the table.
  */
-async function both<R, T extends Item = Item>(run: (query: Builder<T>) => Promise<R>): Promise<Record<Copy, R>> {
+async function both<R, T extends Item = Item>(run: (query: Builder<T>, copy: Copy) => Promise<R>): Promise<Record<Copy, R>> {
     return {
-        indexed: await run(connection.table<T>('indexed')),
-        plain  : await run(connection.table<T>('plain')),
+        indexed: await run(connection.table<T>('indexed'), 'indexed'),
+        plain  : await run(connection.table<T>('plain'), 'plain'),
     };
 }
 
@@ -576,5 +608,28 @@ describe('unique violations on a unique column both copies hold', (): void => {
         });
 
         expect({ indexed: await raw('indexed'), plain: await raw('plain') }).toEqual({ indexed: sorted(CODED), plain: sorted(CODED) });
+    });
+});
+
+describe('counting through a join', (): void => {
+    beforeEach(async (): Promise<void> => {
+        connection = new Connection('app', { database: `invariance-joined-${++sequence}`, migrations: [CreateItemsTables, CreateNotesTable] });
+
+        await connection.migrate();
+        await connection.table<Item>('indexed').insert(ROWS);
+        await connection.table<Item>('plain').insert(ROWS);
+        await connection.table<Note>('notes').insert(NOTES);
+    });
+
+    test.each(JOINS)('a join %s gives the same rows and count through an index, through a scan and in the model', async (_: string, constrain: (query: Builder<Item>) => Builder<Item>, holds: (row: Item) => Truth): Promise<void> => {
+        const expected: number = NOTES.filter((note: Note): boolean => ROWS.some((row: Item): boolean => row.id === note.item_id && holds(row) === true)).length;
+
+        const answers: Record<Copy, { rows: number; count: number }> = await both(async (query: Builder<Item>, copy: Copy): Promise<{ rows: number; count: number }> => {
+            const joined: Builder<Item> = constrain(query.join<Item>('notes', `${copy}.id`, '=', 'notes.item_id'));
+
+            return { rows: (await joined.clone().get()).length, count: await joined.count() };
+        });
+
+        expect(answers).toEqual({ indexed: { rows: expected, count: expected }, plain: { rows: expected, count: expected } });
     });
 });
