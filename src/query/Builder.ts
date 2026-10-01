@@ -740,21 +740,21 @@ export class Builder<T = Record<string, unknown>> {
      * Count the records matching the query.
      */
     async count(): Promise<number> {
-        return this.#executor().count();
+        return this.#aggregated().#executor().count();
     }
 
     /**
      * Sum a column across the records matching the query.
      */
     async sum(column: Key<T>): Promise<number> {
-        return (await this.#executor().numbers(column)).reduce((carry: number, value: number): number => carry + value, 0);
+        return (await this.#aggregated().#executor().numbers(column)).reduce((carry: number, value: number): number => carry + value, 0);
     }
 
     /**
      * Average a column across the records matching the query.
      */
     async avg(column: Key<T>): Promise<number | null> {
-        const values: number[] = await this.#executor().numbers(column);
+        const values: number[] = await this.#aggregated().#executor().numbers(column);
 
         if (values.length === 0) {
             return null;
@@ -767,14 +767,14 @@ export class Builder<T = Record<string, unknown>> {
      * Get the smallest value of a column across the records matching the query.
      */
     async min(column: Key<T>): Promise<number | null> {
-        return this.#executor().extreme(column, 'next');
+        return this.#aggregated().#executor().extreme(column, 'next');
     }
 
     /**
      * Get the largest value of a column across the records matching the query.
      */
     async max(column: Key<T>): Promise<number | null> {
-        return this.#executor().extreme(column, 'prev');
+        return this.#aggregated().#executor().extreme(column, 'prev');
     }
 
     /**
@@ -785,14 +785,7 @@ export class Builder<T = Record<string, unknown>> {
 
         page = Number.isInteger(page) && page >= 1 ? page : 1;
 
-        // Counted from a copy without the paging, since the total is what the query matches rather
-        // than what this page returns.
-        const counted: Builder<T> = this.clone();
-
-        counted.#limit = null;
-        counted.#offset = 0;
-
-        const total: number = await counted.count();
+        const total: number = await this.count();
         const data: T[] = await this.clone().forPage(page, perPage).get();
 
         return {
@@ -1037,6 +1030,20 @@ export class Builder<T = Record<string, unknown>> {
      */
     #qualifies(columns: string[]): boolean {
         return this.#joins.length > 0 && columns.some((column: string): boolean => Columns.qualified(column));
+    }
+
+    /**
+     * Get a copy of the query an aggregate can run on, without its paging or its orders.
+     */
+    #aggregated(): Builder<T> {
+        const query: Builder<T> = this.clone();
+
+        query.#limit = null;
+        query.#offset = 0;
+        query.#orders = [];
+        query.#random = false;
+
+        return query;
     }
 
     /**

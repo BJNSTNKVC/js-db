@@ -286,8 +286,18 @@ await DB.table<User>('users').max('age');
 that is `null`, `undefined` or anything else IndexedDB cannot use as a key, such as a boolean,
 returns `null` without reading the store, and `findOrFail` throws `RecordsNotFoundException` for it.
 
+`count`, `sum`, `avg`, `min` and `max` aggregate every match, ignoring `limit`, `offset`, `orderBy`
+and `inRandomOrder` as Laravel's aggregates do, so whether an index serves them never changes the
+answer, and an offset past every match still gives the answer over the whole match. To aggregate a
+single page, get the page and reduce it:
+
+```ts
+const page: Order[] = await DB.table<Order>('orders').orderBy('created_at').limit(10).get();
+const total: number = page.reduce((sum: number, order: Order): number => sum + order.amount, 0);
+```
+
 `min` and `max` read the answer straight off the index when the column has one and the query is
-unconstrained, so they cost one cursor rather than a full scan.
+unconstrained, whatever its order and paging, so they cost one cursor rather than a full scan.
 
 `paginate` gives you the totals a pager needs, which `forPage` cannot, and counts what the query
 matches rather than what the page returns:

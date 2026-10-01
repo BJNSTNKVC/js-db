@@ -160,8 +160,8 @@ await DB.table('users').leftJoin('posts', 'users.id', '=', 'posts.user_id').coun
 4
 ```
 
-Like `paginate`'s total, the count takes every row the join and its `where` clauses keep, whatever
-the `limit` and `offset`. `explain` on a joined query returns `'join'`, the plan it runs under.
+Like `paginate`'s total and every other aggregate, the count takes every row the join and its
+`where` clauses keep, whatever the `limit`, `offset` and order. `explain` on a joined query returns `'join'`, the plan it runs under.
 
 ## Writing through a join
 

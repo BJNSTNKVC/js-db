@@ -31,6 +31,18 @@ interface Note {
     body: string;
 }
 
+interface Weighed extends Item {
+    weight: number;
+}
+
+interface Totals {
+    count: number;
+    sum: number;
+    avg: number | null;
+    min: number | null;
+    max: number | null;
+}
+
 type Copy = 'indexed' | 'plain';
 
 type Truth = boolean | null;
@@ -58,6 +70,14 @@ type Ordering = [Ranking, Direction, Page];
 type Reorder = [string, Ranking, Direction, Page, (query: Builder<Ranked>) => Promise<number>, (row: Ranked) => Ranked | null];
 
 type Collision = [string, (query: Builder<Coded>) => Promise<number>];
+
+type Weight = 'visits' | 'weight';
+
+type Shaping = <T extends Item>(query: Builder<T>) => Builder<T>;
+
+type Shape = [string, Shaping];
+
+type Scope = [string, (query: Builder<Weighed>) => Builder<Weighed>, (row: Weighed) => boolean];
 
 const OPERATORS: Operator[] = ['=', '==', '===', '!=', '<>', '!==', '<', '>', '<=', '>='];
 
@@ -182,6 +202,35 @@ const JOINS: Condition[] = [
     ['through point lookups on the key path', (query: Builder<Item>): Builder<Item> => query.whereIn('id', [1, 3]), (row: Item): Truth => within(row.id, [1, 3])],
 ];
 
+const WEIGHTS: number[] = [5, 7, 1, 9];
+
+const WEIGHED: Weighed[] = sorted(ROWS).slice(0, WEIGHTS.length).map((row: Item, index: number): Weighed => ({
+    ...row,
+    visits: WEIGHTS[index] as number,
+    weight: WEIGHTS[index] as number,
+}));
+
+const SHAPES: Shape[] = [
+    ['limit(2)', <T extends Item>(query: Builder<T>): Builder<T> => query.limit(2)],
+    ['limit(1)', <T extends Item>(query: Builder<T>): Builder<T> => query.limit(1)],
+    ['offset(1)', <T extends Item>(query: Builder<T>): Builder<T> => query.offset(1)],
+    ['offset(9)', <T extends Item>(query: Builder<T>): Builder<T> => query.offset(9)],
+    ['offset(1).limit(2)', <T extends Item>(query: Builder<T>): Builder<T> => query.offset(1).limit(2)],
+    ['orderBy(\'visits\', \'desc\').limit(2)', <T extends Item>(query: Builder<T>): Builder<T> => query.orderBy('visits', 'desc').limit(2)],
+    ['inRandomOrder().limit(2)', <T extends Item>(query: Builder<T>): Builder<T> => query.inRandomOrder().limit(2)],
+];
+
+const SCOPES: Scope[] = [
+    ['every row', (query: Builder<Weighed>): Builder<Weighed> => query, (): boolean => true],
+    ['the rows an index serves on the indexed copy', (query: Builder<Weighed>): Builder<Weighed> => query.where('visits', '>', 1), (row: Weighed): boolean => row.visits > 1],
+    ['the rows a residual keeps on both copies', (query: Builder<Weighed>): Builder<Weighed> => query.where('weight', '>', 1), (row: Weighed): boolean => row.weight > 1],
+    ['no row', (query: Builder<Weighed>): Builder<Weighed> => query.where('visits', '>', 100), (): boolean => false],
+];
+
+const AGGREGATIONS: [Weight, string, Shaping][] = (['visits', 'weight'] as Weight[]).flatMap((column: Weight): [Weight, string, Shaping][] => {
+    return SHAPES.map(([name, shape]: Shape): [Weight, string, Shaping] => [column, name, shape]);
+});
+
 const COLLISIONS: Collision[] = [
     ['update', (query: Builder<Coded>): Promise<number> => query.orderBy('visits', 'desc').limit(1).update({ code: 10 })],
     ['increment', (query: Builder<Coded>): Promise<number> => query.orderBy('visits', 'desc').limit(1).increment('code', -10)],
@@ -255,6 +304,21 @@ class AddCodeToItemsTables extends Migration {
 
         await Schema.table('plain', (table: Blueprint): void => {
             table.integer('code').unique();
+        });
+    }
+}
+
+class AddWeightToItemsTables extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        await Schema.table('indexed', (table: Blueprint): void => {
+            table.integer('weight');
+        });
+
+        await Schema.table('plain', (table: Blueprint): void => {
+            table.integer('weight');
         });
     }
 }
@@ -459,6 +523,36 @@ function sorted(rows: Item[]): Item[] {
 }
 
 /**
+ * Run every aggregate over a column of a query.
+ */
+async function totals<T extends Item>(query: Builder<T>, column: string): Promise<Totals> {
+    return {
+        count: await query.clone().count(),
+        sum  : await query.clone().sum(column),
+        avg  : await query.clone().avg(column),
+        min  : await query.clone().min(column),
+        max  : await query.clone().max(column),
+    };
+}
+
+/**
+ * Apply the documented aggregates to the rows a query matches, which pass over a null or missing value.
+ */
+function modeled<R>(rows: R[], read: (row: R) => unknown): Totals {
+    const values: number[] = rows.map(read).filter((value: unknown): boolean => !absent(value)) as number[];
+    const sum: number = values.reduce((carry: number, value: number): number => carry + value, 0);
+    const empty: boolean = values.length === 0;
+
+    return {
+        count: rows.length,
+        sum,
+        avg  : empty ? null : sum / values.length,
+        min  : empty ? null : Math.min(...values),
+        max  : empty ? null : Math.max(...values),
+    };
+}
+
+/**
  * Run one query against both copies of the table.
  */
 async function both<R, T extends Item = Item>(run: (query: Builder<T>, copy: Copy) => Promise<R>): Promise<Record<Copy, R>> {
@@ -574,6 +668,14 @@ describe('ordering through an index that leaves records out', (): void => {
         expect(answers).toEqual({ indexed: { rows: expected, count: TIERED.length }, plain: { rows: expected, count: TIERED.length } });
     });
 
+    test.each(ORDERINGS)('orderBy(%s, %s) paged by %j aggregates every record through an index, through a scan and in the model', async (column: Ranking, direction: Direction, page: Page): Promise<void> => {
+        const expected: Totals = modeled(TIERED, (row: Ranked): unknown => row[column]);
+
+        const answers: Record<Copy, Totals> = await both((query: Builder<Ranked>): Promise<Totals> => totals(arranged(query, column, direction, page), column));
+
+        expect(answers).toEqual({ indexed: expected, plain: expected });
+    });
+
     test.each(REORDERS)('a limited %s ordered by %s %s and paged by %j writes the same rows through an index, through a scan and in the model', async (_: string, column: Ranking, direction: Direction, page: Page, write: (query: Builder<Ranked>) => Promise<number>, change: (row: Ranked) => Ranked | null): Promise<void> => {
         const chosen: Ranked[] = paged(ordered(TIERED, column, direction), page);
         const left: Ranked[] = TIERED
@@ -584,6 +686,26 @@ describe('ordering through an index that leaves records out', (): void => {
 
         expect(affected).toEqual({ indexed: chosen.length, plain: chosen.length });
         expect({ indexed: await raw('indexed'), plain: await raw('plain') }).toEqual({ indexed: sorted(left), plain: sorted(left) });
+    });
+});
+
+describe('aggregating over every match', (): void => {
+    beforeEach(async (): Promise<void> => {
+        connection = new Connection('app', { database: `invariance-weighed-${++sequence}`, migrations: [CreateItemsTables, AddWeightToItemsTables] });
+
+        await connection.migrate();
+        await connection.table<Weighed>('indexed').insert(WEIGHED);
+        await connection.table<Weighed>('plain').insert(WEIGHED);
+    });
+
+    describe.each(SCOPES)('over %s', (_: string, constrain: (query: Builder<Weighed>) => Builder<Weighed>, holds: (row: Weighed) => boolean): void => {
+        test.each(AGGREGATIONS)('every aggregate of %s under %s gives the whole answer through an index, through a scan and in the model', async (column: Weight, _: string, shape: Shaping): Promise<void> => {
+            const expected: Totals = modeled(WEIGHED.filter(holds), (row: Weighed): unknown => row[column]);
+
+            const answers: Record<Copy, Totals> = await both((query: Builder<Weighed>): Promise<Totals> => totals(shape(constrain(query)), column));
+
+            expect(answers).toEqual({ indexed: expected, plain: expected });
+        });
     });
 });
 
@@ -631,5 +753,19 @@ describe('counting through a join', (): void => {
         });
 
         expect(answers).toEqual({ indexed: { rows: expected, count: expected }, plain: { rows: expected, count: expected } });
+    });
+
+    describe.each(JOINS)('a join %s', (_: string, constrain: (query: Builder<Item>) => Builder<Item>, holds: (row: Item) => Truth): void => {
+        const joined: Item[] = NOTES.flatMap((note: Note): Item[] => ROWS.filter((row: Item): boolean => row.id === note.item_id && holds(row) === true));
+
+        test.each(SHAPES)('under %s aggregates every joined row through an index, through a scan and in the model', async (_: string, shape: Shaping): Promise<void> => {
+            const expected: Totals = modeled(joined, (row: Item): unknown => row.visits);
+
+            const answers: Record<Copy, Totals> = await both((query: Builder<Item>, copy: Copy): Promise<Totals> => {
+                return totals(shape(constrain(query.join<Item>('notes', `${copy}.id`, '=', 'notes.item_id'))), 'visits');
+            });
+
+            expect(answers).toEqual({ indexed: expected, plain: expected });
+        });
     });
 });

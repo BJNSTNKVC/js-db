@@ -625,6 +625,51 @@ describe('Builder terminals', (): void => {
     test('gets the largest value of nothing as null', async (): Promise<void> => {
         expect(await users().where('name', 'Nobody').max('age')).toBeNull();
     });
+
+    test('aggregates a query in random order without shuffling it', async (): Promise<void> => {
+        const random: MockInstance = vi.spyOn(Math, 'random').mockReturnValue(0);
+        const members: () => Builder<User> = (): Builder<User> => users().where('role', 'member').inRandomOrder().limit(1);
+
+        expect([
+            await members().count(),
+            await members().sum('age'),
+            await members().avg('age'),
+            await members().min('age'),
+            await members().max('age'),
+        ]).toEqual([3, 50, 25, 25, 25]);
+        expect(random).not.toHaveBeenCalled();
+    });
+
+    test('leaves the paging and order of the query it aggregates alone', async (): Promise<void> => {
+        const query: Builder<User> = users().orderBy('name').offset(1).limit(2);
+
+        expect([await query.count(), await query.sum('age'), await query.min('age')]).toEqual([5, 115, 25]);
+        expect(await names(query)).toEqual(['Bob', 'Carol']);
+    });
+
+    test('checks and walks only the page a limit and an offset leave', async (): Promise<void> => {
+        const pages: string[][] = [];
+        const each: string[] = [];
+        const lazy: string[] = [];
+
+        await users().orderBy('name').offset(1).limit(3).chunk(2, (records: User[]): void => {
+            pages.push(records.map((user: User): string => user.name));
+        });
+
+        await users().orderBy('name').offset(3).each((user: User): void => {
+            each.push(user.name);
+        });
+
+        for await (const user of users().orderBy('name').limit(2).lazy(1)) {
+            lazy.push(user.name);
+        }
+
+        expect(await users().offset(9).exists()).toEqual(false);
+        expect(await users().where('role', 'member').offset(2).exists()).toEqual(true);
+        expect(pages).toEqual([['Bob', 'Carol'], ['Dave']]);
+        expect(each).toEqual(['Dave', 'Erin']);
+        expect(lazy).toEqual(['Alice', 'Bob']);
+    });
 });
 
 describe('Builder chunking', (): void => {

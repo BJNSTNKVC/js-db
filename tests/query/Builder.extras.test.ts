@@ -7,6 +7,7 @@ import { MultipleRecordsFoundException, RecordsNotFoundException, SchemaExceptio
 import { Executor } from '../../src/query/Executor';
 import type { Builder } from '../../src/query/Builder';
 import type { Paginated } from '../../src/query/types';
+import type { MockInstance } from 'vitest';
 
 interface User {
     id: number;
@@ -120,6 +121,27 @@ describe('Builder.paginate', (): void => {
         expect(page.data).toHaveLength(1);
         expect(page.total).toEqual(3);
         expect(page.lastPage).toEqual(3);
+    });
+
+    test.each([
+        ['no order', (query: Builder<User>): Builder<User> => query],
+        ['an order', (query: Builder<User>): Builder<User> => query.orderBy('name', 'desc')],
+        ['the paging the query carried', (query: Builder<User>): Builder<User> => query.orderBy('name').offset(4).limit(1)],
+    ])('counts every match with %s', async (_: string, shape: (query: Builder<User>) => Builder<User>): Promise<void> => {
+        const page: Paginated<User> = await shape(users().where('role', 'member')).paginate(1, 2);
+
+        expect(page.data).toHaveLength(2);
+        expect(page.total).toEqual(3);
+        expect(page.lastPage).toEqual(2);
+    });
+
+    test('counts every match in random order without shuffling it', async (): Promise<void> => {
+        const random: MockInstance = vi.spyOn(Math, 'random').mockReturnValue(0);
+        const page: Paginated<User> = await users().where('role', 'member').inRandomOrder().paginate(1, 2);
+
+        expect(page.data.map((user: User): string => user.name)).toEqual(['Carol', 'Dave']);
+        expect(page.total).toEqual(3);
+        expect(random).toHaveBeenCalledTimes(2);
     });
 
     test('returns a later page', async (): Promise<void> => {
