@@ -498,3 +498,134 @@ describe('Grouping over values holding the signature separator', (): void => {
         isolated.disconnect();
     });
 });
+
+describe('Grouping by JSON values', (): void => {
+    interface Layout {
+        id: number;
+        owner_id: number;
+        meta: unknown;
+        size: number;
+    }
+
+    interface Owner {
+        id: number;
+        name: string;
+    }
+
+    class CreateLayoutsTables extends Migration {
+        /**
+         * Run the migration.
+         */
+        override async up(): Promise<void> {
+            await Schema.create('owners', (table: Blueprint): void => {
+                table.id();
+                table.string('name');
+            });
+
+            await Schema.create('layouts', (table: Blueprint): void => {
+                table.id();
+                table.integer('owner_id');
+                table.json('meta').nullable();
+                table.integer('size');
+            });
+        }
+    }
+
+    const REPRODUCTION: unknown[] = [
+        { x: 1, y: 2 },
+        { y: 2, x: 1 },
+        { x: 1 },
+        { y: 2 },
+        { x: 1, y: '2' },
+        { x: 1, y: 2, z: null },
+    ];
+
+    let layouts: () => Builder<Layout>;
+    let isolated: Connection;
+
+    /**
+     * Replace the layouts with one owned by Ann for each value, sized by its position.
+     */
+    async function seeded(metas: unknown[]): Promise<void> {
+        await layouts().truncate();
+        await layouts().insert(metas.map((meta: unknown, index: number): Omit<Layout, 'id'> => ({ owner_id: 1, meta, size: index + 1 })));
+    }
+
+    beforeAll(async (): Promise<void> => {
+        isolated = new Connection('app', { database: 'grouping-json', migrations: [CreateLayoutsTables] });
+        layouts = (): Builder<Layout> => isolated.table<Layout>('layouts');
+
+        await isolated.migrate();
+        await isolated.table<Owner>('owners').insert({ name: 'Ann' });
+    });
+
+    test('groups objects holding the same keys in any order together', async (): Promise<void> => {
+        await seeded(REPRODUCTION);
+
+        expect(await layouts().groupBy('meta').aggregate({ total: { count: '*' }, largest: { max: 'size' } }).get()).toEqual([
+            { meta: { x: 1, y: 2 }, total: 2, largest: 2 },
+            { meta: { x: 1 }, total: 1, largest: 3 },
+            { meta: { y: 2 }, total: 1, largest: 4 },
+            { meta: { x: 1, y: '2' }, total: 1, largest: 5 },
+            { meta: { x: 1, y: 2, z: null }, total: 1, largest: 6 },
+        ]);
+        expect(await layouts().groupBy('owner_id', 'meta').aggregate({ total: { count: '*' } }).get()).toHaveLength(5);
+    });
+
+    test('counts, filters, sorts and pages the merged groups', async (): Promise<void> => {
+        await seeded(REPRODUCTION);
+
+        expect(await layouts().groupBy('meta').count()).toEqual(5);
+        expect(await layouts().groupBy('meta').aggregate({ total: { count: '*' } }).having('total', '>', 1).get()).toEqual([
+            { meta: { x: 1, y: 2 }, total: 2 },
+        ]);
+        expect(await layouts().groupBy('meta').aggregate({ total: { count: '*' } }).orderBy('total', 'desc').first()).toEqual({ meta: { x: 1, y: 2 }, total: 2 });
+        expect(await layouts().groupBy('meta').offset(3).limit(5).count()).toEqual(2);
+    });
+
+    test('groups them together on a joined query', async (): Promise<void> => {
+        await seeded(REPRODUCTION);
+
+        const joined: () => Builder<Owner & Layout> = (): Builder<Owner & Layout> => isolated.table<Owner>('owners')
+            .join<Owner & Layout>('layouts', 'owners.id', '=', 'layouts.owner_id');
+
+        expect(await joined().groupBy('meta').count()).toEqual(5);
+        expect(await joined().groupBy('name', 'meta').aggregate({ total: { count: '*' } }).first()).toEqual({ name: 'Ann', meta: { x: 1, y: 2 }, total: 2 });
+    });
+
+    test('keeps arrays in a different order and nested values the top level keeps apart in groups of their own', async (): Promise<void> => {
+        const metas: unknown[] = [
+            [1, 2],
+            [2, 1],
+            [{ x: 1 }, { y: 2 }],
+            [{ y: 2 }, { x: 1 }],
+            { a: 1 },
+            { a: '1' },
+            { a: new Date(0) },
+            { a: new Date(0).toISOString() },
+            { a: undefined },
+            {},
+            { a: null },
+            [null],
+            [undefined],
+        ];
+
+        await seeded(metas);
+
+        expect(await layouts().groupBy('meta').count()).toEqual(metas.length);
+    });
+
+    test('groups nested objects by content inside arrays and objects', async (): Promise<void> => {
+        await seeded([
+            { a: { x: 1, y: 2 }, list: [{ p: 1, q: 2 }] },
+            { list: [{ q: 2, p: 1 }], a: { y: 2, x: 1 } },
+            [{ x: 1, y: [{ m: 1, n: 2 }] }],
+            [{ y: [{ n: 2, m: 1 }], x: 1 }],
+        ]);
+
+        expect(await layouts().groupBy('meta').aggregate({ total: { count: '*' } }).get()).toEqual([
+            { meta: { a: { x: 1, y: 2 }, list: [{ p: 1, q: 2 }] }, total: 2 },
+            { meta: [{ x: 1, y: [{ m: 1, n: 2 }] }], total: 2 },
+        ]);
+    });
+});

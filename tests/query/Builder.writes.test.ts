@@ -84,6 +84,12 @@ class CreateUsersTable extends Migration {
             table.integer('code').unique();
             table.string('label');
         });
+
+        await Schema.create('schedules', (table: Blueprint): void => {
+            table.id();
+            table.string('label');
+            table.json('slots').unique();
+        });
     }
 }
 
@@ -992,6 +998,29 @@ describe('Builder unique violations on every write', (): void => {
         });
 
         expect(await users().orderBy('id').pluck('name')).toEqual(['Alice', 'Bob', 'Carol', 'Dave']);
+    });
+});
+
+describe('Builder unique violations on a JSON column', (): void => {
+    beforeEach(async (): Promise<void> => {
+        await connection.table('schedules').insert([
+            { label: 'A', slots: [new Date(0)] },
+            { label: 'B', slots: [new Date(0).toISOString()] },
+        ]);
+    });
+
+    test('names the index when an update replaces a date string with the date it spells', async (): Promise<void> => {
+        const before: Record<string, unknown>[] = await connection.table('schedules').orderBy('id').get();
+        const failure: Promise<number> = connection.table('schedules').where('label', 'B').update({ slots: [new Date(0)] });
+
+        await expect(failure).rejects.toThrow(new UniqueConstraintViolationException('schedules', 'schedules_slots_unique'));
+        expect(await connection.table('schedules').orderBy('id').get()).toEqual(before);
+    });
+
+    test('names the index when an upsert does the same', async (): Promise<void> => {
+        const failure: Promise<number> = connection.table('schedules').upsert([{ id: 2, label: 'B', slots: [new Date(0)] }], 'id');
+
+        await expect(failure).rejects.toThrow(new UniqueConstraintViolationException('schedules', 'schedules_slots_unique'));
     });
 });
 

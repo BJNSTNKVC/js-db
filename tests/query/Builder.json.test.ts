@@ -30,6 +30,12 @@ interface Article {
     points: number;
 }
 
+interface Layout {
+    id: number;
+    owner_id: number | null;
+    meta: unknown;
+}
+
 interface Score {
     id: number;
     player: string;
@@ -66,6 +72,12 @@ class CreateTables extends Migration {
             table.string('title');
             table.json('labels').nullable().multiEntry();
             table.integer('points').default(0);
+        });
+
+        await Schema.create('layouts', (table: Blueprint): void => {
+            table.id();
+            table.integer('owner_id').nullable();
+            table.json('meta').nullable();
         });
     }
 }
@@ -469,5 +481,96 @@ describe('Builder through a multi-entry index', (): void => {
             await articles().min('labels');
             await articles().max('labels');
         })).toEqual(['scan', 'scan']);
+    });
+});
+
+describe('Builder.distinct over JSON values', (): void => {
+    /**
+     * Begin a query against the layouts table.
+     */
+    function layouts(): Builder<Layout> {
+        return connection.table<Layout>('layouts');
+    }
+
+    /**
+     * Replace the layouts with one owned by Alice for each value.
+     */
+    async function seeded(metas: unknown[]): Promise<void> {
+        await layouts().truncate();
+        await layouts().insert(metas.map((meta: unknown): Omit<Layout, 'id'> => ({ owner_id: 1, meta })));
+    }
+
+    const REPRODUCTION: unknown[] = [
+        { x: 1, y: 2 },
+        { y: 2, x: 1 },
+        { x: 1 },
+        { y: 2 },
+        { x: 1, y: '2' },
+        { x: 1, y: 2, z: null },
+    ];
+
+    test('treats objects holding the same keys in any order as one value', async (): Promise<void> => {
+        await seeded(REPRODUCTION);
+
+        const rows: Layout[] = await layouts().select('meta').distinct().get();
+
+        expect(rows).toEqual([
+            { meta: { x: 1, y: 2 } },
+            { meta: { x: 1 } },
+            { meta: { y: 2 } },
+            { meta: { x: 1, y: '2' } },
+            { meta: { x: 1, y: 2, z: null } },
+        ]);
+        expect(Object.keys((rows[0] as Layout).meta as object)).toEqual(['x', 'y']);
+        expect(await layouts().select('owner_id', 'meta').distinct().get()).toHaveLength(5);
+    });
+
+    test('treats them as one value on a joined query', async (): Promise<void> => {
+        await seeded(REPRODUCTION);
+
+        const joined: Builder<Profile & Layout> = profiles().join<Profile & Layout>('layouts', 'profiles.id', '=', 'layouts.owner_id');
+
+        expect(await joined.clone().select('meta').distinct().get()).toHaveLength(5);
+        expect(await joined.clone().select('name', 'layouts.meta').distinct().get()).toHaveLength(5);
+    });
+
+    test('compares nested objects by content and arrays by order', async (): Promise<void> => {
+        await seeded([
+            { a: { x: 1, y: 2 }, list: [1, 2] },
+            { list: [1, 2], a: { y: 2, x: 1 } },
+            { a: { x: 1, y: 2 }, list: [2, 1] },
+            [{ x: 1, y: 2 }, { z: 3 }],
+            [{ y: 2, x: 1 }, { z: 3 }],
+            [{ z: 3 }, { x: 1, y: 2 }],
+        ]);
+
+        expect(await layouts().select('meta').distinct().get()).toEqual([
+            { meta: { a: { x: 1, y: 2 }, list: [1, 2] } },
+            { meta: { a: { x: 1, y: 2 }, list: [2, 1] } },
+            { meta: [{ x: 1, y: 2 }, { z: 3 }] },
+            { meta: [{ z: 3 }, { x: 1, y: 2 }] },
+        ]);
+    });
+
+    test('keeps nested values apart that it keeps apart at the top level', async (): Promise<void> => {
+        const metas: unknown[] = [
+            { a: 1 },
+            { a: '1' },
+            { a: new Date(0) },
+            { a: new Date(0).toISOString() },
+            { a: undefined },
+            {},
+            { a: null },
+            { a: true },
+            { a: 'true' },
+            { a: {} },
+            { a: [] },
+            [null],
+            [undefined],
+        ];
+
+        await seeded(metas);
+
+        expect(await layouts().select('meta').distinct().get()).toHaveLength(metas.length);
     });
 });

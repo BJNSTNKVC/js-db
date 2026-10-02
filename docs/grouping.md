@@ -47,6 +47,11 @@ await DB.table<User>('users').groupBy('team', 'role').aggregate({ total: { count
 `aggregate()` is optional. Grouping with nothing aggregated gives you one row per distinct
 combination, which is what `distinct()` does over the same columns.
 
+A JSON column groups by content, comparing values the way `distinct()` does, as described in
+[Querying](querying.md#shaping). Objects holding the same keys and values fall into one group in
+whatever order their keys were written, at every depth, and an array shares a group only with arrays
+holding the same elements in the same order. The group carries the value its first record holds.
+
 ## having, ordering and paging apply to groups
 
 `having` and `orHaving` filter the grouped rows, and take the same operators as `where`. They can

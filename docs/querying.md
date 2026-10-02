@@ -230,6 +230,24 @@ DB.table<User>('users')
 `select()` projects in memory after the fetch. IndexedDB always returns whole records, so it shapes
 the result rather than saving any work.
 
+`distinct()` drops a row when an earlier one holds the same value in every column it returns, and
+keeps the first. A JSON column compares by content, as SQL's JSON comparison does: two objects
+holding the same keys and values are one value in whatever order their keys were written, at every
+depth, while arrays compare element by element in order, so `[1, 2]` and `[2, 1]` stay apart. Inside
+a JSON value, every distinction a column makes still holds: `1` and `'1'`, `true` and `'true'`, a
+date and its ISO string, `null` and `undefined`, a key holding `undefined` and a missing key, a hole
+in an array and `undefined`, and `{}` and `[]` are all different values, while `NaN` matches `NaN`
+and `-0` matches `0`.
+
+```ts
+await DB.table<User>('users').select('settings').distinct().get();
+// { theme: 'dark', rank: 2 } and { rank: 2, theme: 'dark' } come back as one row
+```
+
+A `Map`, a `Set`, an `ArrayBuffer` and a `RegExp` hold no keys of their own, so each compares as an
+empty object, and a typed array compares as an object keyed by its indexes. A value that contains
+itself cannot be compared, and `distinct()` throws a `TypeError` on it.
+
 `limit` and `offset` read their values as Laravel does. `limit` ignores a negative or non-finite
 value and keeps any limit set before it, `offset` treats one as 0, and both truncate a fraction. So
 `offset(-2)` skips nothing, and a limited `update` or `delete` given `limit(-1)` writes every match.
