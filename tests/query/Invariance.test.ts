@@ -3,9 +3,10 @@ import { Connection } from '../../src/database/Connection';
 import { Migration } from '../../src/migrations/Migration';
 import { Schema } from '../../src/schema/Schema';
 import { Blueprint } from '../../src/schema/Blueprint';
+import { Request } from '../../src/database/Request';
 import { UniqueConstraintViolationException } from '../../src/exceptions';
 import type { Builder } from '../../src/query/Builder';
-import type { Operator } from '../../src/query/types';
+import type { Operator, Paginated } from '../../src/query/types';
 
 interface Item {
     id: number;
@@ -33,6 +34,10 @@ interface Note {
 
 interface Weighed extends Item {
     weight: number;
+}
+
+interface Tagged extends Item {
+    tags?: unknown;
 }
 
 interface Totals {
@@ -78,6 +83,10 @@ type Shaping = <T extends Item>(query: Builder<T>) => Builder<T>;
 type Shape = [string, Shaping];
 
 type Scope = [string, (query: Builder<Weighed>) => Builder<Weighed>, (row: Weighed) => boolean];
+
+type Listing = [string, (query: Builder<Tagged>) => Builder<Tagged>, (row: Tagged) => Truth];
+
+type Retag = [string, (query: Builder<Tagged>) => Promise<number>, (row: Tagged) => Tagged | null];
 
 const OPERATORS: Operator[] = ['=', '==', '===', '!=', '<>', '!==', '<', '>', '<=', '>='];
 
@@ -236,6 +245,42 @@ const COLLISIONS: Collision[] = [
     ['increment', (query: Builder<Coded>): Promise<number> => query.orderBy('visits', 'desc').limit(1).increment('code', -10)],
 ];
 
+const TAGS: Record<number, unknown> = { 1: [], 2: ['z', 'x', 'z'], 3: [day('2024-01-15'), NaN, { a: 1 }, 'y'], 5: 'x' };
+
+const TAGGED: Tagged[] = ROWS.map((row: Item): Tagged => row.id in TAGS ? { ...row, tags: TAGS[row.id] } : row);
+
+const LISTINGS: Listing[] = [
+    ['where(\'tags\', \'x\')', (query: Builder<Tagged>): Builder<Tagged> => query.where('tags', 'x'), (row: Tagged): Truth => compare(row.tags, '=', 'x')],
+    ['where(\'tags\', \'==\', \'x\')', (query: Builder<Tagged>): Builder<Tagged> => query.where('tags', '==', 'x'), (row: Tagged): Truth => compare(row.tags, '==', 'x')],
+    ['where(\'tags\', \'===\', \'x\')', (query: Builder<Tagged>): Builder<Tagged> => query.where('tags', '===', 'x'), (row: Tagged): Truth => compare(row.tags, '===', 'x')],
+    ['where(\'tags\', \'z,x,z\')', (query: Builder<Tagged>): Builder<Tagged> => query.where('tags', 'z,x,z'), (row: Tagged): Truth => compare(row.tags, '=', 'z,x,z')],
+    ['where(\'tags\', \'>=\', \'x\')', (query: Builder<Tagged>): Builder<Tagged> => query.where('tags', '>=', 'x'), (row: Tagged): Truth => compare(row.tags, '>=', 'x')],
+    ['whereBetween(\'tags\', [\'x\', \'y\'])', (query: Builder<Tagged>): Builder<Tagged> => query.whereBetween('tags', ['x', 'y']), (row: Tagged): Truth => between(row.tags, 'x', 'y')],
+    ['whereIn(\'tags\', [\'x\', \'z\'])', (query: Builder<Tagged>): Builder<Tagged> => query.whereIn('tags', ['x', 'z']), (row: Tagged): Truth => within(row.tags, ['x', 'z'])],
+    ['whereIn(\'tags\', [\'x\', \'x\'])', (query: Builder<Tagged>): Builder<Tagged> => query.whereIn('tags', ['x', 'x']), (row: Tagged): Truth => within(row.tags, ['x', 'x'])],
+    ['whereJsonContains(\'tags\', \'x\')', (query: Builder<Tagged>): Builder<Tagged> => query.whereJsonContains('tags', 'x'), (row: Tagged): Truth => contains(row.tags, 'x')],
+    ['whereJsonContains(\'tags\', \'z\')', (query: Builder<Tagged>): Builder<Tagged> => query.whereJsonContains('tags', 'z'), (row: Tagged): Truth => contains(row.tags, 'z')],
+    ['whereJsonContains(\'tags\', \'w\')', (query: Builder<Tagged>): Builder<Tagged> => query.whereJsonContains('tags', 'w'), (row: Tagged): Truth => contains(row.tags, 'w')],
+    ['whereJsonContains(\'tags\', [\'x\', \'z\'])', (query: Builder<Tagged>): Builder<Tagged> => query.whereJsonContains('tags', ['x', 'z']), (row: Tagged): Truth => contains(row.tags, ['x', 'z'])],
+    ['whereJsonContains(\'tags\', [\'y\', \'x\'])', (query: Builder<Tagged>): Builder<Tagged> => query.whereJsonContains('tags', ['y', 'x']), (row: Tagged): Truth => contains(row.tags, ['y', 'x'])],
+    ['whereJsonContains(\'tags\', new Date(\'2024-01-15\'))', (query: Builder<Tagged>): Builder<Tagged> => query.whereJsonContains('tags', day('2024-01-15')), (row: Tagged): Truth => contains(row.tags, day('2024-01-15'))],
+    ['whereJsonContains(\'tags\', NaN)', (query: Builder<Tagged>): Builder<Tagged> => query.whereJsonContains('tags', NaN), (row: Tagged): Truth => contains(row.tags, NaN)],
+    ['whereJsonContains(\'tags\', { a: 1 })', (query: Builder<Tagged>): Builder<Tagged> => query.whereJsonContains('tags', { a: 1 }), (row: Tagged): Truth => contains(row.tags, { a: 1 })],
+    ['whereJsonDoesntContain(\'tags\', \'x\')', (query: Builder<Tagged>): Builder<Tagged> => query.whereJsonDoesntContain('tags', 'x'), (row: Tagged): Truth => not(contains(row.tags, 'x'))],
+    ['where(\'id\', 4).orWhereJsonContains(\'tags\', \'y\')', (query: Builder<Tagged>): Builder<Tagged> => query.where('id', 4).orWhereJsonContains('tags', 'y'), (row: Tagged): Truth => row.id === 4 || contains(row.tags, 'y')],
+    ['where(\'role\', \'a\').whereJsonContains(\'tags\', \'y\')', (query: Builder<Tagged>): Builder<Tagged> => query.where('role', 'a').whereJsonContains('tags', 'y'), (row: Tagged): Truth => row.role === 'a' && contains(row.tags, 'y')],
+];
+
+const RETAGS: Retag[] = [
+    ['an increment through whereJsonContains(\'tags\', \'x\')', (query: Builder<Tagged>): Promise<number> => query.whereJsonContains('tags', 'x').increment('visits'), (row: Tagged): Tagged | null => contains(row.tags, 'x') === true ? { ...row, visits: row.visits + 1 } : row],
+    ['an increment through whereJsonContains(\'tags\', \'z\')', (query: Builder<Tagged>): Promise<number> => query.whereJsonContains('tags', 'z').increment('visits'), (row: Tagged): Tagged | null => contains(row.tags, 'z') === true ? { ...row, visits: row.visits + 1 } : row],
+    ['an update of the tags through whereJsonContains(\'tags\', \'x\')', (query: Builder<Tagged>): Promise<number> => query.whereJsonContains('tags', 'x').update({ tags: ['x', 'w'] }), (row: Tagged): Tagged | null => contains(row.tags, 'x') === true ? { ...row, tags: ['x', 'w'] } : row],
+    ['a delete through whereJsonContains(\'tags\', \'x\')', (query: Builder<Tagged>): Promise<number> => query.whereJsonContains('tags', 'x').delete(), (row: Tagged): Tagged | null => contains(row.tags, 'x') === true ? null : row],
+    ['an increment through where(\'tags\', \'>=\', \'x\')', (query: Builder<Tagged>): Promise<number> => query.where('tags', '>=', 'x').increment('visits'), (row: Tagged): Tagged | null => compare(row.tags, '>=', 'x') === true ? { ...row, visits: row.visits + 1 } : row],
+    ['an update of the tags through whereIn(\'tags\', [\'x\', \'z\'])', (query: Builder<Tagged>): Promise<number> => query.whereIn('tags', ['x', 'z']).update({ tags: ['z'] }), (row: Tagged): Tagged | null => within(row.tags, ['x', 'z']) === true ? { ...row, tags: ['z'] } : row],
+    ['a delete through orderBy(\'tags\').limit(2)', (query: Builder<Tagged>): Promise<number> => query.orderBy('tags').limit(2).delete(), (row: Tagged): Tagged | null => listed(TAGGED, 'asc').slice(0, 2).includes(row) ? null : row],
+];
+
 class CreateItemsTables extends Migration {
     /**
      * Run the migration.
@@ -319,6 +364,21 @@ class AddWeightToItemsTables extends Migration {
 
         await Schema.table('plain', (table: Blueprint): void => {
             table.integer('weight');
+        });
+    }
+}
+
+class AddTagsToItemsTables extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        await Schema.table('indexed', (table: Blueprint): void => {
+            table.json('tags').multiEntry();
+        });
+
+        await Schema.table('plain', (table: Blueprint): void => {
+            table.json('tags');
         });
     }
 }
@@ -465,6 +525,32 @@ function within(held: unknown, values: unknown[]): Truth {
     const found: boolean = values.some((value: unknown): boolean => !absent(value) && comparable(held) == comparable(value));
 
     return found ? true : (values.some(absent) ? null : false);
+}
+
+/**
+ * Apply the documented semantics of whereJsonContains to one value, three-valued, finding elements strictly.
+ */
+function contains(held: unknown, value: unknown): Truth {
+    if (!Array.isArray(held)) {
+        return null;
+    }
+
+    return (Array.isArray(value) ? value : [value]).every((element: unknown): boolean => held.includes(element));
+}
+
+/**
+ * Apply the documented order to rows by their tags, which compares arrays as the strings they join into.
+ */
+function listed(rows: Tagged[], direction: Direction): Tagged[] {
+    const sign: number = direction === 'desc' ? -1 : 1;
+
+    return [...rows].sort((a: Tagged, b: Tagged): number => {
+        if (absent(a.tags) || absent(b.tags)) {
+            return sign * (Number(!absent(a.tags)) - Number(!absent(b.tags)));
+        }
+
+        return sign * (String(a.tags) < String(b.tags) ? -1 : 1);
+    });
 }
 
 /**
@@ -731,6 +817,94 @@ describe('unique violations on a unique column both copies hold', (): void => {
 
         expect({ indexed: await raw('indexed'), plain: await raw('plain') }).toEqual({ indexed: sorted(CODED), plain: sorted(CODED) });
     });
+});
+
+describe('a column holding arrays under a multi-entry index', (): void => {
+    beforeEach(async (): Promise<void> => {
+        const database: string = `invariance-tagged-${++sequence}`;
+        const first: Connection = new Connection('app', { database, migrations: [CreateItemsTables] });
+
+        await first.migrate();
+        await first.table<Item>('indexed').insert(ROWS);
+        await first.table<Item>('plain').insert(ROWS);
+
+        first.disconnect();
+
+        connection = new Connection('app', { database, migrations: [CreateItemsTables, AddTagsToItemsTables] });
+
+        await connection.migrate();
+
+        for (const [id, tags] of Object.entries(TAGS)) {
+            await both((query: Builder<Tagged>): Promise<number> => query.where('id', Number(id)).update({ tags: typeof tags === 'string' ? JSON.stringify(tags) : tags }));
+        }
+    });
+
+    describe.each(LISTINGS)('%s', (_: string, constrain: (query: Builder<Tagged>) => Builder<Tagged>, holds: (row: Tagged) => Truth): void => {
+        const expected: number[] = ids(TAGGED.filter((row: Tagged): boolean => holds(row) === true));
+
+        test('gives the same answer to every terminal through an index, through a scan and from the model', async (): Promise<void> => {
+            const answers: Record<Copy, unknown> = await both(async (query: Builder<Tagged>): Promise<unknown> => ({
+                rows     : ids(await constrain(query.clone()).get()),
+                count    : await constrain(query.clone()).count(),
+                first    : (await constrain(query.clone()).orderBy('id').first())?.id ?? null,
+                plucked  : (await constrain(query.clone()).pluck('id') as number[]).sort((a: number, b: number): number => a - b),
+                paginated: await constrain(query.clone()).orderBy('id').paginate(1, 2).then((page: Paginated<Tagged>): unknown => ({ rows: ids(page.data), total: page.total })),
+            }));
+
+            const modeled: unknown = { rows: expected, count: expected.length, first: expected[0] ?? null, plucked: expected, paginated: { rows: expected.slice(0, 2), total: expected.length } };
+
+            expect(answers).toEqual({ indexed: modeled, plain: modeled });
+        });
+    });
+
+    test.each(['asc', 'desc'] as Direction[])('orderBy(\'tags\', %s) gives the same answer to every terminal through an index, through a scan and from the model', async (direction: Direction): Promise<void> => {
+        const expected: number[] = listed(TAGGED, direction).map((row: Tagged): number => row.id);
+
+        const answers: Record<Copy, unknown> = await both(async (query: Builder<Tagged>): Promise<unknown> => {
+            const ordered: () => Builder<Tagged> = (): Builder<Tagged> => query.clone().orderBy('tags', direction);
+
+            return {
+                rows     : (await ordered().get()).map((row: Tagged): number => row.id),
+                count    : await ordered().count(),
+                first    : (await ordered().first())?.id,
+                plucked  : await ordered().pluck('id'),
+                paginated: await ordered().paginate(2, 2).then((page: Paginated<Tagged>): unknown => ({ rows: page.data.map((row: Tagged): number => row.id), total: page.total })),
+            };
+        });
+
+        const modeled: unknown = { rows: expected, count: expected.length, first: expected[0], plucked: expected, paginated: { rows: expected.slice(2, 4), total: expected.length } };
+
+        expect(answers).toEqual({ indexed: modeled, plain: modeled });
+    });
+
+    test('orders by the tags in memory although the index holds as many entries as the table holds records', async (): Promise<void> => {
+        const database: IDBDatabase = await connection.open();
+        const store: IDBObjectStore = database.transaction('indexed', 'readonly').objectStore('indexed');
+
+        expect(await Request.settle(store.index('indexed_tags_index').count())).toEqual(await Request.settle(store.count()));
+        expect(await connection.table<Tagged>('indexed').orderBy('tags').explain()).toEqual('scan');
+    });
+
+    test('min and max over the tags give the same answer through an index, through a scan and from the model', async (): Promise<void> => {
+        const values: number[] = TAGGED.filter((row: Tagged): boolean => !absent(row.tags)).map((row: Tagged): number => Number(row.tags));
+        const expected: { min: number; max: number } = { min: values.reduce((a: number, b: number): number => Math.min(a, b)), max: values.reduce((a: number, b: number): number => Math.max(a, b)) };
+
+        const answers: Record<Copy, unknown> = await both(async (query: Builder<Tagged>): Promise<unknown> => ({ min: await query.clone().min('tags'), max: await query.clone().max('tags') }));
+
+        expect(answers).toEqual({ indexed: expected, plain: expected });
+    });
+
+    test.each(RETAGS)('%s writes the same rows through an index, through a scan and in the model', async (_: string, write: (query: Builder<Tagged>) => Promise<number>, change: (row: Tagged) => Tagged | null): Promise<void> => {
+        const changed: number = TAGGED.filter((row: Tagged): boolean => change(row) !== row).length;
+        const left: Tagged[] = TAGGED
+            .map(change)
+            .filter((row: Tagged | null): row is Tagged => row !== null);
+
+        const affected: Record<Copy, number> = await both(write);
+
+        expect(affected).toEqual({ indexed: changed, plain: changed });
+        expect({ indexed: await raw('indexed'), plain: await raw('plain') }).toEqual({ indexed: sorted(left), plain: sorted(left) });
+    }, 2000);
 });
 
 describe('counting through a join', (): void => {

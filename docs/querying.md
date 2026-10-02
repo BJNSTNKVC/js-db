@@ -182,6 +182,14 @@ No index covers a value inside a JSON column, so a constraint on a path is check
 record the query reads, and ordering by a path sorts in memory. Another constraint on an indexed
 column can still drive the scan.
 
+The one exception is `whereJsonContains` with a single string or number on a column declared with
+`.multiEntry()`, as described in [Defining a schema](schema.md#multi-entry-indexes-serve-wherejsoncontains).
+It reads only the records whose array holds the value, through the index, and returns the same
+records a scan would, each once. An array of values, any other kind of value, a path, a negation and
+an `or` form are checked against every record instead. A multi-entry index serves nothing else: a
+`where`, `whereIn`, `whereBetween` or `orderBy` on the column compares the whole value, as it would
+with no index.
+
 `select`, `pluck` and `value` read a path too. Left unaliased, a selected path is named after its
 last step, the way `select('users.name')` is named `name`:
 

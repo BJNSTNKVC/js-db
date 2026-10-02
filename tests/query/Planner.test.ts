@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { Planner } from '../../src/query/Planner';
 import type { Conjunction, Constraint, Operator, Order, Plan } from '../../src/query/types';
-import type { ColumnSchema, ColumnType, TableSchema } from '../../src/schema/types';
+import type { ColumnSchema, ColumnType, IndexSchema, TableSchema } from '../../src/schema/types';
 
 /**
  * Build a column schema with the given overrides.
@@ -374,6 +374,111 @@ describe('Planner ordering', (): void => {
 
         expect(plan.values).toEqual(['a', 'b']);
         expect(plan.ordered).toEqual(false);
+    });
+});
+
+describe('Planner on a multi-entry index', (): void => {
+    const tagged: TableSchema = {
+        ...users,
+        indexes: [
+            ...users.indexes.filter((index: IndexSchema): boolean => index.name !== 'users_tags_index'),
+            { name: 'users_tags_index', columns: ['tags'], unique: false, multiEntry: true },
+        ],
+    };
+
+    /**
+     * Build a JSON contains constraint.
+     */
+    function contains(col: string, value: unknown, conjunction: Conjunction = 'and', not: boolean = false): Constraint {
+        return { type: 'json-contains', column: col, value, conjunction, not };
+    }
+
+    test.each(['=', '==', '===', '>', '>=', '<', '<='] as Operator[])('keeps %s off the index, which holds elements rather than the array', (operator: Operator): void => {
+        const constraints: Constraint[] = [basic('tags', operator, 'x')];
+
+        expect(Planner.plan(constraints, [], tagged)).toMatchObject({ source: 'scan', range: null, values: null, residual: constraints });
+    });
+
+    test('keeps a whereIn and a between off the index', (): void => {
+        expect(Planner.plan([{ type: 'in', column: 'tags', values: ['x', 'z'], conjunction: 'and', not: false }], [], tagged).source).toEqual('scan');
+        expect(Planner.plan([{ type: 'between', column: 'tags', from: 'x', to: 'y', conjunction: 'and', not: false }], [], tagged).source).toEqual('scan');
+    });
+
+    test('keeps the order off the index, which would visit a record once per element', (): void => {
+        expect(Planner.plan([], [order('tags')], tagged)).toMatchObject({ source: 'scan', ordered: false });
+        expect(Planner.plan([], [order('tags', 'desc')], tagged)).toMatchObject({ source: 'scan', ordered: false });
+    });
+
+    test.each([
+        ['a string', 'x'],
+        ['a number', 3],
+        ['zero', 0],
+    ])('drives the index from a JSON contains of %s, checking it again against each record', (_: string, value: unknown): void => {
+        const constraints: Constraint[] = [contains('tags', value)];
+
+        expect(Planner.plan(constraints, [], tagged)).toEqual({
+            source   : 'index',
+            index    : 'users_tags_index',
+            range    : IDBKeyRange.only(value),
+            values   : null,
+            direction: 'next',
+            ordered  : false,
+            residual : constraints,
+        });
+    });
+
+    test('ranks a unique multi-entry index above a plain one', (): void => {
+        const unique: TableSchema = { ...tagged, indexes: tagged.indexes.map((index: IndexSchema): IndexSchema => index.name === 'users_tags_index' ? { ...index, unique: true } : index) };
+
+        expect(Planner.plan([basic('name', '=', 'John'), contains('tags', 'x')], [], unique).index).toEqual('users_tags_index');
+        expect(Planner.plan([basic('name', '=', 'John'), contains('tags', 'x')], [], tagged).index).toEqual('users_name_index');
+    });
+
+    test('leaves the order to memory when a JSON contains drives the index', (): void => {
+        expect(Planner.plan([contains('tags', 'x')], [order('tags')], tagged)).toMatchObject({ index: 'users_tags_index', ordered: false, direction: 'next' });
+    });
+
+    test('prefers the key path over the multi-entry index', (): void => {
+        const plan: Plan = Planner.plan([contains('tags', 'x'), basic('id', '=', 7)], [], tagged);
+
+        expect(plan.source).toEqual('key');
+        expect(plan.residual).toEqual([contains('tags', 'x')]);
+    });
+
+    test.each([
+        ['an array, which asks for every element', ['x', 'z']],
+        ['a date, which a scan finds by identity alone', new Date(1)],
+        ['NaN, which is no key', NaN],
+        ['an infinite number', Infinity],
+        ['a boolean', true],
+        ['an object', { a: 1 }],
+        ['null', null],
+    ])('keeps a JSON contains of %s off the index', (_: string, value: unknown): void => {
+        const constraints: Constraint[] = [contains('tags', value)];
+
+        expect(Planner.plan(constraints, [], tagged)).toMatchObject({ source: 'scan', residual: constraints });
+    });
+
+    test('keeps a negated JSON contains off the index', (): void => {
+        expect(Planner.plan([contains('tags', 'x', 'and', true)], [], tagged).source).toEqual('scan');
+    });
+
+    test('scans for a JSON contains joined by or', (): void => {
+        expect(Planner.plan([basic('id', '=', 7), contains('tags', 'x', 'or')], [], tagged).source).toEqual('scan');
+    });
+
+    test('keeps a JSON contains on a path into the column off the index', (): void => {
+        expect(Planner.plan([contains('tags->x', 'y')], [], tagged).source).toEqual('scan');
+    });
+
+    test('keeps a JSON contains off an index that is not multi-entry', (): void => {
+        expect(Planner.plan([contains('tags', 'x')], [], users).source).toEqual('scan');
+    });
+
+    test('keeps a JSON contains off a compound index', (): void => {
+        const compound: TableSchema = { ...users, indexes: [{ name: 'users_tags_name_index', columns: ['tags', 'name'], unique: false, multiEntry: true }] };
+
+        expect(Planner.plan([contains('tags', 'x')], [], compound).source).toEqual('scan');
     });
 });
 

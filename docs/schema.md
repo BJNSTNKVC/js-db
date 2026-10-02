@@ -16,7 +16,7 @@ types are recorded as metadata and enforced by this package at write time.
 | `.index()`                                                                      | `createIndex('users_name_index', 'name')`                                          |
 | `.unique()`                                                                     | `createIndex('users_email_unique', 'email', { unique: true })`                     |
 | `table.index(['a', 'b'])`                                                       | Compound index                                                                     |
-| `.multiEntry()`                                                                 | One index entry per array element                                                  |
+| `.multiEntry()`                                                                 | One index entry per array element, which `whereJsonContains` reads                 |
 | `table.timestamps()`                                                            | Nullable `created_at` / `updated_at`, filled automatically                         |
 | `.change()`                                                                     | Inside `Schema.table`, replaces the existing column of the same name               |
 
@@ -34,6 +34,26 @@ await Schema.table('users', (table: Blueprint): void => {
 ```
 
 `Schema.rename` is implemented as create-copy-drop, so it is O(n) in the number of records.
+
+## Multi-entry indexes serve whereJsonContains
+
+`.multiEntry()` gives a column holding arrays one index entry per distinct element, rather than one
+per record. `whereJsonContains` with a single string or number reads through it, visiting only the
+records whose array holds that element, each once however often the array repeats it:
+
+```ts
+await Schema.create('posts', (table: Blueprint): void => {
+    table.id();
+    table.json('tags').multiEntry();
+});
+
+await DB.table<Post>('posts').whereJsonContains('tags', 'news').get();
+```
+
+No other query uses it. `where`, `whereIn`, `whereBetween` and the comparison operators compare the
+whole value, and `orderBy` sorts by it, which an index of single elements cannot answer, so they read
+the table as they would with no index. `min` and `max` read the records too.
+[Query plans](query-plans.md) lists the `whereJsonContains` values the index serves.
 
 ## Indexes follow renamed and dropped columns
 

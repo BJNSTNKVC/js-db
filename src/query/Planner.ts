@@ -15,6 +15,7 @@ interface Candidate {
     rank: number;
     range: IDBKeyRange | null;
     values: unknown[] | null;
+    rechecked: boolean;
 }
 
 export class Planner {
@@ -41,7 +42,7 @@ export class Planner {
             values   : candidate.values,
             direction: aligned ? this.#direction(orders) : 'next',
             ordered  : aligned,
-            residual : constraints.filter((constraint: Constraint): boolean => constraint !== candidate.constraint),
+            residual : constraints.filter((constraint: Constraint): boolean => constraint !== candidate.constraint || candidate.rechecked),
         };
     }
 
@@ -157,9 +158,13 @@ export class Planner {
             return null;
         }
 
-        // A value inside a JSON column is never indexed, so a path always runs as a residual.
-        if (constraint.type === 'json-contains' || constraint.type === 'json-length' || Columns.path(constraint.column).path.length > 0) {
+        // A value a path reaches inside a JSON column is never indexed, so a path always runs as a residual.
+        if (constraint.type === 'json-length' || Columns.path(constraint.column).path.length > 0) {
             return null;
+        }
+
+        if (constraint.type === 'json-contains') {
+            return this.#contained(constraint, schema);
         }
 
         const target: { source: 'key' | 'index'; index: string | null; rank: number } | null = this.#target(constraint.column, schema);
@@ -175,7 +180,7 @@ export class Planner {
                 return null;
             }
 
-            return { constraint, ...target, range: null, values: this.#distinct(constraint.values) };
+            return { constraint, ...target, range: null, values: this.#distinct(constraint.values), rechecked: false };
         }
 
         if (constraint.type === 'between') {
@@ -184,21 +189,53 @@ export class Planner {
             }
 
             if (indexedDB.cmp(constraint.from, constraint.to) > 0) {
-                return { constraint, ...target, range: null, values: [] };
+                return { constraint, ...target, range: null, values: [], rechecked: false };
             }
 
-            return { constraint, ...target, range: IDBKeyRange.bound(constraint.from as IDBValidKey, constraint.to as IDBValidKey, false, false), values: null };
+            return { constraint, ...target, range: IDBKeyRange.bound(constraint.from as IDBValidKey, constraint.to as IDBValidKey, false, false), values: null, rechecked: false };
         }
 
         if (!RANGEABLE.has(constraint.operator) || !this.#fits(constraint.value, type)) {
             return null;
         }
 
-        return { constraint, ...target, range: this.#range(constraint.operator, constraint.value as IDBValidKey), values: null };
+        return { constraint, ...target, range: this.#range(constraint.operator, constraint.value as IDBValidKey), values: null, rechecked: false };
     }
 
     /**
-     * Resolve the column to the key path or a single column index.
+     * Assess whether a JSON contains can drive the scan through the multi entry index over its column.
+     */
+    static #contained(constraint: Extract<Constraint, { type: 'json-contains' }>, schema: TableSchema): Candidate | null {
+        const index: IndexSchema | undefined = schema.indexes.find(
+            (candidate: IndexSchema): boolean => candidate.multiEntry && candidate.columns.length === 1 && candidate.columns[0] === constraint.column,
+        );
+
+        if (index === undefined || !this.#element(constraint.value)) {
+            return null;
+        }
+
+        // A multi entry index holds a value that is not an array as an entry of its own, though a
+        // scan finds no element in it, so the constraint is checked again against each record.
+        return {
+            constraint,
+            source   : 'index',
+            index    : index.name,
+            rank     : index.unique ? 1 : 2,
+            range    : IDBKeyRange.only(constraint.value as IDBValidKey),
+            values   : null,
+            rechecked: true,
+        };
+    }
+
+    /**
+     * Determine whether a value is an element the index finds exactly where a scan does, which compares elements strictly.
+     */
+    static #element(value: unknown): boolean {
+        return typeof value === 'string' || (typeof value === 'number' && Number.isFinite(value));
+    }
+
+    /**
+     * Resolve the column to the key path or a single column index that holds one entry per record.
      */
     static #target(column: string, schema: TableSchema): { source: 'key' | 'index'; index: string | null; rank: number } | null {
         if (schema.key === column) {
@@ -206,7 +243,7 @@ export class Planner {
         }
 
         const index: IndexSchema | undefined = schema.indexes.find(
-            (candidate: IndexSchema): boolean => candidate.columns.length === 1 && candidate.columns[0] === column,
+            (candidate: IndexSchema): boolean => candidate.columns.length === 1 && candidate.columns[0] === column && !candidate.multiEntry,
         );
 
         if (index === undefined) {
@@ -238,7 +275,7 @@ export class Planner {
             return null;
         }
 
-        return { constraint: { type: 'null', column: order.column, conjunction: 'and', not: false }, ...target, range: null, values: null };
+        return { constraint: { type: 'null', column: order.column, conjunction: 'and', not: false }, ...target, range: null, values: null, rechecked: false };
     }
 
     /**

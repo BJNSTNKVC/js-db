@@ -1,10 +1,12 @@
-import { beforeAll, describe, expect, test } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, test } from 'vitest';
 import { Connection } from '../../src/database/Connection';
 import { Migration } from '../../src/migrations/Migration';
 import { Schema } from '../../src/schema/Schema';
 import { Blueprint } from '../../src/schema/Blueprint';
+import { Dispatcher } from '../../src/events/Dispatcher';
 import { SchemaException } from '../../src/exceptions';
 import type { Builder } from '../../src/query/Builder';
+import type { QueryExecuted } from '../../src/events';
 import type { Operator } from '../../src/query/types';
 
 interface Profile {
@@ -19,6 +21,13 @@ interface Team {
     id: number;
     label: string;
     meta: Record<string, unknown>;
+}
+
+interface Article {
+    id: number;
+    title: string;
+    labels: unknown;
+    points: number;
 }
 
 interface Score {
@@ -50,6 +59,13 @@ class CreateTables extends Migration {
             table.id();
             table.string('player');
             table.json('stats');
+        });
+
+        await Schema.create('articles', (table: Blueprint): void => {
+            table.id();
+            table.string('title');
+            table.json('labels').nullable().multiEntry();
+            table.integer('points').default(0);
         });
     }
 }
@@ -332,5 +348,126 @@ describe('Builder JSON paths in a joined query', (): void => {
     test('rejects a path into a column no joined table has', async (): Promise<void> => {
         await expect(joined().where('missing->tier', 'gold').get()).rejects.toThrow(SchemaException);
         await expect(joined().where('others.meta->tier', 'gold').get()).rejects.toThrow('names table [others]');
+    });
+});
+
+describe('Builder through a multi-entry index', (): void => {
+    /**
+     * Begin a query against the articles table.
+     */
+    function articles(): Builder<Article> {
+        return connection.table<Article>('articles');
+    }
+
+    /**
+     * Get the titles of the records a query returns.
+     */
+    async function titles(query: Builder<Article>): Promise<string[]> {
+        return (await query.get()).map((article: Article): string => article.title);
+    }
+
+    /**
+     * Get the plans the queries a callback runs report.
+     */
+    async function plans(run: () => Promise<unknown>): Promise<string[]> {
+        const seen: string[] = [];
+        const listener: (event: Event) => void = ((event: QueryExecuted): void => {
+            seen.push(event.plan);
+        }) as (event: Event) => void;
+
+        Dispatcher.listen('db:query', listener);
+
+        try {
+            await run();
+        } finally {
+            Dispatcher.forget('db:query', listener);
+        }
+
+        return seen;
+    }
+
+    beforeEach(async (): Promise<void> => {
+        await articles().truncate();
+        await articles().insert([
+            { title: 'First', labels: ['news', 'tech', 'news'] },
+            { title: 'Second', labels: ['tech', 3] },
+            { title: 'Third', labels: '"news"' },
+            { title: 'Fourth', labels: [] },
+            { title: 'Fifth', labels: null },
+        ]);
+    });
+
+    test('reads a single value through the index, each record once', async (): Promise<void> => {
+        expect(await articles().whereJsonContains('labels', 'news').explain()).toEqual('index:articles_labels_index');
+        expect(await titles(articles().whereJsonContains('labels', 'news'))).toEqual(['First']);
+        expect(await titles(articles().whereJsonContains('labels', 'tech'))).toEqual(['First', 'Second']);
+        expect(await titles(articles().whereJsonContains('labels', 3))).toEqual(['Second']);
+        expect(await titles(articles().whereJsonContains('labels', '3'))).toEqual([]);
+    });
+
+    test('leaves out a value that is not an array, though the index holds it', async (): Promise<void> => {
+        expect(await articles().whereJsonContains('labels', 'news').pluck('title')).toEqual(['First']);
+        expect(await articles().whereJsonContains('labels', 'news').first()).toMatchObject({ title: 'First' });
+    });
+
+    test('counts through the index the records a scan counts', async (): Promise<void> => {
+        let counted: number = 0;
+
+        expect(await plans(async (): Promise<void> => {
+            counted = await articles().whereJsonContains('labels', 'news').count();
+        })).toEqual(['index:articles_labels_index']);
+
+        expect(counted).toEqual(1);
+        expect(await articles().whereJsonContains('labels', 'tech').count()).toEqual(2);
+        expect(await articles().whereJsonContains('labels', 'tech').paginate(1, 1)).toMatchObject({ total: 2, lastPage: 2 });
+    });
+
+    test('pages through the index, each record once', async (): Promise<void> => {
+        const pages: string[][] = [];
+
+        await articles().whereJsonContains('labels', 'tech').chunk(1, (records: Article[]): void => {
+            pages.push(records.map((article: Article): string => article.title));
+        });
+
+        expect(pages).toEqual([['First'], ['Second']]);
+    });
+
+    test.each([
+        ['where', (query: Builder<Article>): Builder<Article> => query.where('labels', 'news')],
+        ['a range', (query: Builder<Article>): Builder<Article> => query.where('labels', '>', 'a')],
+        ['whereIn', (query: Builder<Article>): Builder<Article> => query.whereIn('labels', ['news', 'tech'])],
+        ['whereBetween', (query: Builder<Article>): Builder<Article> => query.whereBetween('labels', ['a', 'z'])],
+        ['an array value', (query: Builder<Article>): Builder<Article> => query.whereJsonContains('labels', ['news', 'tech'])],
+        ['a date', (query: Builder<Article>): Builder<Article> => query.whereJsonContains('labels', new Date(1))],
+        ['whereJsonDoesntContain', (query: Builder<Article>): Builder<Article> => query.whereJsonDoesntContain('labels', 'news')],
+        ['orWhereJsonContains', (query: Builder<Article>): Builder<Article> => query.where('title', 'Fifth').orWhereJsonContains('labels', 'news')],
+        ['a path into the column', (query: Builder<Article>): Builder<Article> => query.whereJsonContains('labels->list', 'news')],
+    ])('keeps %s off the index', async (_: string, constrain: (query: Builder<Article>) => Builder<Article>): Promise<void> => {
+        expect(await constrain(articles()).explain()).toEqual('scan');
+    });
+
+    test('reads whereIn and where by the whole value, as a scan does', async (): Promise<void> => {
+        expect(await titles(articles().whereIn('labels', ['news', 'tech']))).toEqual(['Third']);
+        expect(await titles(articles().where('labels', 'news'))).toEqual(['Third']);
+    });
+
+    test('writes through the index once per record', async (): Promise<void> => {
+        expect(await articles().whereJsonContains('labels', 'news').increment('points')).toEqual(1);
+        expect(await articles().whereJsonContains('labels', 'tech').increment('points')).toEqual(2);
+        expect(await articles().pluck('points', 'title')).toEqual({ First: 2, Second: 1, Third: 0, Fourth: 0, Fifth: 0 });
+    });
+
+    test('rewrites the column whose index drives the write once per record', async (): Promise<void> => {
+        expect(await articles().whereJsonContains('labels', 'tech').update({ labels: ['tech', 'old'] })).toEqual(2);
+        expect(await articles().whereJsonContains('labels', 'news').delete()).toEqual(0);
+        expect(await titles(articles().whereJsonContains('labels', 'old'))).toEqual(['First', 'Second']);
+        expect(await articles().count()).toEqual(5);
+    });
+
+    test('takes min and max from the records rather than the index', async (): Promise<void> => {
+        expect(await plans(async (): Promise<void> => {
+            await articles().min('labels');
+            await articles().max('labels');
+        })).toEqual(['scan', 'scan']);
     });
 });

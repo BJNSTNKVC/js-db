@@ -21,7 +21,8 @@ Each resolves to a description of the plan chosen:
   candidate: the key path, then a unique index, then a plain index.
 - `orderBy` on a single indexed, **non-nullable** column cursors that index, which lets `limit`
   short-circuit the scan. Nullable columns are excluded because an IndexedDB index drops records
-  with no value for its key path, which would silently lose rows.
+  with no value for its key path, which would silently lose rows, and so are multi-entry indexes,
+  described below.
 - A non-nullable column can still lack values: a loose connection stores `null` where a required
   value is missing, a column added by `Schema.table` without a default leaves every existing row
   without it, and an index on a boolean column holds nothing, since a boolean is not a valid key. So
@@ -45,6 +46,17 @@ Each resolves to a description of the plan chosen:
   string or enum, and any valid key for a JSON column. Anything else, including every boolean, an
   object, an invalid date or a value that did not convert, is checked against every record the
   query reads instead, so an index never changes which rows come back.
+- A multi-entry index holds one entry per distinct element of the array a record stores, so it
+  never drives an equality, a `whereIn`, a range, a `whereBetween` or an order, which compare the
+  whole value. It drives `whereJsonContains(column, value)` alone, as a point lookup of the value,
+  when the value is a string or a finite number, the elements it finds exactly where a scan does.
+  An array of values, a date, `NaN`, a boolean, an object or `null` is checked against every record
+  instead: a scan finds an element by strict equality, so it finds `NaN` yet never finds a date or
+  an object by value, while the index finds a date by its time and holds no `NaN`, boolean, object
+  or `null` at all. The index also holds a value that is not an
+  array as an entry of its own, which a scan finds no element in, so each record the lookup reaches
+  is checked against the constraint again, and `count()` reads those records rather than calling
+  `count()` on the index.
 - A `whereBetween` whose bounds are the wrong way round, such as `whereBetween('age', [65, 18])`,
   matches nothing, and is planned as an empty set of lookups rather than as a range.
 - When a range and an order want different indexes, the range wins and the sort happens in memory.
