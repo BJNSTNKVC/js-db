@@ -10,4 +10,5 @@ export { RecordsNotFoundException } from './RecordsNotFoundException';
 export { ReservedTableException } from './ReservedTableException';
 export { SchemaException } from './SchemaException';
 export { TableNotFoundException } from './TableNotFoundException';
+export { TransactionClosedException } from './TransactionClosedException';
 export { UniqueConstraintViolationException } from './UniqueConstraintViolationException';

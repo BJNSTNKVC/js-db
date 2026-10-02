@@ -37,6 +37,10 @@ DB.onQueryExecuted((event: QueryExecuted): void => {
 A connection with no seeders announces nothing, so `seeding-started` firing always means at least
 one seeder is about to run.
 
+A transaction whose callback awaited something outside this package commits early, so it announces
+`transaction-committed` and never `transaction-rolled-back`, even though `DB.transaction` rejects with
+`TransactionClosedException`. See [What the callback may await](transactions.md#what-the-callback-may-await).
+
 > Modeled on Laravel's [Migrations: Events](https://laravel.com/docs/12.x/migrations#events), with
 > each event dispatched as a browser event and listened for by key.
 

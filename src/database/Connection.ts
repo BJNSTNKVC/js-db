@@ -10,11 +10,12 @@ import {
     TransactionRolledBack
 } from '../events';
 import { Dispatcher } from '../events/Dispatcher';
-import { DatabaseBlockedException, MigrationMismatchException, TableNotFoundException } from '../exceptions';
+import { DatabaseBlockedException, MigrationMismatchException, TableNotFoundException, TransactionClosedException } from '../exceptions';
 import { Migrator } from '../migrations/Migrator';
 import { Repository } from '../migrations/Repository';
 import { Registry } from '../schema/Registry';
 import { Builder } from '../query/Builder';
+import { Handles } from './Handles';
 import { Request } from './Request';
 import { Resolver } from './Resolver';
 import { Transaction } from './Transaction';
@@ -243,7 +244,8 @@ export class Connection {
         const handle: IDBTransaction = database.transaction(tables, 'readwrite');
         const transaction: Transaction = new Transaction(this, handle);
 
-        let finished: boolean = false;
+        let committed: boolean = false;
+        let aborted: boolean = false;
         let aborting: boolean = false;
 
         // An untolerated request failure bubbles here and takes the transaction down with it, which
@@ -254,19 +256,21 @@ export class Connection {
 
         const settled: Promise<void> = new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
             handle.oncomplete = (): void => {
-                finished = true;
+                committed = true;
+
+                Handles.close(handle, this.#name);
 
                 resolve();
             };
 
             handle.onabort = (): void => {
-                finished = true;
+                aborted = true;
 
                 reject(Request.translate(handle.error) ?? new DOMException('The transaction was aborted.', 'AbortError'));
             };
         });
 
-        settled.catch((): void => {
+        const finished: Promise<void> = settled.catch((): void => {
             // A deliberate abort rejects this too, and the original failure is the one worth throwing.
         });
 
@@ -279,6 +283,10 @@ export class Connection {
             // may only await operations from this package.
             const result: R = await callback(transaction);
 
+            if (committed) {
+                throw new TransactionClosedException(this.#name);
+            }
+
             await settled;
 
             this.#active = null;
@@ -289,13 +297,22 @@ export class Connection {
         } catch (error: unknown) {
             this.#active = null;
 
-            // A transaction that already committed cannot be rolled back, so saying it was would be
-            // a lie. That only happens when the callback outlived its request queue.
-            if (!finished) {
-                if (!aborting) {
+            if (!committed && !aborted && !aborting) {
+                try {
                     handle.abort();
+                } catch {
+                    // A browser refuses to abort a transaction it is still committing, then completes it.
+                    await finished;
                 }
+            }
 
+            if (committed) {
+                Dispatcher.dispatch(new TransactionCommitted(this.#name));
+
+                throw error instanceof TransactionClosedException ? error : new TransactionClosedException(this.#name, { cause: error });
+            }
+
+            if (!aborted) {
                 Dispatcher.dispatch(new TransactionRolledBack(this.#name, error));
             }
 

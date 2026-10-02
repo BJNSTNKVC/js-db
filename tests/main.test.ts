@@ -39,6 +39,7 @@ const values: string[] = [
     'TableNotFoundException',
     'Transaction',
     'TransactionBeginning',
+    'TransactionClosedException',
     'TransactionCommitted',
     'TransactionRolledBack',
     'UniqueConstraintViolationException',

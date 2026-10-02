@@ -120,8 +120,10 @@ await DB.transaction(async (transaction: Transaction): Promise<void> => {
   `rollback()`, and migrations may only be appended. `DB.fresh(name)` starts over.
   See [Migrations](docs/migrations.md).
 - **A migration or transaction may only await this package.** IndexedDB commits a transaction the
-  moment its queue drains, so awaiting a `fetch` or a timer ends it early. Network data belongs in a
-  [seeder](docs/seeding.md). See [What a migration may await](docs/migrations.md#what-a-migration-may-await).
+  moment its queue drains, so awaiting a `fetch` or a timer ends it early, and the next call throws
+  `MigrationTransactionClosedException` or `TransactionClosedException`. Network data belongs in a
+  [seeder](docs/seeding.md). See [What a migration may await](docs/migrations.md#what-a-migration-may-await)
+  and [What the callback may await](docs/transactions.md#what-the-callback-may-await).
 - **Schema changes only run inside a migration**, since they need the version-change transaction.
   The read side works anywhere. See [Schema outside a migration](docs/schema.md#schema-outside-a-migration).
 - **Column types are enforced by this package at write time**, because IndexedDB stores whole

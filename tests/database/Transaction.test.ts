@@ -4,7 +4,7 @@ import { Migration } from '../../src/migrations/Migration';
 import { Schema } from '../../src/schema/Schema';
 import { Blueprint } from '../../src/schema/Blueprint';
 import { Dispatcher } from '../../src/events/Dispatcher';
-import { SchemaException, UniqueConstraintViolationException } from '../../src/exceptions';
+import { SchemaException, TransactionClosedException, UniqueConstraintViolationException } from '../../src/exceptions';
 import type { Transaction } from '../../src/database/Transaction';
 import type { TransactionRolledBack } from '../../src/events';
 
@@ -44,8 +44,50 @@ class CreateTables extends Migration {
     }
 }
 
+const EVENTS: string[] = ['db:transaction-beginning', 'db:transaction-committed', 'db:transaction-rolled-back'];
+
+const CALLS: [string, (transaction: Transaction) => Promise<unknown>][] = [
+    ['get', (transaction: Transaction): Promise<unknown> => transaction.table<User>('users').get()],
+    ['first', (transaction: Transaction): Promise<unknown> => transaction.table<User>('users').first()],
+    ['find', (transaction: Transaction): Promise<unknown> => transaction.table<User>('users').find(1)],
+    ['count', (transaction: Transaction): Promise<unknown> => transaction.table<User>('users').where('name', 'Alice').count()],
+    ['exists', (transaction: Transaction): Promise<unknown> => transaction.table<User>('users').exists()],
+    ['pluck', (transaction: Transaction): Promise<unknown> => transaction.table<User>('users').pluck('name')],
+    ['value', (transaction: Transaction): Promise<unknown> => transaction.table<User>('users').value('name')],
+    ['sum', (transaction: Transaction): Promise<unknown> => transaction.table<User>('users').sum('id')],
+    ['max', (transaction: Transaction): Promise<unknown> => transaction.table<User>('users').max('id')],
+    ['explain', (transaction: Transaction): Promise<unknown> => transaction.table<User>('users').explain()],
+    ['paginate', (transaction: Transaction): Promise<unknown> => transaction.table<User>('users').paginate(1, 10)],
+    ['chunk', (transaction: Transaction): Promise<unknown> => transaction.table<User>('users').chunk(10, (): void => {})],
+    ['lazy', (transaction: Transaction): Promise<unknown> => transaction.table<User>('users').lazy(10).next()],
+    ['each', (transaction: Transaction): Promise<unknown> => transaction.table<User>('users').each((): void => {})],
+    ['a grouping', (transaction: Transaction): Promise<unknown> => transaction.table<User>('users').groupBy('role').get()],
+    ['a joined read', (transaction: Transaction): Promise<unknown> => transaction.table<User>('users').join('posts', 'users.id', '=', 'posts.user_id').get()],
+    ['a joined count', (transaction: Transaction): Promise<unknown> => transaction.table<User>('users').join('posts', 'users.id', '=', 'posts.user_id').count()],
+    ['insert', (transaction: Transaction): Promise<unknown> => transaction.table<User>('users').insert({ name: 'Alice' })],
+    ['insertGetId', (transaction: Transaction): Promise<unknown> => transaction.table<User>('users').insertGetId({ name: 'Alice' })],
+    ['insertOrIgnore', (transaction: Transaction): Promise<unknown> => transaction.table<User>('users').insertOrIgnore({ name: 'Alice' })],
+    ['update', (transaction: Transaction): Promise<unknown> => transaction.table<User>('users').where('name', 'Alice').update({ role: 'owner' })],
+    ['increment', (transaction: Transaction): Promise<unknown> => transaction.table<Post>('posts').increment('user_id')],
+    ['delete', (transaction: Transaction): Promise<unknown> => transaction.table<User>('users').where('name', 'Alice').delete()],
+    ['upsert', (transaction: Transaction): Promise<unknown> => transaction.table('tags').upsert([{ slug: 'a', label: 'x' }], 'slug')],
+    ['updateOrInsert', (transaction: Transaction): Promise<unknown> => transaction.table<User>('users').updateOrInsert({ name: 'Alice' }, { role: 'owner' })],
+    ['truncate', (transaction: Transaction): Promise<unknown> => transaction.table<User>('users').truncate()],
+    ['a joined update', (transaction: Transaction): Promise<unknown> => transaction.table<Post>('posts').join('users', 'users.id', '=', 'posts.user_id').where('users.name', 'Alice').update({ title: 'Hello' })],
+    ['a joined delete', (transaction: Transaction): Promise<unknown> => transaction.table<Post>('posts').join('users', 'users.id', '=', 'posts.user_id').where('users.name', 'Alice').delete()],
+];
+
 let connection: Connection;
 let sequence: number = 0;
+
+/**
+ * Wait on a timer, as a callback awaiting work outside the package would.
+ */
+function elsewhere(): Promise<void> {
+    return new Promise<void>((resolve: () => void): void => {
+        setTimeout(resolve, 5);
+    });
+}
 
 /**
  * Collect the database events dispatched while the callback runs.
@@ -73,6 +115,23 @@ async function recorded(types: string[], callback: () => Promise<unknown>): Prom
     }
 
     return seen;
+}
+
+/**
+ * Run a transaction, returning the reason it rejects with and the transaction events it dispatches.
+ */
+async function rejected(callback: (transaction: Transaction) => Promise<unknown>): Promise<[unknown, string[]]> {
+    let reason: unknown = null;
+
+    const seen: string[] = await recorded(EVENTS, async (): Promise<void> => {
+        try {
+            await connection.transaction(callback);
+        } catch (error: unknown) {
+            reason = error;
+        }
+    });
+
+    return [reason, seen];
 }
 
 beforeEach(async (): Promise<void> => {
@@ -243,6 +302,16 @@ describe('Transaction events', (): void => {
         expect(seen).toEqual(['db:transaction-beginning', 'db:transaction-rolled-back']);
     });
 
+    test('announces a rollback for a violated unique index', async (): Promise<void> => {
+        const [reason, seen]: [unknown, string[]] = await rejected(async (transaction: Transaction): Promise<void> => {
+            await transaction.table('tags').insert({ slug: 'a', label: 'x' });
+            await transaction.table('tags').insert({ slug: 'b', label: 'x' });
+        });
+
+        expect(reason).toBeInstanceOf(UniqueConstraintViolationException);
+        expect(seen).toEqual(['db:transaction-beginning', 'db:transaction-rolled-back']);
+    });
+
     test('carries the reason on a rollback', async (): Promise<void> => {
         const failure: Error = new Error('Nope.');
         let reason: unknown = null;
@@ -269,34 +338,188 @@ describe('Transaction events', (): void => {
     });
 });
 
-describe('Transaction that outlives its request queue', (): void => {
-    test('does not claim a rollback for a transaction that already committed', async (): Promise<void> => {
-        const seen: string[] = await recorded(['db:transaction-committed', 'db:transaction-rolled-back'], async (): Promise<unknown> => {
-            return connection.transaction(async (transaction: Transaction): Promise<void> => {
-                await transaction.table<User>('users').insert({ name: 'Alice' });
+describe('Transaction that closed early', (): void => {
+    afterEach((): void => {
+        vi.restoreAllMocks();
+    });
 
-                // Awaiting a timer lets the transaction commit, which is the documented hazard.
-                await new Promise<void>((resolve: () => void): void => {
-                    setTimeout(resolve, 5);
-                });
+    test('reports the close and keeps the work committed before it', async (): Promise<void> => {
+        const [reason, seen]: [unknown, string[]] = await rejected(async (transaction: Transaction): Promise<void> => {
+            await transaction.table<User>('users').insert({ name: 'Alice' });
+            await elsewhere();
+            await transaction.table<User>('users').insert({ name: 'Bob' });
+        });
 
-                throw new Error('Too late.');
+        expect(reason).toBeInstanceOf(TransactionClosedException);
+        expect(reason).toEqual(new TransactionClosedException('app'));
+        expect(seen).toEqual(['db:transaction-beginning', 'db:transaction-committed']);
+        expect(await connection.table<User>('users').pluck('name')).toEqual(['Alice']);
+    });
+
+    test('throws from the next call inside the callback, and rejects even when the callback catches it', async (): Promise<void> => {
+        let caught: unknown = null;
+
+        const [reason, seen]: [unknown, string[]] = await rejected(async (transaction: Transaction): Promise<string> => {
+            await transaction.table<User>('users').insert({ name: 'Alice' });
+            await elsewhere();
+
+            try {
+                await transaction.table<User>('users').insert({ name: 'Bob' });
+            } catch (error: unknown) {
+                caught = error;
+            }
+
+            return 'done';
+        });
+
+        expect(caught).toBeInstanceOf(TransactionClosedException);
+        expect(caught).toEqual(new TransactionClosedException('app'));
+        expect(reason).toBeInstanceOf(TransactionClosedException);
+        expect(seen).toEqual(['db:transaction-beginning', 'db:transaction-committed']);
+    });
+
+    test('rejects once the callback settles, though it made no further call', async (): Promise<void> => {
+        const [reason, seen]: [unknown, string[]] = await rejected(async (transaction: Transaction): Promise<string> => {
+            await transaction.table<User>('users').insert({ name: 'Alice' });
+            await elsewhere();
+
+            return 'done';
+        });
+
+        expect(reason).toBeInstanceOf(TransactionClosedException);
+        expect(seen).toEqual(['db:transaction-beginning', 'db:transaction-committed']);
+        expect(await connection.table<User>('users').pluck('name')).toEqual(['Alice']);
+    });
+
+    test('carries an error the callback throws after the close as its cause', async (): Promise<void> => {
+        const failure: Error = new Error('Too late.');
+
+        const [reason, seen]: [unknown, string[]] = await rejected(async (transaction: Transaction): Promise<void> => {
+            await transaction.table<User>('users').insert({ name: 'Alice' });
+            await elsewhere();
+
+            throw failure;
+        });
+
+        expect(reason).toBeInstanceOf(TransactionClosedException);
+        expect((reason as Error).cause).toBe(failure);
+        expect(seen).toEqual(['db:transaction-beginning', 'db:transaction-committed']);
+        expect(await connection.table<User>('users').pluck('name')).toEqual(['Alice']);
+    });
+
+    test.each(CALLS)('refuses %s through the closed transaction', async (_: string, call: (transaction: Transaction) => Promise<unknown>): Promise<void> => {
+        let caught: unknown = null;
+
+        await expect(connection.transaction(async (transaction: Transaction): Promise<void> => {
+            await elsewhere();
+
+            try {
+                await call(transaction);
+            } catch (error: unknown) {
+                caught = error;
+            }
+        })).rejects.toBeInstanceOf(TransactionClosedException);
+
+        expect(caught).toBeInstanceOf(TransactionClosedException);
+        expect(caught).toEqual(new TransactionClosedException('app'));
+    });
+
+    test('refuses the next page of a chunk whose callback awaited outside work', async (): Promise<void> => {
+        await connection.table<User>('users').insert([{ name: 'Alice' }, { name: 'Bob' }]);
+
+        const pages: number[] = [];
+
+        const [reason]: [unknown, string[]] = await rejected(async (transaction: Transaction): Promise<void> => {
+            await transaction.table<User>('users').chunk(1, async (_: User[], page: number): Promise<void> => {
+                pages.push(page);
+
+                await elsewhere();
             });
         });
 
-        expect(seen).toEqual([]);
+        expect(reason).toEqual(new TransactionClosedException('app'));
+        expect(pages).toEqual([1]);
     });
 
-    test('still reports the failure to the caller', async (): Promise<void> => {
-        await expect(connection.transaction(async (transaction: Transaction): Promise<void> => {
+    test('refuses the next page of a lazy walk whose consumer awaited outside work', async (): Promise<void> => {
+        await connection.table<User>('users').insert([{ name: 'Alice' }, { name: 'Bob' }]);
+
+        const names: string[] = [];
+
+        const [reason]: [unknown, string[]] = await rejected(async (transaction: Transaction): Promise<void> => {
+            for await (const user of transaction.table<User>('users').lazy(1)) {
+                names.push(user.name);
+
+                await elsewhere();
+            }
+        });
+
+        expect(reason).toEqual(new TransactionClosedException('app'));
+        expect(names).toEqual(['Alice']);
+    });
+
+    test('refuses a nested call made after the close', async (): Promise<void> => {
+        let caught: unknown = null;
+
+        await expect(connection.transaction(async (): Promise<void> => {
+            await elsewhere();
+
+            try {
+                await connection.transaction(async (inner: Transaction): Promise<number> => inner.table<User>('users').insert({ name: 'Alice' }));
+            } catch (error: unknown) {
+                caught = error;
+            }
+        })).rejects.toBeInstanceOf(TransactionClosedException);
+
+        expect(caught).toEqual(new TransactionClosedException('app'));
+        expect(await connection.table<User>('users').count()).toEqual(0);
+    });
+
+    test('refuses a transaction kept past its call', async (): Promise<void> => {
+        let kept: Transaction | null = null;
+
+        await connection.transaction(async (transaction: Transaction): Promise<void> => {
+            kept = transaction;
+
+            await transaction.table<User>('users').insert({ name: 'Alice' });
+        });
+
+        await expect((kept as unknown as Transaction).table<User>('users').get()).rejects.toThrow(new TransactionClosedException('app'));
+    });
+
+    test('reports a transaction the platform is still committing when the callback fails as closed', async (): Promise<void> => {
+        const failure: Error = new Error('Too late.');
+
+        vi.spyOn(IDBTransaction.prototype, 'abort').mockImplementation((): void => {
+            throw new DOMException('The transaction is committing.', 'InvalidStateError');
+        });
+
+        const [reason, seen]: [unknown, string[]] = await rejected(async (transaction: Transaction): Promise<void> => {
             await transaction.table<User>('users').insert({ name: 'Alice' });
 
-            await new Promise<void>((resolve: () => void): void => {
-                setTimeout(resolve, 5);
-            });
+            throw failure;
+        });
 
-            throw new Error('Too late.');
-        })).rejects.toThrow('Too late.');
+        expect(reason).toBeInstanceOf(TransactionClosedException);
+        expect((reason as Error).cause).toBe(failure);
+        expect(seen).toEqual(['db:transaction-beginning', 'db:transaction-committed']);
+        expect(await connection.table<User>('users').pluck('name')).toEqual(['Alice']);
+    });
+
+    test('leaves the connection free for a later transaction', async (): Promise<void> => {
+        await expect(connection.transaction(async (transaction: Transaction): Promise<void> => {
+            await elsewhere();
+            await transaction.table<User>('users').insert({ name: 'Alice' });
+        })).rejects.toBeInstanceOf(TransactionClosedException);
+
+        const seen: string[] = await recorded(EVENTS, async (): Promise<unknown> => {
+            return connection.transaction(async (transaction: Transaction): Promise<void> => {
+                await transaction.table<User>('users').insert({ name: 'Bob' });
+            });
+        });
+
+        expect(seen).toEqual(['db:transaction-beginning', 'db:transaction-committed']);
+        expect(await connection.table<User>('users').pluck('name')).toEqual(['Bob']);
     });
 });
 
@@ -325,6 +548,22 @@ describe('Transaction aborted by a failed request', (): void => {
         });
 
         await expect(failure).rejects.toBeInstanceOf(DOMException);
+        await expect(failure).rejects.toHaveProperty('name', 'ConstraintError');
+
+        expect(await connection.table('tags').count()).toEqual(0);
+    });
+
+    test('surfaces a failure that lands after the callback returns and rolls the transaction back', async (): Promise<void> => {
+        vi.spyOn(IDBObjectStore.prototype, 'clear').mockImplementation(function (this: IDBObjectStore): IDBRequest<undefined> {
+            return this.add({ slug: 'a', label: 'y' }) as IDBRequest<unknown> as IDBRequest<undefined>;
+        });
+
+        const failure: Promise<void> = connection.transaction(async (transaction: Transaction): Promise<void> => {
+            await transaction.table('tags').insert({ slug: 'a', label: 'x' });
+
+            transaction.table('tags').truncate().catch((): void => {});
+        });
+
         await expect(failure).rejects.toHaveProperty('name', 'ConstraintError');
 
         expect(await connection.table('tags').count()).toEqual(0);

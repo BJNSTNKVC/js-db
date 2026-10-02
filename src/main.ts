@@ -41,6 +41,7 @@ export {
     ReservedTableException,
     SchemaException,
     TableNotFoundException,
+    TransactionClosedException,
     UniqueConstraintViolationException,
 } from './exceptions';
 

@@ -9,6 +9,7 @@ import {
     ReservedTableException,
     SchemaException,
     TableNotFoundException,
+    TransactionClosedException,
     UniqueConstraintViolationException,
 } from '../../src/exceptions';
 
@@ -105,5 +106,21 @@ describe('MigrationTransactionClosedException', (): void => {
 
         expect(exception.name).toEqual('MigrationTransactionClosedException');
         expect(exception.message).toEqual('Migration [CreateUsersTable] continued after its transaction closed. A migration may only await database operations from this package - awaiting a fetch, a timer or any other promise ends the transaction.');
+    });
+});
+
+describe('TransactionClosedException', (): void => {
+    test('names the connection and states the rule', (): void => {
+        const exception: TransactionClosedException = new TransactionClosedException('app');
+
+        expect(exception).toBeInstanceOf(Error);
+        expect(exception.name).toEqual('TransactionClosedException');
+        expect(exception.message).toEqual('Transaction on connection [app] continued after it closed. A transaction may only await database operations from this package - awaiting a fetch, a timer or any other promise ends the transaction.');
+    });
+
+    test('carries the error that followed the close as its cause', (): void => {
+        const failure: Error = new Error('Nope.');
+
+        expect(new TransactionClosedException('app', { cause: failure }).cause).toBe(failure);
     });
 });

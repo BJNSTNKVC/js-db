@@ -1,6 +1,7 @@
 import { QueryExecuted } from '../events';
 import { Dispatcher } from '../events/Dispatcher';
 import { SchemaException, UniqueConstraintViolationException } from '../exceptions';
+import { Handles } from '../database/Handles';
 import { Request } from '../database/Request';
 import { Columns } from './Columns';
 import { Comparator } from './Comparator';
@@ -404,7 +405,7 @@ export class Executor<T> {
         const table: string = this.#query.table;
 
         if (this.#query.transaction !== null) {
-            return this.#query.transaction.objectStore(table);
+            return Handles.alive(this.#query.transaction).objectStore(table);
         }
 
         const database: IDBDatabase = await this.#connection.open();
@@ -651,7 +652,9 @@ export class Executor<T> {
      * Get the object stores of the given tables, all within one transaction.
      */
     async #stores(tables: string[], mode: IDBTransactionMode): Promise<(table: string) => IDBObjectStore> {
-        const transaction: IDBTransaction = this.#query.transaction ?? (await this.#connection.open()).transaction(tables, mode);
+        const transaction: IDBTransaction = this.#query.transaction === null
+            ? (await this.#connection.open()).transaction(tables, mode)
+            : Handles.alive(this.#query.transaction);
         const outside: string | undefined = tables.find((table: string): boolean => !transaction.objectStoreNames.contains(table));
 
         if (outside !== undefined) {
