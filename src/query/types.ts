@@ -17,7 +17,7 @@ export type Constraint =
     | { type: 'between'; column: string; from: unknown; to: unknown; conjunction: Conjunction; not: boolean }
     | { type: 'column'; column: string; operator: Operator; other: string; conjunction: Conjunction; not: boolean }
     | { type: 'part'; column: string; part: DatePart; operator: DateOperator; value: number; conjunction: Conjunction; not: boolean }
-    | { type: 'time'; column: string; operator: Operator; value: string; conjunction: Conjunction; not: boolean }
+    | { type: 'time'; column: string; operator: DateOperator; value: string; conjunction: Conjunction; not: boolean }
     | { type: 'json-contains'; column: string; value: unknown; conjunction: Conjunction; not: boolean }
     | { type: 'json-length'; column: string; operator: Operator; value: number; conjunction: Conjunction; not: boolean }
     | { type: 'nested'; constraints: Constraint[]; conjunction: Conjunction; not: boolean };

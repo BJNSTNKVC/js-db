@@ -311,14 +311,13 @@ export class Builder<T = Record<string, unknown>> {
      * Constrain the time of day of a date column, given as HH:MM:SS or HH:MM.
      */
     whereTime(column: Key<T>, value: string): this;
-    whereTime(column: Key<T>, operator: Operator, value: string): this;
+    whereTime(column: Key<T>, operator: DateOperator, value: string): this;
     whereTime(column: Key<T>, operator: string, value?: string): this {
-        const resolved: { operator: Operator; value: string } = value === undefined
-            ? { operator: '=', value: operator }
-            : { operator: operator as Operator, value };
+        const resolved: { operator: DateOperator; value: unknown } = this.#dated(value === undefined ? [operator] : [operator, value]);
+        const given: string = resolved.value as string;
 
         // Times compare as strings, so one given without seconds is padded to the stored shape.
-        const time: string = /^\d{2}:\d{2}$/.test(resolved.value) ? `${resolved.value}:00` : resolved.value;
+        const time: string = /^\d{2}:\d{2}$/.test(given) ? `${given}:00` : given;
 
         return this.#push({ type: 'time', column, operator: resolved.operator, value: time, conjunction: 'and', not: false });
     }

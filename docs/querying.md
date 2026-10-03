@@ -79,10 +79,10 @@ DB.table<Post>('posts')
     .whereDay('published_at', '>=', 15);
 ```
 
-`whereDate`, `whereYear`, `whereMonth` and `whereDay` take `=`, `!=`, `<>`, `<`, `>`, `<=` and
-`>=`, and throw `SchemaException` for any other. The year, month and day may be a whole number
-written as a string, such as `'2026'` or `'07'`, which compares as that number. Any other string,
-such as `''`, `'2026.0'`, `'-1'` or `'twenty'`, throws `SchemaException`.
+All five take `=`, `!=`, `<>`, `<`, `>`, `<=` and `>=`, and throw `SchemaException` for any other.
+The year, month and day may be a whole number written as a string, such as `'2026'` or `'07'`,
+which compares as that number. Any other string, such as `''`, `'2026.0'`, `'-1'` or `'twenty'`,
+throws `SchemaException`.
 
 `whereTime` compares zero padded `HH:MM:SS` strings, and pads `HH:MM` with `:00`, so `'09:30'`
 means `09:30:00`. `whereDate` reads a `YYYY-MM-DD` string as that calendar day in the local

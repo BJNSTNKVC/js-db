@@ -1287,6 +1287,21 @@ describe('Builder.whereTime', (): void => {
     test('never drives the scan, even over an indexed column', async (): Promise<void> => {
         expect(await times().whereTime('at', '09:30').explain()).toEqual('scan');
     });
+
+    test('takes every operator a date part takes', async (): Promise<void> => {
+        expect(await labels(times().whereTime('at', '=', '09:30'))).toEqual(['morning']);
+        expect(await labels(times().whereTime('at', '<>', '09:30'))).toEqual(['later', 'evening']);
+        expect(await labels(times().whereTime('at', '<=', '09:30:15'))).toEqual(['morning', 'later']);
+    });
+
+    test.each(['==', '===', '!==', 'like', 'not like', 'between'])('refuses the operator %s', (operator: string): void => {
+        expect((): Builder<Visit> => times().whereTime('at', operator as '=', '09:30')).toThrow(SchemaException);
+    });
+
+    test('reads a time given alone, or beside an undefined value, as the time to equal', async (): Promise<void> => {
+        expect(await labels(times().whereTime('at', '>='))).toEqual([]);
+        expect(await labels(times().whereTime('at', '09:30' as '=', undefined as unknown as string))).toEqual(['morning']);
+    });
 });
 
 describe('Builder.whereAny, whereAll and whereNone', (): void => {
