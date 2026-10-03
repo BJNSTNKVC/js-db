@@ -928,23 +928,28 @@ describe('Builder ordering through an index that leaves records out', (): void =
         expect(counts.map((count: MockInstance): number => count.mock.calls.length)).toEqual([0, 0]);
     });
 
-    test('orders the rows that existed before a migration added the column', async (): Promise<void> => {
-        const first: Connection = new Connection('app', { database: 'builder-reads-tiers', migrations: [CreateRanksTables] });
+    test('orders the rows a migration before 4.0.0 left without the column', async (): Promise<void> => {
+        const tiered: Connection = new Connection('app', { database: 'builder-reads-tiers', migrations: [CreateRanksTables, AddTierToRanksTable] });
 
-        await first.migrate();
-        await first.table('ranks').insert([{ name: 'Old One', rank: 1 }, { name: 'Old Two', rank: 2 }]);
+        await tiered.migrate();
 
-        first.disconnect();
+        const database: IDBDatabase = await tiered.open();
+        const transaction: IDBTransaction = database.transaction('ranks', 'readwrite');
 
-        const second: Connection = new Connection('app', { database: 'builder-reads-tiers', migrations: [CreateRanksTables, AddTierToRanksTable] });
+        transaction.objectStore('ranks').add({ name: 'Old One', rank: 1 });
+        transaction.objectStore('ranks').add({ name: 'Old Two', rank: 2 });
 
-        await second.migrate();
-        await second.table('ranks').insert([{ name: 'New', rank: 3, tier: 1 }]);
+        await new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
+            transaction.oncomplete = (): void => resolve();
+            transaction.onerror = (): void => reject(transaction.error);
+        });
 
-        expect(await second.table<Named>('ranks').orderBy('tier').pluck('name')).toEqual(['Old One', 'Old Two', 'New']);
-        expect(await second.table<Named>('ranks').orderBy('tier', 'desc').pluck('name')).toEqual(['New', 'Old One', 'Old Two']);
+        await tiered.table('ranks').insert([{ name: 'New', rank: 3, tier: 1 }]);
 
-        second.disconnect();
+        expect(await tiered.table<Named>('ranks').orderBy('tier').pluck('name')).toEqual(['Old One', 'Old Two', 'New']);
+        expect(await tiered.table<Named>('ranks').orderBy('tier', 'desc').pluck('name')).toEqual(['New', 'Old One', 'Old Two']);
+
+        tiered.disconnect();
     });
 });
 

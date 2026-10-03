@@ -739,6 +739,23 @@ async function raw(copy: Copy): Promise<Item[]> {
     });
 }
 
+/**
+ * Write rows into a copy, past the package entirely.
+ */
+async function planted(copy: Copy, rows: Item[]): Promise<void> {
+    const database: IDBDatabase = await connection.open();
+    const transaction: IDBTransaction = database.transaction(copy, 'readwrite');
+
+    for (const row of rows) {
+        transaction.objectStore(copy).add(row);
+    }
+
+    await new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
+        transaction.oncomplete = (): void => resolve();
+        transaction.onerror = (): void => reject(transaction.error);
+    });
+}
+
 beforeEach(async (): Promise<void> => {
     connection = new Connection('app', { database: `invariance-${++sequence}`, migrations: [CreateItemsTables] });
 
@@ -802,18 +819,11 @@ describe.each([...CASES, ...EXTRAS, ...PARTS])('%s', (_: string, constrain: (que
 
 describe('ordering through an index that leaves records out', (): void => {
     beforeEach(async (): Promise<void> => {
-        const database: string = `invariance-loose-${++sequence}`;
-        const first: Connection = new Connection('app', { database, migrations: [CreateItemsTables, AddRankToItemsTables], strict: false });
-
-        await first.migrate();
-        await first.table<Ranked>('indexed').insert(RANKED);
-        await first.table<Ranked>('plain').insert(RANKED);
-
-        first.disconnect();
-
-        connection = new Connection('app', { database, migrations: [CreateItemsTables, AddRankToItemsTables, AddTierToItemsTables], strict: false });
+        connection = new Connection('app', { database: `invariance-loose-${++sequence}`, migrations: [CreateItemsTables, AddRankToItemsTables, AddTierToItemsTables], strict: false });
 
         await connection.migrate();
+        await planted('indexed', RANKED);
+        await planted('plain', RANKED);
 
         for (const [id, tier] of Object.entries(TIERS)) {
             await both((query: Builder<Ranked>): Promise<number> => query.where('id', Number(id)).update({ tier }));
@@ -898,18 +908,11 @@ describe('unique violations on a unique column both copies hold', (): void => {
 
 describe('a column holding arrays under a multi-entry index', (): void => {
     beforeEach(async (): Promise<void> => {
-        const database: string = `invariance-tagged-${++sequence}`;
-        const first: Connection = new Connection('app', { database, migrations: [CreateItemsTables] });
-
-        await first.migrate();
-        await first.table<Item>('indexed').insert(ROWS);
-        await first.table<Item>('plain').insert(ROWS);
-
-        first.disconnect();
-
-        connection = new Connection('app', { database, migrations: [CreateItemsTables, AddTagsToItemsTables] });
+        connection = new Connection('app', { database: `invariance-tagged-${++sequence}`, migrations: [CreateItemsTables, AddTagsToItemsTables] });
 
         await connection.migrate();
+        await planted('indexed', ROWS);
+        await planted('plain', ROWS);
 
         for (const [id, tags] of Object.entries(TAGS)) {
             await both((query: Builder<Tagged>): Promise<number> => query.where('id', Number(id)).update({ tags: typeof tags === 'string' ? JSON.stringify(tags) : tags }));

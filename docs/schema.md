@@ -55,6 +55,48 @@ whole value, and `orderBy` sorts by it, which an index of single elements cannot
 the table as they would with no index. `min` and `max` read the records too.
 [Query plans](query-plans.md) lists the `whereJsonContains` values the index serves.
 
+## Adding columns
+
+A column declared inside `Schema.table` without `.change()` is added to the table, and the rows it
+already holds are brought into line in the same migration:
+
+| Added column                   | What happens to the rows                                                                                |
+|--------------------------------|---------------------------------------------------------------------------------------------------------|
+| With `.default(value)`         | A row without a value takes the default, and so does a row holding `null` unless the column is nullable |
+| `.nullable()`, with no default | The rows are left as they are                                                                           |
+| Required, with no default      | Any row that would hold no value fails the migration                                                    |
+
+```ts
+await Schema.table('users', (table: Blueprint): void => {
+    table.string('role').default('member');
+    table.string('nickname').nullable();
+    table.integer('level');
+});
+```
+
+On a table holding three rows, the required `level` fails the whole migration:
+
+```
+SchemaException: Column [level] of table [users] cannot be added as required without a default,
+because it would hold no value in 3 rows.
+```
+
+The rule holds on a loose connection too, since strictness only governs the values a write
+coerces. An empty table takes the column, so a fresh install, which runs every migration against
+empty tables, is unaffected. A row that already holds a value under the name, written before the
+column was declared, counts as filled. When one call adds several such columns, the message names
+each one some row would lack and counts the rows lacking any of them. A column dropped or renamed in
+the same blueprint frees its name, and a column added under that name starts empty, so the rows
+take its default or, without one, fail the migration.
+
+Each `Schema.table` call is checked on its own, so a default given by a later call in the same
+migration comes too late. Declare the default with the column, or add it as nullable and make it
+required with [`.change()`](#changing-columns) once every row holds a value.
+
+Before 4.0.0 such a column was added anyway, leaving every row already in the table without a value.
+A migration shipped before 4.0.0 that adds one, and has not yet run on some device, now fails there
+when the table holds rows. Give the column a default or make it nullable.
+
 ## Indexes follow renamed and dropped columns
 
 IndexedDB cannot change the columns an index covers, so `renameColumn` and `dropColumn` rebuild or

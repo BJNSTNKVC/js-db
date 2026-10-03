@@ -30,6 +30,8 @@ true. All of them are exported from the package root.
 - declaring more than one primary column, including `.primary()` alongside `table.id()`
 - dropping or renaming a column, or dropping an index, that does not exist on the table
 - dropping a column that a compound index still covers, until the index is dropped
+- adding a required column with no default inside `Schema.table` while some row would hold no
+  value in it
 - declaring an enumerated column over an empty list of values
 - `upsert` whose conflict target is neither the key path nor a unique index
 - `update`, `upsert`, `increment` or `decrement` touching the key path

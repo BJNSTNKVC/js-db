@@ -15,8 +15,15 @@ class AddRoleToUsersTable extends Migration {
 }
 ```
 
-Adding a column **with** a `default()` backfills every existing record. Without one, existing
-records are left alone.
+Adding a column **with** a `default()` backfills every existing record. A `nullable()` column
+without one leaves existing records alone. A column that is neither, required with no default, can
+only be added while no record would be left without a value, so to an empty table, or to one whose
+records already hold a value under its name. Otherwise the migration throws `SchemaException` and
+rolls back. [Adding columns](schema.md#adding-columns) has the details.
+
+A migration that fails rolls back with every other migration the same open was running, since they
+share one version change transaction. The database stays at its previous version, and the next
+open runs them again.
 
 ## Migrations are forward-only
 

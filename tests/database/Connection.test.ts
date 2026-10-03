@@ -35,8 +35,8 @@ const listeners: ((event: Event) => void)[] = [];
 /**
  * Build a connection against a uniquely named database.
  */
-function connect(migrations: MigrationConstructor[], database: string = `connection-${++sequence}`): Connection {
-    const connection: Connection = new Connection('app', { database, migrations });
+function connect(migrations: MigrationConstructor[], database: string = `connection-${++sequence}`, strict: boolean = true): Connection {
+    const connection: Connection = new Connection('app', { database, migrations, strict });
 
     connections.push(connection);
 
@@ -1238,72 +1238,78 @@ describe('Schema.table column changes', (): void => {
     });
 });
 
-describe('Schema.table renamed and dropped columns', (): void => {
-    const CreateIndexedUsersTable: MigrationConstructor = migration('CreateIndexedUsersTable', async (): Promise<void> => {
-        await Schema.create('users', (table: Blueprint): void => {
-            table.id();
-            table.string('email').unique();
-            table.string('name').index();
-            table.string('city').nullable();
-            table.integer('age').nullable();
-            table.string('nickname').nullable().index('by_nickname');
-            table.string('note').nullable();
-            table.index(['city', 'age']);
-        });
+const CreateIndexedUsersTable: MigrationConstructor = migration('CreateIndexedUsersTable', async (): Promise<void> => {
+    await Schema.create('users', (table: Blueprint): void => {
+        table.id();
+        table.string('email').unique();
+        table.string('name').index();
+        table.string('city').nullable();
+        table.integer('age').nullable();
+        table.string('nickname').nullable().index('by_nickname');
+        table.string('note').nullable();
+        table.index(['city', 'age']);
+    });
+});
+
+const people: Record<string, unknown>[] = [
+    { email: 'a@x', name: 'Alice', city: 'Oslo', age: 30, nickname: 'al', note: 'first' },
+    { email: 'b@x', name: 'Bob', city: 'Rome', age: 40, nickname: 'bo', note: 'second' },
+];
+
+const before: string[] = ['by_nickname(nickname)', 'users_city_age_index(city,age)', 'users_email_unique(email) unique', 'users_name_index(name)'];
+
+/**
+ * Migrate a users table holding the given rows, then alter it once with each given callback.
+ */
+async function altered(callbacks: ((table: Blueprint) => void)[], options: { database?: string; rows?: Record<string, unknown>[]; strict?: boolean } = {}): Promise<Connection> {
+    const database: string = options.database ?? `connection-${++sequence}`;
+    const strict: boolean = options.strict ?? true;
+    const rows: Record<string, unknown>[] = options.rows ?? people;
+    const first: Connection = connect([CreateIndexedUsersTable], database, strict);
+
+    await first.migrate();
+
+    if (rows.length > 0) {
+        await seed(first, 'users', rows);
+    }
+
+    first.disconnect();
+    connections.splice(connections.indexOf(first), 1);
+
+    const AlterUsersTable: MigrationConstructor = migration('AlterUsersTable', async (): Promise<void> => {
+        for (const callback of callbacks) {
+            await Schema.table('users', callback);
+        }
     });
 
-    const people: Record<string, unknown>[] = [
-        { email: 'a@x', name: 'Alice', city: 'Oslo', age: 30, nickname: 'al', note: 'first' },
-        { email: 'b@x', name: 'Bob', city: 'Rome', age: 40, nickname: 'bo', note: 'second' },
-    ];
+    const second: Connection = connect([CreateIndexedUsersTable, AlterUsersTable], database, strict);
 
-    const before: string[] = ['by_nickname(nickname)', 'users_city_age_index(city,age)', 'users_email_unique(email) unique', 'users_name_index(name)'];
+    await second.migrate();
 
-    /**
-     * Migrate a users table holding two people, then alter it once with each given callback.
-     */
-    async function altered(callbacks: ((table: Blueprint) => void)[], database: string = `connection-${++sequence}`): Promise<Connection> {
-        const first: Connection = connect([CreateIndexedUsersTable], database);
+    return second;
+}
 
-        await first.migrate();
-        await seed(first, 'users', people);
+/**
+ * Describe the indexes the registry lists for the users table.
+ */
+async function listed(connection: Connection): Promise<string[]> {
+    return (await connection.getIndexes('users'))
+        .map((index: IndexSchema): string => `${index.name}(${index.columns.join(',')})${index.unique ? ' unique' : ''}`)
+        .sort();
+}
 
-        first.disconnect();
-        connections.splice(connections.indexOf(first), 1);
+/**
+ * Describe the indexes the users store really has.
+ */
+async function stored(connection: Connection): Promise<string[]> {
+    const store: IDBObjectStore = (await connection.open()).transaction('users', 'readonly').objectStore('users');
 
-        const AlterUsersTable: MigrationConstructor = migration('AlterUsersTable', async (): Promise<void> => {
-            for (const callback of callbacks) {
-                await Schema.table('users', callback);
-            }
-        });
+    return Array.from(store.indexNames)
+        .map((name: string): IDBIndex => store.index(name))
+        .map((index: IDBIndex): string => `${index.name}(${([] as string[]).concat(index.keyPath).join(',')})${index.unique ? ' unique' : ''}`);
+}
 
-        const second: Connection = connect([CreateIndexedUsersTable, AlterUsersTable], database);
-
-        await second.migrate();
-
-        return second;
-    }
-
-    /**
-     * Describe the indexes the registry lists for the users table.
-     */
-    async function listed(connection: Connection): Promise<string[]> {
-        return (await connection.getIndexes('users'))
-            .map((index: IndexSchema): string => `${index.name}(${index.columns.join(',')})${index.unique ? ' unique' : ''}`)
-            .sort();
-    }
-
-    /**
-     * Describe the indexes the users store really has.
-     */
-    async function stored(connection: Connection): Promise<string[]> {
-        const store: IDBObjectStore = (await connection.open()).transaction('users', 'readonly').objectStore('users');
-
-        return Array.from(store.indexNames)
-            .map((name: string): IDBIndex => store.index(name))
-            .map((index: IDBIndex): string => `${index.name}(${([] as string[]).concat(index.keyPath).join(',')})${index.unique ? ' unique' : ''}`);
-    }
-
+describe('Schema.table renamed and dropped columns', (): void => {
     /**
      * Rename one key of every person, as a rewrite should.
      */
@@ -1413,7 +1419,7 @@ describe('Schema.table renamed and dropped columns', (): void => {
 
         await expect(altered([(table: Blueprint): void => {
             table.dropColumn('age');
-        }], database)).rejects.toThrow(new SchemaException('Column [age] of table [users] may not be dropped while index [users_city_age_index] covers it. Drop the index first.'));
+        }], { database })).rejects.toThrow(new SchemaException('Column [age] of table [users] may not be dropped while index [users_city_age_index] covers it. Drop the index first.'));
 
         connections.splice(0).forEach((connection: Connection): void => connection.disconnect());
 
@@ -1483,6 +1489,268 @@ describe('Schema.table renamed and dropped columns', (): void => {
         expect(await listed(connection)).toEqual(['users_mail_unique(mail) unique']);
         expect(await stored(connection)).toEqual(['users_mail_unique(mail) unique']);
         await expect(connection.table('users').insert({ mail: 'a@x' })).rejects.toBeInstanceOf(UniqueConstraintViolationException);
+    });
+});
+
+describe('Schema.table required columns added to a table with rows', (): void => {
+    /**
+     * Read the version and the store names a database holds, past the package.
+     */
+    async function inspected(database: string): Promise<{ version: number; stores: string[] }> {
+        const handle: IDBDatabase = await new Promise<IDBDatabase>((resolve: (database: IDBDatabase) => void, reject: (reason: unknown) => void): void => {
+            const request: IDBOpenDBRequest = indexedDB.open(database);
+
+            request.onsuccess = (): void => resolve(request.result);
+            request.onerror = (): void => reject(request.error);
+        });
+
+        const found: { version: number; stores: string[] } = { version: handle.version, stores: Array.from(handle.objectStoreNames).sort() };
+
+        handle.close();
+
+        return found;
+    }
+
+    /**
+     * Build a migration that creates a ranks table, alters users, then alters users again with the given callback.
+     */
+    function ranking(callback: (table: Blueprint) => void): MigrationConstructor {
+        return migration('AddRankToUsersTable', async (): Promise<void> => {
+            await Schema.create('ranks', (table: Blueprint): void => {
+                table.id();
+                table.string('label');
+            });
+
+            await Schema.table('users', (table: Blueprint): void => {
+                table.dropColumn('note');
+                table.string('code').nullable().unique();
+            });
+
+            await Schema.table('users', callback);
+        });
+    }
+
+    /**
+     * Number every person as the key path would, merging the given columns into each.
+     */
+    function numbered(...columns: Record<string, unknown>[]): Record<string, unknown>[] {
+        return people.map((person: Record<string, unknown>, position: number): Record<string, unknown> => ({ id: position + 1, ...person, ...columns[position] }));
+    }
+
+    test.each([true, false])('refuses a required column without a default on a connection with strict %s', async (strict: boolean): Promise<void> => {
+        await expect(altered([(table: Blueprint): void => {
+            table.integer('rank');
+        }], { strict })).rejects.toThrow(new SchemaException('Column [rank] of table [users] cannot be added as required without a default, because it would hold no value in 2 rows.'));
+    });
+
+    test('rolls the whole migration back, and runs cleanly once the column has a default', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+        const first: Connection = connect([CreateIndexedUsersTable], database);
+
+        await first.migrate();
+        await seed(first, 'users', people);
+
+        first.disconnect();
+        connections.splice(connections.indexOf(first), 1);
+
+        await expect(connect([CreateIndexedUsersTable, ranking((table: Blueprint): void => {
+            table.integer('rank').index();
+        })], database).migrate()).rejects.toThrow(new SchemaException('Column [rank] of table [users] cannot be added as required without a default, because it would hold no value in 2 rows.'));
+
+        connections.splice(0).forEach((connection: Connection): void => connection.disconnect());
+
+        expect(await inspected(database)).toEqual({ version: 2, stores: [Registry.table, Repository.table, 'users'].sort() });
+
+        const pending: MigrationStatus[] = await connect([CreateIndexedUsersTable, migration('AddRankToUsersTable', (): void => {})], database).status();
+
+        expect(pending.map((entry: MigrationStatus): boolean => entry.ran)).toEqual([true, false]);
+
+        connections.splice(0).forEach((connection: Connection): void => connection.disconnect());
+
+        const restored: Connection = connect([CreateIndexedUsersTable], database);
+
+        expect((await restored.getColumns('users')).map((column: ColumnSchema): string => column.name)).toEqual(['id', 'email', 'name', 'city', 'age', 'nickname', 'note']);
+        expect(await listed(restored)).toEqual(before);
+        expect(await stored(restored)).toEqual(before);
+        expect(await records(restored, 'users')).toEqual(numbered());
+
+        connections.splice(0).forEach((connection: Connection): void => connection.disconnect());
+
+        const fixed: Connection = connect([CreateIndexedUsersTable, ranking((table: Blueprint): void => {
+            table.integer('rank').default(0).index();
+        })], database);
+
+        expect(await fixed.migrate()).toEqual(['AddRankToUsersTable']);
+        expect(await records(fixed, 'users')).toEqual(numbered({ note: undefined, rank: 0 }, { note: undefined, rank: 0 }));
+        expect(await stored(fixed)).toEqual([...before, 'users_code_unique(code) unique', 'users_rank_index(rank)'].sort());
+    });
+
+    test('adds a required column without a default to an empty table, and enforces it on writes', async (): Promise<void> => {
+        const connection: Connection = await altered([(table: Blueprint): void => {
+            table.integer('rank');
+        }], { rows: [] });
+
+        expect((await connection.getColumns('users')).find((column: ColumnSchema): boolean => column.name === 'rank')).toEqual(expect.objectContaining({ nullable: false, hasDefault: false }));
+        await expect(connection.table('users').insert({ email: 'c@x', name: 'Carol' })).rejects.toBeInstanceOf(NotNullConstraintViolationException);
+    });
+
+    test('runs every migration of a fresh install, whose tables are all empty', async (): Promise<void> => {
+        const AddRankToUsersTable: MigrationConstructor = migration('AddRankToUsersTable', async (): Promise<void> => {
+            await Schema.table('users', (table: Blueprint): void => {
+                table.integer('rank').index();
+            });
+        });
+
+        expect(await connect([CreateIndexedUsersTable, AddRankToUsersTable]).migrate()).toEqual(['CreateIndexedUsersTable', 'AddRankToUsersTable']);
+    });
+
+    test.each([
+        ['with a default', (table: Blueprint): void => {
+            table.integer('rank').default(0);
+        }, numbered({ rank: 0 }, { rank: 0 })],
+        ['as nullable', (table: Blueprint): void => {
+            table.integer('rank').nullable();
+        }, numbered()],
+    ] as [string, (table: Blueprint) => void, Record<string, unknown>[]][])('adds the column %s, backfilling as before', async (_: string, callback: (table: Blueprint) => void, rows: Record<string, unknown>[]): Promise<void> => {
+        expect(await records(await altered([callback]), 'users')).toEqual(rows);
+    });
+
+    test('counts only the rows that would hold no value', async (): Promise<void> => {
+        await expect(altered([(table: Blueprint): void => {
+            table.integer('rank');
+        }], { rows: [{ ...people[0], rank: 7 }, { ...people[1], rank: null }, { email: 'c@x', name: 'Carol' }] })).rejects.toThrow(new SchemaException('Column [rank] of table [users] cannot be added as required without a default, because it would hold no value in 2 rows.'));
+    });
+
+    test('adds a required column without a default once every row holds a value under its name', async (): Promise<void> => {
+        const connection: Connection = await altered([(table: Blueprint): void => {
+            table.integer('rank');
+        }], { rows: numbered({ rank: 7 }, { rank: 0 }) });
+
+        expect(await records(connection, 'users')).toEqual(numbered({ rank: 7 }, { rank: 0 }));
+    });
+
+    test('names every column without a value and counts the rows missing any of them', async (): Promise<void> => {
+        await expect(altered([(table: Blueprint): void => {
+            table.integer('rank');
+            table.integer('level');
+            table.integer('tier');
+            table.integer('score').nullable();
+        }], { rows: [{ ...people[0], rank: 1, level: 1 }, { ...people[1], level: 1 }, { email: 'c@x', name: 'Carol', level: 1, tier: 1 }] })).rejects.toThrow(new SchemaException('Columns [rank, tier] of table [users] cannot be added as required without a default, because they would hold no value in 3 rows.'));
+    });
+
+    test('describes a single row', async (): Promise<void> => {
+        await expect(altered([(table: Blueprint): void => {
+            table.integer('rank');
+        }], { rows: [people[0] as Record<string, unknown>] })).rejects.toThrow(new SchemaException('Column [rank] of table [users] cannot be added as required without a default, because it would hold no value in 1 row.'));
+    });
+
+    test.each([
+        ['unique()', (table: Blueprint): void => {
+            table.integer('rank').unique();
+        }],
+        ['index()', (table: Blueprint): void => {
+            table.integer('rank').index();
+        }],
+        ['multiEntry()', (table: Blueprint): void => {
+            table.json('rank').multiEntry();
+        }],
+    ] as [string, (table: Blueprint) => void][])('refuses a required column added with %s, creating no index', async (_: string, callback: (table: Blueprint) => void): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+
+        await expect(altered([callback], { database })).rejects.toThrow(new SchemaException('Column [rank] of table [users] cannot be added as required without a default, because it would hold no value in 2 rows.'));
+
+        connections.splice(0).forEach((connection: Connection): void => connection.disconnect());
+
+        expect(await stored(connect([CreateIndexedUsersTable], database))).toEqual(before);
+    });
+
+    test('checks each Schema.table call on its own, so a default given by a later call comes too late', async (): Promise<void> => {
+        await expect(altered([
+            (table: Blueprint): void => {
+                table.integer('rank');
+            },
+            (table: Blueprint): void => {
+                table.integer('rank').default(0).change();
+            },
+        ])).rejects.toThrow(new SchemaException('Column [rank] of table [users] cannot be added as required without a default, because it would hold no value in 2 rows.'));
+    });
+
+    test('makes a column added as nullable required with a default in a later call', async (): Promise<void> => {
+        const connection: Connection = await altered([
+            (table: Blueprint): void => {
+                table.integer('rank').nullable();
+            },
+            (table: Blueprint): void => {
+                table.integer('rank').default(0).change();
+            },
+        ]);
+
+        expect(await records(connection, 'users')).toEqual(numbered({ rank: 0 }, { rank: 0 }));
+    });
+
+    test('refuses to make a column added as nullable required without a default in a later call', async (): Promise<void> => {
+        await expect(altered([
+            (table: Blueprint): void => {
+                table.integer('rank').nullable();
+            },
+            (table: Blueprint): void => {
+                table.integer('rank').change();
+            },
+        ])).rejects.toThrow(new SchemaException('Column [rank] of table [users] cannot be made required without a default, because it holds no value in 2 rows.'));
+    });
+
+    test('renames a required column, which adds nothing', async (): Promise<void> => {
+        const connection: Connection = await altered([(table: Blueprint): void => {
+            table.renameColumn('name', 'full_name');
+        }]);
+
+        expect(await connection.table('users').orderBy('id').pluck('full_name')).toEqual(['Alice', 'Bob']);
+    });
+
+    test.each([
+        ['renamed', (table: Blueprint): void => {
+            table.renameColumn('note', 'memo');
+        }],
+        ['dropped', (table: Blueprint): void => {
+            table.dropColumn('note');
+        }],
+    ] as [string, (table: Blueprint) => void][])('refuses a required column added under the name of a column %s in the same call', async (_: string, callback: (table: Blueprint) => void): Promise<void> => {
+        await expect(altered([(table: Blueprint): void => {
+            callback(table);
+            table.string('note');
+        }])).rejects.toThrow(new SchemaException('Column [note] of table [users] cannot be added as required without a default, because it would hold no value in 2 rows.'));
+    });
+
+    test.each([
+        ['renamed', (table: Blueprint): void => {
+            table.renameColumn('note', 'memo');
+        }, numbered({ memo: 'first', note: 'none' }, { memo: 'second', note: 'none' })],
+        ['dropped', (table: Blueprint): void => {
+            table.dropColumn('note');
+        }, numbered({ note: 'none' }, { note: 'none' })],
+    ] as [string, (table: Blueprint) => void, Record<string, unknown>[]][])('gives every row the default of a column added under the name of a column %s in the same call', async (_: string, callback: (table: Blueprint) => void, rows: Record<string, unknown>[]): Promise<void> => {
+        const connection: Connection = await altered([(table: Blueprint): void => {
+            callback(table);
+            table.string('note').default('none');
+        }]);
+
+        expect(await records(connection, 'users')).toEqual(rows);
+    });
+
+    test('gives the default of an added required column to a row holding null under its name', async (): Promise<void> => {
+        const connection: Connection = await altered([(table: Blueprint): void => {
+            table.integer('rank').default(0);
+        }], { rows: numbered({ rank: null }, { rank: 3 }) });
+
+        expect(await records(connection, 'users')).toEqual(numbered({ rank: 0 }, { rank: 3 }));
+    });
+
+    test('keeps null under an added nullable column with a default', async (): Promise<void> => {
+        const connection: Connection = await altered([(table: Blueprint): void => {
+            table.integer('rank').nullable().default(0);
+        }], { rows: numbered({ rank: null }, {}) });
+
+        expect(await records(connection, 'users')).toEqual(numbered({ rank: null }, { rank: 0 }));
     });
 });
 

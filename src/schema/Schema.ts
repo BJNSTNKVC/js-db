@@ -259,12 +259,16 @@ export class Schema {
     }
 
     /**
-     * Refuse the operations when a record, once rewritten, would break a changed column or a unique index.
+     * Refuse the operations when a record, once rewritten, would break an added column, a changed column or a unique index.
      */
     static async #check(store: IDBObjectStore, schema: TableSchema, operations: BlueprintOperations): Promise<void> {
         const filled: string[] = operations.changed
             .filter((change: ChangedColumn): boolean => change.to.hasDefault)
             .map((change: ChangedColumn): string => change.to.name);
+
+        const added: ColumnSchema[] = operations.added.filter((column: ColumnSchema): boolean => !column.nullable && !column.hasDefault);
+        const unfilled: Set<string> = new Set<string>();
+        let lacking: number = 0;
 
         const required: Tally[] = operations.changed
             .filter((change: ChangedColumn): boolean => change.from.nullable && !change.to.nullable && !change.to.hasDefault)
@@ -280,7 +284,7 @@ export class Schema {
             && (operations.indexed.some((created: IndexSchema): boolean => created.name === index.name)
                 || index.columns.some((column: string): boolean => filled.includes(column))));
 
-        if (required.length === 0 && narrowed.length === 0 && unique.length === 0) {
+        if (added.length === 0 && required.length === 0 && narrowed.length === 0 && unique.length === 0) {
             return;
         }
 
@@ -289,6 +293,15 @@ export class Schema {
 
         await Request.walk(store.openCursor(), (cursor: IDBCursorWithValue): void => {
             const record: Record<string, unknown> = this.#rewritten(cursor.value, operations);
+            const empty: ColumnSchema[] = added.filter((column: ColumnSchema): boolean => this.#empty(record[column.name]));
+
+            for (const column of empty) {
+                unfilled.add(column.name);
+            }
+
+            if (empty.length > 0) {
+                lacking++;
+            }
 
             for (const tally of required) {
                 if (this.#empty(record[tally.change.to.name])) {
@@ -310,6 +323,16 @@ export class Schema {
 
             row++;
         });
+
+        if (lacking > 0) {
+            const columns: string[] = added
+                .map((column: ColumnSchema): string => column.name)
+                .filter((column: string): boolean => unfilled.has(column));
+
+            const named: string = columns.length === 1 ? `Column [${columns[0]}]` : `Columns [${columns.join(', ')}]`;
+
+            throw new SchemaException(`${named} of table [${schema.table}] cannot be added as required without a default, because ${columns.length === 1 ? 'it' : 'they'} would hold no value in ${this.#rows(lacking)}.`);
+        }
 
         for (const tally of required) {
             if (tally.count > 0) {
@@ -438,12 +461,6 @@ export class Schema {
     static #rewritten(value: unknown, operations: BlueprintOperations): Record<string, unknown> {
         const record: Record<string, unknown> = { ...value as Record<string, unknown> };
 
-        for (const column of operations.added) {
-            if (column.hasDefault && !Object.hasOwn(record, column.name)) {
-                record[column.name] = column.default;
-            }
-        }
-
         for (const rename of operations.renamed) {
             record[rename.to] = record[rename.from];
 
@@ -452,6 +469,12 @@ export class Schema {
 
         for (const column of operations.dropped) {
             delete record[column];
+        }
+
+        for (const column of operations.added) {
+            if (column.hasDefault && (!Object.hasOwn(record, column.name) || (!column.nullable && this.#empty(record[column.name])))) {
+                record[column.name] = column.default;
+            }
         }
 
         for (const change of operations.changed) {
