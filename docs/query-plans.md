@@ -61,6 +61,10 @@ Each resolves to a description of the plan chosen:
   matches nothing, and is planned as an empty set of lookups rather than as a range.
 - When a range and an order want different indexes, the range wins and the sort happens in memory.
 - Any top-level `orWhere` forces a full scan.
+- A nested group never drives the query, though a constraint beside it can. `whereDate` with `!=`
+  or `<>` is one, so on its own it reads every record, while under any other operator it is a range
+  an index on its column can serve. `whereYear`, `whereMonth`, `whereDay` and `whereTime` never
+  drive the query.
 - `count()` with no residual constraints uses `count()` on the store or index, reading no records,
   unless the query joins.
 - A joined query reads every table it joins in full and runs the join in memory, so no index takes

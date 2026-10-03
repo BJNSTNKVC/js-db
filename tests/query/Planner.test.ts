@@ -591,7 +591,7 @@ describe('Planner.prepare', (): void => {
         const constraints: Constraint[] = [
             { type: 'null', column: 'age', conjunction: 'and', not: false },
             { type: 'column', column: 'age', operator: '=', other: 'score', conjunction: 'and', not: false },
-            { type: 'part', column: 'born', part: 'year', value: 2024, conjunction: 'and', not: false },
+            { type: 'part', column: 'born', part: 'year', operator: '=', value: 2024, conjunction: 'and', not: false },
             { type: 'time', column: 'born', operator: '=', value: '09:30:00', conjunction: 'and', not: false },
             { type: 'json-contains', column: 'tags', value: '1', conjunction: 'and', not: false },
             { type: 'json-length', column: 'tags', operator: '=', value: 1, conjunction: 'and', not: false },

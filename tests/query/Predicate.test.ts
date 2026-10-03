@@ -371,7 +371,7 @@ describe('Predicate three valued logic', (): void => {
 
     test('negating a group leaves the date part of a value that holds no date unknown', (): void => {
         const constraints: Constraint[] = [
-            nested([{ type: 'part', column: 'at', part: 'year', value: 2026, conjunction: 'and', not: false }], true),
+            nested([{ type: 'part', column: 'at', part: 'year', operator: '=', value: 2026, conjunction: 'and', not: false }], true),
         ];
 
         expect(matches(constraints, { at: 'never' })).toEqual(false);

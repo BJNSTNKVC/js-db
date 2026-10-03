@@ -112,7 +112,7 @@ export class Predicate {
         if (constraint.type === 'part') {
             const part: number | null = this.#part(held, constraint.part);
 
-            return part === null ? null : this.#negate(constraint.not, part === constraint.value);
+            return part === null ? null : this.#negate(constraint.not, this.#compared(part, constraint.operator, constraint.value));
         }
 
         if (constraint.type === 'time') {

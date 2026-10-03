@@ -10,6 +10,7 @@ import type { ColumnSchema, TableSchema } from '../schema/types';
 import type {
     Conjunction,
     Constraint,
+    DateOperator,
     DatePart,
     Direction,
     JoinClause,
@@ -24,6 +25,8 @@ import type {
 const EQUALITIES: ReadonlySet<Operator> = new Set<Operator>(['=', '==', '===']);
 
 const INEQUALITIES: ReadonlySet<Operator> = new Set<Operator>(['!=', '<>', '!==']);
+
+const DATE_OPERATORS: ReadonlySet<unknown> = new Set<DateOperator>(['=', '!=', '<>', '<', '>', '<=', '>=']);
 
 type Nested<T> = (query: Builder<T>) => void;
 
@@ -246,38 +249,62 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Constrain a date column to fall on a given day.
+     * Constrain a date column to fall on, before or after a given day.
      */
-    whereDate(column: Key<T>, value: Date | string): this {
-        const day: Date = Calendar.read(value);
+    whereDate(column: Key<T>, value: Date | string): this;
+    whereDate(column: Key<T>, operator: DateOperator, value: Date | string): this;
+    whereDate(column: Key<T>, ...parameters: unknown[]): this {
+        const resolved: { operator: DateOperator; value: unknown } = this.#dated(parameters);
+        const day: Date = Calendar.read(resolved.value as Date | string);
 
         // A day is expressed as the range it covers, so an indexed column can still drive the scan
         // and a stored time of day does not have to match.
         const from: Date = Calendar.midnight(day.getFullYear(), day.getMonth(), day.getDate());
-        const to: Date = Calendar.midnight(day.getFullYear(), day.getMonth(), day.getDate() + 1);
+        const to: Date = new Date(Calendar.midnight(day.getFullYear(), day.getMonth(), day.getDate() + 1).getTime() - 1);
 
-        return this.#push({ type: 'between', column, from, to: new Date(to.getTime() - 1), conjunction: 'and', not: false });
+        if (resolved.operator === '=') {
+            return this.#push({ type: 'between', column, from, to, conjunction: 'and', not: false });
+        }
+
+        if (resolved.operator === '!=' || resolved.operator === '<>') {
+            const constraints: Constraint[] = [
+                { type: 'basic', column, operator: '<', value: from, conjunction: 'and', not: false },
+                { type: 'basic', column, operator: '>', value: to, conjunction: 'or', not: false },
+            ];
+
+            return this.#push({ type: 'nested', constraints, conjunction: 'and', not: false });
+        }
+
+        const bound: Date = resolved.operator === '>' || resolved.operator === '<=' ? to : from;
+
+        return this.#push({ type: 'basic', column, operator: resolved.operator, value: bound, conjunction: 'and', not: false });
     }
 
     /**
-     * Constrain a date column to fall in a given year.
+     * Constrain the year of a date column.
      */
-    whereYear(column: Key<T>, value: number): this {
-        return this.#part('and', column, 'year', value);
+    whereYear(column: Key<T>, value: number | string): this;
+    whereYear(column: Key<T>, operator: DateOperator, value: number | string): this;
+    whereYear(column: Key<T>, ...parameters: unknown[]): this {
+        return this.#part('and', column, 'year', parameters);
     }
 
     /**
-     * Constrain a date column to fall in a given month, numbered from one.
+     * Constrain the month of a date column, numbered from one.
      */
-    whereMonth(column: Key<T>, value: number): this {
-        return this.#part('and', column, 'month', value);
+    whereMonth(column: Key<T>, value: number | string): this;
+    whereMonth(column: Key<T>, operator: DateOperator, value: number | string): this;
+    whereMonth(column: Key<T>, ...parameters: unknown[]): this {
+        return this.#part('and', column, 'month', parameters);
     }
 
     /**
-     * Constrain a date column to fall on a given day of the month.
+     * Constrain the day of the month of a date column.
      */
-    whereDay(column: Key<T>, value: number): this {
-        return this.#part('and', column, 'day', value);
+    whereDay(column: Key<T>, value: number | string): this;
+    whereDay(column: Key<T>, operator: DateOperator, value: number | string): this;
+    whereDay(column: Key<T>, ...parameters: unknown[]): this {
+        return this.#part('and', column, 'day', parameters);
     }
 
     /**
@@ -1134,10 +1161,33 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Add a constraint on one part of a date column.
+     * Add a constraint on one part of a date column, reading a whole number written as a string as that number.
      */
-    #part(conjunction: Conjunction, column: Key<T>, part: DatePart, value: number): this {
-        return this.#push({ type: 'part', column, part, value, conjunction, not: false });
+    #part(conjunction: Conjunction, column: Key<T>, part: DatePart, parameters: unknown[]): this {
+        const resolved: { operator: DateOperator; value: unknown } = this.#dated(parameters);
+
+        if (typeof resolved.value === 'string' && !/^\d+$/.test(resolved.value)) {
+            throw new SchemaException(`The ${part} [${resolved.value}] is not a whole number.`);
+        }
+
+        const value: number = typeof resolved.value === 'string' ? Number(resolved.value) : resolved.value as number;
+
+        return this.#push({ type: 'part', column, part, operator: resolved.operator, value, conjunction, not: false });
+    }
+
+    /**
+     * Resolve the operator and value of a date constraint by how many arguments were passed, refusing an operator a date does not take.
+     */
+    #dated(parameters: unknown[]): { operator: DateOperator; value: unknown } {
+        const resolved: { operator: unknown; value: unknown } = parameters.length < 2
+            ? { operator: '=', value: parameters[0] }
+            : { operator: parameters[0], value: parameters[1] };
+
+        if (!DATE_OPERATORS.has(resolved.operator)) {
+            throw new SchemaException(`The operator [${String(resolved.operator)}] does not compare dates.`);
+        }
+
+        return resolved as { operator: DateOperator; value: unknown };
     }
 
     /**

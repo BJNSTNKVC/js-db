@@ -69,13 +69,33 @@ DB.table<Post>('posts')
     .whereTime('published_at', '>=', '09:30');
 ```
 
+Each takes an operator between the column and the value, `=` when it is left out:
+
+```ts
+DB.table<Post>('posts')
+    .whereDate('published_at', '>', '2025-12-31')
+    .whereYear('published_at', '<=', 2026)
+    .whereMonth('published_at', '!=', '07')
+    .whereDay('published_at', '>=', 15);
+```
+
+`whereDate`, `whereYear`, `whereMonth` and `whereDay` take `=`, `!=`, `<>`, `<`, `>`, `<=` and
+`>=`, and throw `SchemaException` for any other. The year, month and day may be a whole number
+written as a string, such as `'2026'` or `'07'`, which compares as that number. Any other string,
+such as `''`, `'2026.0'`, `'-1'` or `'twenty'`, throws `SchemaException`.
+
 `whereTime` compares zero padded `HH:MM:SS` strings, and pads `HH:MM` with `:00`, so `'09:30'`
 means `09:30:00`. `whereDate` reads a `YYYY-MM-DD` string as that calendar day in the local
 timezone, so `'2026-02-01'` matches 1 February wherever the code runs, and a day the calendar does
 not have, such as `'2026-02-30'`, matches nothing. It reads any other string as `new Date` does, and
-a `Date` by the local day it falls on. `whereDate` becomes a range and can be served by an index.
-The other parts, and `whereTime`, are checked against every record the query reads. None of them
-has an `or` form.
+a `Date` by the local day it falls on, and a value it cannot read as a date matches nothing under
+any operator. It compares whole days: `>` matches from the start of the next day, `<=` up to the end
+of the day, and `!=` everything before or after it.
+
+`whereDate` becomes a range and can be served by an index under every operator but `!=` and `<>`,
+which become a nested pair of ranges joined with `or` and are checked against every record the
+query reads. The other parts, and `whereTime`, are always checked that way. A null or missing value
+matches none of them, under `!=` as under any other operator. None of them has an `or` form.
 
 Operators: `=`, `==`, `===`, `!=`, `<>`, `!==`, `<`, `>`, `<=`, `>=`, `like`, `not like`. `==` is
 loose and `===` is strict.

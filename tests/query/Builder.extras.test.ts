@@ -5,8 +5,10 @@ import { Schema } from '../../src/schema/Schema';
 import { Blueprint } from '../../src/schema/Blueprint';
 import { MultipleRecordsFoundException, RecordsNotFoundException, SchemaException, UniqueConstraintViolationException } from '../../src/exceptions';
 import { Executor } from '../../src/query/Executor';
+import { Dispatcher } from '../../src/events/Dispatcher';
 import type { Builder } from '../../src/query/Builder';
-import type { Paginated } from '../../src/query/types';
+import type { QueryExecuted } from '../../src/events';
+import type { DateOperator, Paginated } from '../../src/query/types';
 import type { MockInstance } from 'vitest';
 
 interface User {
@@ -22,6 +24,18 @@ interface Moment {
     name: string;
     indexed: Date;
     plain: Date;
+}
+
+interface Person {
+    id: number;
+    name: string;
+}
+
+interface Visit {
+    id: number;
+    name: string;
+    person_id: number;
+    at: Date | null;
 }
 
 class CreateUsersTable extends Migration {
@@ -49,6 +63,25 @@ class CreateMomentsTable extends Migration {
             table.string('name');
             table.datetime('indexed').index();
             table.datetime('plain');
+        });
+    }
+}
+
+class CreateVisitsTables extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        await Schema.create('people', (table: Blueprint): void => {
+            table.id();
+            table.string('name');
+        });
+
+        await Schema.create('visits', (table: Blueprint): void => {
+            table.id();
+            table.string('name');
+            table.integer('person_id');
+            table.datetime('at').nullable().index();
         });
     }
 }
@@ -413,6 +446,214 @@ describe('Builder.whereDate in the local timezone', (): void => {
         expect(new Date(2024, 8, 8).getHours()).toEqual(1);
         expect(await named(moments().whereDate(column, '2024-09-08'))).toEqual(['first', 'last']);
         expect(await named(moments().whereDate(column, new Date(2024, 8, 8, 12)))).toEqual(['first', 'last']);
+    });
+
+    const EDGES: Record<string, () => Date> = {
+        before: (): Date => new Date(new Date(2024, 8, 8).getTime() - 1),
+        first : (): Date => new Date(2024, 8, 8),
+        noon  : (): Date => new Date(2024, 8, 8, 12),
+        last  : (): Date => new Date(new Date(2024, 8, 9).getTime() - 1),
+        after : (): Date => new Date(2024, 8, 9),
+    };
+
+    const SPANS: [DateOperator, string[]][] = [
+        ['=', ['first', 'last', 'noon']],
+        ['>', ['after']],
+        ['>=', ['after', 'first', 'last', 'noon']],
+        ['<', ['before']],
+        ['<=', ['before', 'first', 'last', 'noon']],
+        ['!=', ['after', 'before']],
+        ['<>', ['after', 'before']],
+    ];
+
+    /**
+     * Collect the plans the queries a callback runs report.
+     */
+    async function plans(run: () => Promise<unknown>): Promise<string[]> {
+        const seen: string[] = [];
+        const listener: (event: Event) => void = ((event: QueryExecuted): void => {
+            seen.push(event.plan);
+        }) as (event: Event) => void;
+
+        Dispatcher.listen('db:query', listener);
+
+        try {
+            await run();
+        } finally {
+            Dispatcher.forget('db:query', listener);
+        }
+
+        return seen;
+    }
+
+    describe.each([
+        ['America/New_York', 'indexed'],
+        ['America/New_York', 'plain'],
+        ['Asia/Tokyo', 'indexed'],
+        ['Asia/Tokyo', 'plain'],
+        ['America/Santiago', 'indexed'],
+        ['America/Santiago', 'plain'],
+    ] as [string, 'indexed' | 'plain'][])('with an operator in %s through the %s column', (timezone: string, column: 'indexed' | 'plain'): void => {
+        test.each(SPANS)('%s selects the moments on its side of the local day', async (operator: DateOperator, expected: string[]): Promise<void> => {
+            await store(timezone, EDGES);
+
+            expect(await named(moments().whereDate(column, operator, '2024-09-08'))).toEqual(expected);
+            expect(await named(moments().whereDate(column, operator, new Date(2024, 8, 8, 18)))).toEqual(expected);
+        });
+    });
+
+    test.each(SPANS)('%s plans through the index unless it excludes the day', async (operator: DateOperator): Promise<void> => {
+        await store('America/New_York', EDGES);
+
+        const plan: string = operator === '!=' || operator === '<>' ? 'scan' : 'index:moments_indexed_index';
+
+        expect(await moments().whereDate('indexed', operator, '2024-09-08').explain()).toEqual(plan);
+        expect(await plans((): Promise<Moment[]> => moments().whereDate('indexed', operator, '2024-09-08').get())).toEqual([plan]);
+        expect(await moments().whereDate('plain', operator, '2024-09-08').explain()).toEqual('scan');
+    });
+
+    test.each(['!=', '<>'] as DateOperator[])('%s leaves another constraint free to drive the query', async (operator: DateOperator): Promise<void> => {
+        await store('America/New_York', EDGES);
+
+        const id: number = (await moments().where('name', 'after').first() as Moment).id;
+
+        expect(await moments().whereDate('indexed', operator, '2024-09-08').where('id', id).explain()).toEqual('key');
+        expect(await named(moments().whereDate('indexed', operator, '2024-09-08').where('id', id))).toEqual(['after']);
+        expect(await moments().whereDate('indexed', operator, '2024-09-08').where('indexed', '>', new Date(2024, 8, 8, 18)).explain()).toEqual('index:moments_indexed_index');
+        expect(await named(moments().whereDate('indexed', operator, '2024-09-08').where('indexed', '>', new Date(2024, 8, 8, 18)))).toEqual(['after']);
+    });
+});
+
+describe('Builder date parts with an operator', (): void => {
+    let parts: Connection;
+
+    /**
+     * Begin a query against the visits table.
+     */
+    function visits(): Builder<Visit> {
+        return parts.table<Visit>('visits');
+    }
+
+    /**
+     * Get the names of the visits a query returns, sorted.
+     */
+    async function visited(query: Builder<Visit>): Promise<string[]> {
+        return (await query.get()).map((visit: Visit): string => visit.name).sort();
+    }
+
+    beforeAll(async (): Promise<void> => {
+        parts = new Connection('app', { database: 'builder-extras-parts', migrations: [CreateVisitsTables] });
+
+        await parts.migrate();
+        await parts.table<Person>('people').insert([{ name: 'Alice' }, { name: 'Bob' }, { name: 'Carol' }]);
+        await visits().insert([
+            { name: 'spring', person_id: 1, at: new Date(2024, 2, 10, 12) },
+            { name: 'summer', person_id: 1, at: new Date(2024, 6, 7, 12) },
+            { name: 'winter', person_id: 2, at: new Date(2023, 11, 31, 12) },
+            { name: 'never', person_id: 2, at: null },
+            { name: 'early', person_id: 3, at: new Date(2025, 0, 7, 12) },
+        ]);
+    });
+
+    const COMPARISONS: [string, (query: Builder<Visit>) => Builder<Visit>, string[]][] = [
+        ['whereYear(\'at\', \'=\', 2024)', (query: Builder<Visit>): Builder<Visit> => query.whereYear('at', '=', 2024), ['spring', 'summer']],
+        ['whereYear(\'at\', \'>\', 2023)', (query: Builder<Visit>): Builder<Visit> => query.whereYear('at', '>', 2023), ['early', 'spring', 'summer']],
+        ['whereYear(\'at\', \'<=\', 2023)', (query: Builder<Visit>): Builder<Visit> => query.whereYear('at', '<=', 2023), ['winter']],
+        ['whereYear(\'at\', \'!=\', 2024)', (query: Builder<Visit>): Builder<Visit> => query.whereYear('at', '!=', 2024), ['early', 'winter']],
+        ['whereMonth(\'at\', \'<\', 7)', (query: Builder<Visit>): Builder<Visit> => query.whereMonth('at', '<', 7), ['early', 'spring']],
+        ['whereMonth(\'at\', \'>=\', 7)', (query: Builder<Visit>): Builder<Visit> => query.whereMonth('at', '>=', 7), ['summer', 'winter']],
+        ['whereMonth(\'at\', \'<>\', 12)', (query: Builder<Visit>): Builder<Visit> => query.whereMonth('at', '<>', 12), ['early', 'spring', 'summer']],
+        ['whereDay(\'at\', \'<=\', 7)', (query: Builder<Visit>): Builder<Visit> => query.whereDay('at', '<=', 7), ['early', 'summer']],
+        ['whereDay(\'at\', \'>\', 10)', (query: Builder<Visit>): Builder<Visit> => query.whereDay('at', '>', 10), ['winter']],
+        ['whereDay(\'at\', \'!=\', 7)', (query: Builder<Visit>): Builder<Visit> => query.whereDay('at', '!=', 7), ['spring', 'winter']],
+    ];
+
+    test.each(COMPARISONS)('%s compares the part with the operator', async (_: string, constrain: (query: Builder<Visit>) => Builder<Visit>, expected: string[]): Promise<void> => {
+        expect(await visited(constrain(visits()))).toEqual(expected);
+        expect(await constrain(visits()).count()).toEqual(expected.length);
+    });
+
+    test('reads a year, month or day written as a whole number in a string as that number', async (): Promise<void> => {
+        expect(await visited(visits().whereYear('at', '2024'))).toEqual(await visited(visits().whereYear('at', 2024)));
+        expect(await visited(visits().whereYear('at', '2024'))).toEqual(['spring', 'summer']);
+        expect(await visited(visits().whereMonth('at', '07'))).toEqual(['summer']);
+        expect(await visited(visits().whereDay('at', '0007'))).toEqual(['early', 'summer']);
+        expect(await visited(visits().whereMonth('at', '<', '07'))).toEqual(['early', 'spring']);
+        expect(await visited(visits().whereYear('at', '>=', '2024'))).toEqual(['early', 'spring', 'summer']);
+    });
+
+    describe.each(['whereYear', 'whereMonth', 'whereDay'] as const)('%s', (method: 'whereYear' | 'whereMonth' | 'whereDay'): void => {
+        test.each(['', ' 2024', '2024.0', '-1', '1e3', 'twenty'])('refuses %j, which is not a whole number', (value: string): void => {
+            expect((): Builder<Visit> => visits()[method]('at', value)).toThrow(SchemaException);
+            expect((): Builder<Visit> => visits()[method]('at', '=', value)).toThrow(SchemaException);
+        });
+
+        test('refuses a value that looks like an operator when given alone', (): void => {
+            expect((): Builder<Visit> => visits()[method]('at', '>=')).toThrow(SchemaException);
+        });
+
+        test('keeps the operator of a call whose value is undefined, matching nothing', async (): Promise<void> => {
+            expect(await visited(visits()[method]('at', '>=', undefined as unknown as number))).toEqual([]);
+        });
+    });
+
+    test('compares a fractional or negative number as given', async (): Promise<void> => {
+        expect(await visited(visits().whereYear('at', 2024.5))).toEqual([]);
+        expect(await visited(visits().whereYear('at', -1))).toEqual([]);
+        expect(await visited(visits().whereYear('at', '<', 2024.5))).toEqual(['spring', 'summer', 'winter']);
+        expect(await visited(visits().whereYear('at', '>', -1))).toEqual(['early', 'spring', 'summer', 'winter']);
+    });
+
+    describe.each(['whereDate', 'whereYear', 'whereMonth', 'whereDay'] as const)('%s', (method: 'whereDate' | 'whereYear' | 'whereMonth' | 'whereDay'): void => {
+        test.each(['==', '===', '!==', 'like', 'not like', 'between'])('refuses the operator %s', (operator: string): void => {
+            const value: string = method === 'whereDate' ? '2024-07-07' : '7';
+
+            expect((): Builder<Visit> => visits()[method]('at', operator as DateOperator, value)).toThrow(SchemaException);
+        });
+    });
+
+    test('leaves null and missing values out under != on every part, as whereDate does', async (): Promise<void> => {
+        expect(await visited(visits().whereDate('at', '!=', '2024-07-07'))).toEqual(['early', 'spring', 'winter']);
+        expect(await visited(visits().whereYear('at', '!=', 2024))).toEqual(['early', 'winter']);
+        expect(await visited(visits().whereMonth('at', '!=', 7))).toEqual(['early', 'spring', 'winter']);
+        expect(await visited(visits().whereDay('at', '!=', 7))).toEqual(['spring', 'winter']);
+
+        expect(await visits().whereDate('nowhere', '!=', '2024-07-07').count()).toEqual(0);
+        expect(await visits().whereYear('nowhere', '!=', 2024).count()).toEqual(0);
+        expect(await visits().whereMonth('nowhere', '!=', 7).count()).toEqual(0);
+        expect(await visits().whereDay('nowhere', '!=', 7).count()).toEqual(0);
+    });
+
+    test('reads a date given alone that looks like an operator as an unreadable date', async (): Promise<void> => {
+        expect(await visited(visits().whereDate('at', '>='))).toEqual([]);
+        expect(await visited(visits().whereDate('at', '>=', undefined as unknown as string))).toEqual([]);
+    });
+
+    test.each(['=', '!=', '<>', '<', '>', '<=', '>='] as DateOperator[])('matches nothing for a date it cannot read under %s, as without an operator', async (operator: DateOperator): Promise<void> => {
+        expect(await visited(visits().whereDate('at', ''))).toEqual([]);
+        expect(await visited(visits().whereDate('at', 'garbage'))).toEqual([]);
+        expect(await visited(visits().whereDate('at', operator, ''))).toEqual([]);
+        expect(await visited(visits().whereDate('at', operator, 'garbage'))).toEqual([]);
+    });
+
+    test('keeps the operator through cloning, nesting, whereNot and orWhere groups', async (): Promise<void> => {
+        const later: Builder<Visit> = visits().whereYear('at', '>', 2023);
+
+        expect(await visited(later.clone())).toEqual(['early', 'spring', 'summer']);
+        expect(await visited(visits().where((query: Builder<Visit>): Builder<Visit> => query.whereYear('at', '>', 2023)))).toEqual(['early', 'spring', 'summer']);
+        expect(await visited(visits().whereNot((query: Builder<Visit>): Builder<Visit> => query.whereYear('at', '>', 2023)))).toEqual(['winter']);
+        expect(await visited(visits().where('name', 'winter').orWhere((query: Builder<Visit>): Builder<Visit> => query.whereMonth('at', '<', 4)))).toEqual(['early', 'spring', 'winter']);
+        expect(await visited(visits().whereNot((query: Builder<Visit>): Builder<Visit> => query.whereDate('at', '!=', '2024-07-07')))).toEqual(['summer']);
+        expect(await visited(visits().where('name', 'never').orWhere((query: Builder<Visit>): Builder<Visit> => query.whereDate('at', '<', '2024-03-10')))).toEqual(['never', 'winter']);
+    });
+
+    test('keeps the operator on a joined query whose constraints are qualified', async (): Promise<void> => {
+        const joined: () => Builder<Record<string, unknown>> = (): Builder<Record<string, unknown>> => visits().join('people', 'people.id', '=', 'visits.person_id');
+
+        expect((await joined().whereYear('at', '>', 2023).pluck<string>('visits.name')).sort()).toEqual(['early', 'spring', 'summer']);
+        expect((await joined().whereMonth('visits.at', '<', '07').pluck<string>('visits.name')).sort()).toEqual(['early', 'spring']);
+        expect((await joined().whereDate('at', '!=', '2024-07-07').where('people.name', 'Alice').pluck<string>('visits.name')).sort()).toEqual(['spring']);
+        expect(await joined().whereDay('at', '<=', 7).count()).toEqual(2);
     });
 });
 

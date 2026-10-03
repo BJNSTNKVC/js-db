@@ -6,7 +6,7 @@ import { Blueprint } from '../../src/schema/Blueprint';
 import { Request } from '../../src/database/Request';
 import { UniqueConstraintViolationException } from '../../src/exceptions';
 import type { Builder } from '../../src/query/Builder';
-import type { Operator, Paginated } from '../../src/query/types';
+import type { DateOperator, DatePart, Operator, Paginated } from '../../src/query/types';
 
 interface Item {
     id: number;
@@ -144,6 +144,31 @@ const EXTRAS: Condition[] = [
     ['whereIn(\'visits\', [\'0\', \'2\'])', (query: Builder<Item>): Builder<Item> => query.whereIn('visits', ['0', '2']), (row: Item): Truth => [0, 2].includes(row.visits)],
     ['whereDate(\'seen\', \'\')', (query: Builder<Item>): Builder<Item> => query.whereDate('seen', ''), (): Truth => false],
     ['whereDate(\'seen\', \'garbage\')', (query: Builder<Item>): Builder<Item> => query.whereDate('seen', 'garbage'), (): Truth => false],
+];
+
+const DATE_OPERATORS: DateOperator[] = ['=', '!=', '<>', '<', '>', '<=', '>='];
+
+const PARTED: [DatePart, (number | string)[]][] = [
+    ['year', [2024, '2024', 2023, '0002023', 2024.5, -1]],
+    ['month', [1, '01', 3, '3', 12]],
+    ['day', [15, '15', 1, '0001', 31]],
+];
+
+const PARTS: Condition[] = [
+    ...PARTED.flatMap(([which, values]: [DatePart, (number | string)[]]): Condition[] => values.flatMap((value: number | string): Condition[] => DATE_OPERATORS.map((operator: DateOperator): Condition => {
+        const method: 'whereYear' | 'whereMonth' | 'whereDay' = which === 'year' ? 'whereYear' : (which === 'month' ? 'whereMonth' : 'whereDay');
+
+        return [
+            `${method}('seen', '${operator}', ${shown(value)})`,
+            (query: Builder<Item>): Builder<Item> => query[method]('seen', operator, value),
+            (row: Item): Truth => parted(row.seen, which, operator, Number(value)),
+        ];
+    }))),
+    ...([day('2024-01-15'), '2024-01-15', '2024-03-01', '2023-12-31', '', 'garbage'] as (Date | string)[]).flatMap((value: Date | string): Condition[] => DATE_OPERATORS.map((operator: DateOperator): Condition => [
+        `whereDate('seen', '${operator}', ${shown(value)})`,
+        (query: Builder<Item>): Builder<Item> => query.whereDate('seen', operator, value),
+        (row: Item): Truth => dated(row.seen, operator, value),
+    ])),
 ];
 
 const LOOKUPS: Lookup[] = [
@@ -539,6 +564,58 @@ function contains(held: unknown, value: unknown): Truth {
 }
 
 /**
+ * Apply the documented semantics of whereYear, whereMonth and whereDay to one value, three-valued, reading its part in local time.
+ */
+function parted(held: unknown, which: DatePart, operator: DateOperator, given: number): Truth {
+    if (!(held instanceof Date)) {
+        return null;
+    }
+
+    const part: number = which === 'year' ? held.getFullYear() : (which === 'month' ? held.getMonth() + 1 : held.getDate());
+
+    return compare(part, operator, given);
+}
+
+/**
+ * Apply the documented semantics of whereDate to one value, three-valued, comparing it with the local day the given value names.
+ */
+function dated(held: unknown, operator: DateOperator, given: Date | string): Truth {
+    const named: Date = typeof given === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(given) ? new Date(`${given}T00:00:00`) : new Date(given);
+
+    if (Number.isNaN(named.getTime())) {
+        return false;
+    }
+
+    if (!(held instanceof Date)) {
+        return null;
+    }
+
+    const first: number = new Date(named.getFullYear(), named.getMonth(), named.getDate()).getTime();
+    const next: number = new Date(named.getFullYear(), named.getMonth(), named.getDate() + 1).getTime();
+    const at: number = held.getTime();
+
+    switch (operator) {
+        case '=':
+            return at >= first && at < next;
+
+        case '>':
+            return at >= next;
+
+        case '>=':
+            return at >= first;
+
+        case '<':
+            return at < first;
+
+        case '<=':
+            return at < next;
+
+        default:
+            return at < first || at >= next;
+    }
+}
+
+/**
  * Apply the documented order to rows by their tags, which compares arrays as the strings they join into.
  */
 function listed(rows: Tagged[], direction: Direction): Tagged[] {
@@ -710,7 +787,7 @@ describe.each(CONDITIONS)('a write %s on the column whose index drives it', (_: 
     }, 2000);
 });
 
-describe.each([...CASES, ...EXTRAS])('%s', (_: string, constrain: (query: Builder<Item>) => Builder<Item>, holds: (row: Item) => Truth): void => {
+describe.each([...CASES, ...EXTRAS, ...PARTS])('%s', (_: string, constrain: (query: Builder<Item>) => Builder<Item>, holds: (row: Item) => Truth): void => {
     const expected: number[] = ids(ROWS.filter((row: Item): boolean => holds(row) === true));
 
     test('gives the same rows through an index, through a scan and from the model', async (): Promise<void> => {
