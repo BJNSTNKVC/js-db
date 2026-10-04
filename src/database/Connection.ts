@@ -19,6 +19,7 @@ import { Handles } from './Handles';
 import { Request } from './Request';
 import { Resolver } from './Resolver';
 import { Transaction } from './Transaction';
+import type { MigrationContext } from '../migrations/Migrator';
 import type { MigrationConstructor, MigrationRecord, MigrationStatus } from '../migrations/types';
 import type { ColumnSchema, IndexSchema, TableSchema } from '../schema/types';
 import type { Seeder } from '../seeders/Seeder';
@@ -222,10 +223,10 @@ export class Connection {
     }
 
     /**
-     * Begin a query against a table.
+     * Begin a query against a table, inside the migration running on this connection when there is one.
      */
     table<T = Record<string, unknown>>(table: string, transaction: IDBTransaction | null = null): Builder<T> {
-        return new Builder<T>(this, table, transaction);
+        return new Builder<T>(this, table, transaction ?? this.#migration()?.transaction ?? null);
     }
 
     /**
@@ -324,9 +325,7 @@ export class Connection {
      * Get the schema of a table.
      */
     async schema(table: string): Promise<TableSchema> {
-        await this.open();
-
-        const schema: TableSchema | undefined = this.#schemas.get(table);
+        const schema: TableSchema | undefined = (await this.#tables()).get(table);
 
         if (schema === undefined) {
             throw new TableNotFoundException(table);
@@ -339,9 +338,7 @@ export class Connection {
      * Get the names of every table.
      */
     async tables(): Promise<string[]> {
-        await this.open();
-
-        return [...this.#schemas.keys()];
+        return [...(await this.#tables()).keys()];
     }
 
     /**
@@ -380,6 +377,30 @@ export class Connection {
 
         this.#database = null;
         this.#schemas = new Map<string, TableSchema>();
+    }
+
+    /**
+     * Get the schema of every table, as the migration running on this connection has left them so far when there is one.
+     */
+    async #tables(): Promise<Map<string, TableSchema>> {
+        const migration: MigrationContext | null = this.#migration();
+
+        if (migration !== null) {
+            return migration.schemas;
+        }
+
+        await this.open();
+
+        return this.#schemas;
+    }
+
+    /**
+     * Get the migration running on this connection's database, refusing one whose transaction has closed, or null when there is none.
+     */
+    #migration(): MigrationContext | null {
+        const context: MigrationContext | null = Migrator.context();
+
+        return context !== null && context.database.name === this.#config.database ? Migrator.alive() : null;
     }
 
     /**

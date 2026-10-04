@@ -89,7 +89,8 @@ means `09:30:00`. `whereDate` reads a `YYYY-MM-DD` string as that calendar day i
 timezone, so `'2026-02-01'` matches 1 February wherever the code runs, and a day the calendar does
 not have, such as `'2026-02-30'`, matches nothing. It reads any other string as `new Date` does, and
 a `Date` by the local day it falls on, and a value it cannot read as a date matches nothing under
-any operator. It compares whole days: `>` matches from the start of the next day, `<=` up to the end
+any operator. A column holding a date as a string is read the same way by every part: a `YYYY-MM-DD`
+string as the first moment of that local day, and any other string as `new Date` reads it. It compares whole days: `>` matches from the start of the next day, `<=` up to the end
 of the day, and `!=` everything before or after it.
 
 `whereDate` becomes a range and can be served by an index under every operator but `!=` and `<>`,
@@ -110,14 +111,19 @@ to `where` and its `or` and `not` forms with every operator except `===`, `!==`,
 |--------------------------|-------------------------------------------------------------|--------------------------------------------|
 | `integer`, `decimal`     | A whole number, or a non-blank string holding one           | `where('age', '>=', '18')` compares 18     |
 | `float`                  | A finite number, or a non-blank string holding one          | `where('price', '<', '9.5')` compares 9.5  |
-| `date`, `datetime`       | Any date, number or string `new Date` reads as a valid date | `where('published_at', '>', '2026-02-01')` |
+| `date`, `datetime`       | A date, a number or a date string, as a write reads it      | `where('published_at', '>', '2026-02-01')` |
 | `boolean`                | Any value, read as an insert stores it                      | `where('active', 'true')` compares `true`  |
 | `string`, `enum`, `json` | Nothing, the value is compared as given                     |                                            |
 
 A date string therefore matches the moment it names, and `'true'` or `'false'` compared with a
-boolean column matches the rows holding `true` or `false`. The moment is the one `new Date` reads,
-so a date-only string such as `'2026-02-01'` is midnight UTC, not local midnight. To match a whole
-day, use `whereDate`. A boolean column reads a string the way
+boolean column matches the rows holding `true` or `false`. A date-only string such as `'2026-02-01'`
+is the first moment of that local day, the moment a write stores for it, so
+`where('born_on', '2026-02-01')` finds the row the same string wrote, through an index or a scan.
+A day the calendar does not have, such as `'2026-02-30'`, is compared as given, so `=` matches no
+date. Any other string is the moment `new Date` reads. To match every moment of a day in a
+`datetime` column, use `whereDate`. Before 7.0.0 a date-only string was midnight UTC here as it was
+in a write, so the rows written before 7.0.0 no longer match it; see
+[Dates stored before 7.0.0](#dates-stored-before-700). A boolean column reads a string the way
 an insert stores it: `'false'`, `'0'` and `''` are `false` and every other string is `true`, so
 `where('active', 'no')` matches the active rows, just as inserting `'no'` stores `true`.
 
@@ -470,7 +476,12 @@ A blank string, one that is empty or holds only whitespace, is `null` in a numbe
 
 An ISO 8601 string is `YYYY-MM-DD`, optionally followed by `T` or a space and `HH:MM`, then
 optionally `:SS` and a fraction of a second, and then optionally `Z` or an offset such as `+02:00`.
-A time without `Z` or an offset is local, and a date alone is UTC midnight, as `new Date` reads it.
+A time without `Z` or an offset is local, and a date alone is the first moment of that local day, so
+`'2024-01-15'` and `'2024-01-15 00:00'` store the same moment, and `getDate()` and `whereDay` read
+back the day that was written, wherever the code runs. On a day whose midnight a clock change skips,
+such as 8 September 2024 in Santiago, that first moment is 01:00. A date-only default is read when
+the row is written, so it names that day on the device writing it. Before 7.0.0 a date alone was
+stored as midnight UTC, as `new Date` reads it, which west of UTC is the evening before.
 The date and time must exist, so `'2024-02-30'`, `'2023-02-29'` and `'24:00'` throw rather than
 roll over into the next day or month. Any other form `new Date` reads, such as `'01/15/2024'`,
 `'Jan 15 2024'`, `'2024'` or a `toUTCString()` string, throws, and so do `'1'` and `true`. A `date`
@@ -488,6 +499,60 @@ before writing, and turn a value the form holds in its own format, such as a dat
 
 Query values are read more leniently, since a value that does not convert is compared as given
 rather than refused. See [Constraints](#constraints).
+
+### Dates stored before 7.0.0
+
+A date-only string written before 7.0.0 was stored as midnight UTC, and the row still holds that
+moment. Upgrading changes new writes only, since rewriting the old rows needs the timezone each date
+was entered in, which the database never recorded. A table can therefore hold both:
+
+| Read                                             | West of UTC, as in New York        | East of UTC, as in Tokyo |
+|--------------------------------------------------|------------------------------------|--------------------------|
+| `getDate()`, `whereDay`, `whereDate` on that day | Old rows read as the day before    | Both read as that day    |
+| `where`, `whereIn`, `whereBetween` on the string | Only the rows written since 7.0.0  | The same                 |
+| `upsert` keyed on the string                     | Inserts beside an old row that day | The same                 |
+
+An app whose users all share one timezone can move the old rows to the local day they name with a
+migration of its own, which runs once on each device, in that device's timezone. It rewrites only a
+date at exactly midnight UTC, so a value written since 7.0.0 or holding a time of day is left alone
+(except where the local timezone is UTC itself, where the two are the same moment), and running it a
+second time changes nothing:
+
+```ts
+function utcMidnight(value: unknown): value is Date {
+    return value instanceof Date && value.getTime() % 86_400_000 === 0;
+}
+
+function localDay(held: Date): Date {
+    const day: Date = new Date(2000, 0, 1);
+
+    // setFullYear keeps a year below 100 as given, where new Date(y, m, d) would read 19xx.
+    day.setFullYear(held.getUTCFullYear(), held.getUTCMonth(), held.getUTCDate());
+    day.setHours(0, 0, 0, 0);
+
+    return day;
+}
+
+class StoreBirthdaysAsLocalDays extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        const held: unknown[] = await DB.table('users').pluck('born_on');
+        const stale: Map<number, Date> = new Map(held.filter(utcMidnight).map((date: Date): [number, Date] => [date.getTime(), date]));
+
+        for (const date of stale.values()) {
+            await DB.table('users').where('born_on', date).update({ born_on: localDay(date) });
+        }
+    }
+}
+```
+
+Run it on a `date` column, or on a `datetime` column only when every midnight UTC in it came from a
+date-only string, since a moment really entered as midnight UTC looks the same. On a table with
+`timestamps()`, the rewrite stamps `updated_at` on every row it moves. The queries join the
+migration's transaction, as [What a migration may await](migrations.md#what-a-migration-may-await)
+describes.
 
 > Modeled on Laravel's [Database: Query Builder](https://laravel.com/docs/12.x/queries). The method
 > names and their semantics match, and every terminal is asynchronous because IndexedDB is.

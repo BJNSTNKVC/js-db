@@ -1,3 +1,4 @@
+import { Calendar } from '../schema/Calendar';
 import { Columns } from './Columns';
 import type { Constraint, DatePart, Operator } from './types';
 
@@ -192,10 +193,10 @@ export class Predicate {
     }
 
     /**
-     * Read a value that should hold a date, or null when it does not.
+     * Read a value that should hold a date, a YYYY-MM-DD string as its local day, or null when it does not.
      */
     static #date(held: unknown): Date | null {
-        const date: Date = held instanceof Date ? held : new Date(held as string | number);
+        const date: Date = held instanceof Date ? held : Calendar.read(held as string | number);
 
         return Number.isNaN(date.getTime()) ? null : date;
     }

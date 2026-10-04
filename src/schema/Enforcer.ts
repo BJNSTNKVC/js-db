@@ -255,7 +255,7 @@ export class Enforcer {
     }
 
     /**
-     * Read a date, a whole timestamp or an ISO 8601 string naming a real moment, or an invalid date for anything else.
+     * Read a date, a whole timestamp or an ISO 8601 string naming a real moment, a date alone as its local day, or an invalid date for anything else.
      */
     static #moment(value: unknown): Date {
         if (value instanceof Date) {
@@ -268,7 +268,11 @@ export class Enforcer {
 
         const parts: RegExpExecArray | null = typeof value === 'string' ? MOMENT.exec(value) : null;
 
-        return parts !== null && this.#survives(parts) ? new Date((value as string).replace(' ', 'T')) : new Date(NaN);
+        if (parts === null || !this.#survives(parts)) {
+            return new Date(NaN);
+        }
+
+        return parts[4] === undefined ? Calendar.read(value as string) : new Date((value as string).replace(' ', 'T'));
     }
 
     /**

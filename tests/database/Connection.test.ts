@@ -772,6 +772,113 @@ describe('Migration failures', (): void => {
     });
 });
 
+describe('Querying inside a migration', (): void => {
+    let upgraded: Connection;
+
+    /**
+     * Migrate a users table holding Alice and Bob, then upgrade it with the given migration on a connection the migration can reach as upgraded.
+     */
+    async function upgrade(up: () => Promise<void>, database: string = `connection-${++sequence}`): Promise<string[]> {
+        const first: Connection = connect([CreateUsersTable], database);
+
+        await first.table('users').insert([{ name: 'Alice', email: 'a@x', age: 30 }, { name: 'Bob', email: 'b@x', age: 40 }]);
+
+        first.disconnect();
+
+        upgraded = connect([CreateUsersTable, migration('UpgradeUsers', up)], database);
+
+        return upgraded.migrate();
+    }
+
+    test('reads and rewrites rows through DB.table within the upgrade', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+        const read: unknown[] = [];
+
+        DB.configure({ default: 'app', connections: { app: { database, migrations: [CreateUsersTable] } } });
+
+        try {
+            await DB.table('users').insert([{ name: 'Alice', email: 'a@x', age: 30 }, { name: 'Bob', email: 'b@x', age: 40 }]);
+
+            DB.configure({ default: 'app', connections: { app: { database, migrations: [CreateUsersTable, migration('UpgradeUsers', async (): Promise<void> => {
+                read.push(...await DB.table('users').orderBy('name').pluck('name'));
+
+                await DB.table('users').where('name', 'Bob').update({ age: 41 });
+            })] } } });
+
+            expect(await DB.migrate('app')).toEqual(['UpgradeUsers']);
+            expect(read).toEqual(['Alice', 'Bob']);
+            expect(await DB.table('users').orderBy('name').pluck('age')).toEqual([30, 41]);
+        } finally {
+            DB.purge('app');
+        }
+    }, 2000);
+
+    test('sees the tables and columns the migration has declared so far', async (): Promise<void> => {
+        await upgrade(async (): Promise<void> => {
+            await Schema.table('users', (table: Blueprint): void => {
+                table.integer('rank').default(0);
+            });
+
+            await Schema.create('notes', (table: Blueprint): void => {
+                table.id();
+                table.string('body');
+            });
+
+            expect(await upgraded.hasTable('notes')).toEqual(true);
+            expect(await upgraded.hasColumn('users', 'rank')).toEqual(true);
+
+            await upgraded.table('users').where('name', 'Alice').update({ rank: '1' });
+            await upgraded.table('notes').insert({ body: 'Written while migrating' });
+        });
+
+        expect(await upgraded.table('users').orderBy('name').pluck('rank')).toEqual([1, 0]);
+        expect(await upgraded.table('notes').pluck('body')).toEqual(['Written while migrating']);
+    }, 2000);
+
+    test('rolls the whole upgrade back when a write fails', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+
+        await expect(upgrade(async (): Promise<void> => {
+            await Schema.create('notes', (table: Blueprint): void => {
+                table.id();
+            });
+
+            await upgraded.table('users').where('name', 'Alice').update({ age: 31 });
+            await upgraded.table('users').where('name', 'Bob').update({ email: 'a@x' });
+        }, database)).rejects.toThrow(new UniqueConstraintViolationException('users', 'users_email_unique'));
+
+        connections.splice(0).forEach((connection: Connection): void => connection.disconnect());
+
+        const restored: Connection = connect([CreateUsersTable], database);
+
+        expect(await restored.tables()).toEqual(['users']);
+        expect(await restored.table('users').orderBy('name').pluck('age')).toEqual([30, 40]);
+    }, 2000);
+
+    test('reports a query made after the migration awaited work outside the transaction', async (): Promise<void> => {
+        await expect(upgrade(async (): Promise<void> => {
+            const context: MigrationContext = Migrator.alive();
+
+            await new Promise<void>((resolve: () => void): void => {
+                context.transaction.addEventListener('complete', (): void => resolve());
+            });
+
+            await upgraded.table('users').get();
+        })).rejects.toBeInstanceOf(MigrationTransactionClosedException);
+    }, 2000);
+
+    test('leaves a query on another database to that database', async (): Promise<void> => {
+        const other: Connection = connect([CreatePostsTable]);
+
+        await other.migrate();
+
+        await upgrade(async (): Promise<void> => {
+            expect(await other.tables()).toEqual(['posts']);
+            expect(await upgraded.tables()).toEqual(['users']);
+        });
+    }, 2000);
+});
+
 describe('Reserved tables', (): void => {
     test.each(['migrations', 'schema'])('refuses to create the reserved table %s', async (table: string): Promise<void> => {
         const Reserved: MigrationConstructor = migration('ReservedMigration', async (): Promise<void> => {
@@ -1619,6 +1726,32 @@ describe('Schema definitions IndexedDB cannot honor', (): void => {
         }], { rows: [{ email: 'a@x', name: 'Alice' }, { email: 'b@x', name: 'Bob', age: 40 }] });
 
         expect((await records(connection, 'users')).map((record: Record<string, unknown>): unknown => record['age'])).toEqual([30, 40]);
+    });
+
+    describe('with a date-only default', (): void => {
+        const zone: string = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+        afterEach((): void => {
+            vi.stubEnv('TZ', zone);
+            vi.unstubAllEnvs();
+        });
+
+        test.each(['America/New_York', 'Asia/Tokyo', 'America/Santiago'])('backfills the local day it names in %s', async (timezone: string): Promise<void> => {
+            vi.stubEnv('TZ', timezone);
+
+            const connection: Connection = await altered([(table: Blueprint): void => {
+                table.date('joined').default('2024-01-15');
+                table.datetime('seen').default('2024-01-15');
+                table.date('left').nullable();
+            }, (table: Blueprint): void => {
+                table.date('left').nullable().default('2024-02-29').change();
+            }], { rows: [{ email: 'a@x', name: 'Alice' }] });
+
+            const [alice]: Record<string, unknown>[] = await records(connection, 'users');
+
+            expect([alice?.['joined'], alice?.['seen'], alice?.['left']]).toEqual([new Date(2024, 0, 15), new Date(2024, 0, 15), new Date(2024, 1, 29)]);
+            expect((await connection.getColumns('users')).find((column: ColumnSchema): boolean => column.name === 'joined')?.default).toEqual('2024-01-15');
+        });
     });
 });
 

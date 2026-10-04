@@ -514,7 +514,10 @@ describe('Planner.convert', (): void => {
         ['boolean', 0, false],
         ['datetime', '2024-01-15T00:00:00.000Z', new Date('2024-01-15T00:00:00.000Z')],
         ['datetime', 0, new Date(0)],
-        ['date', '2024-01-15', new Date('2024-01-15')],
+        ['date', '2024-01-15', new Date(2024, 0, 15)],
+        ['datetime', '2024-01-15', new Date(2024, 0, 15)],
+        ['datetime', '2024-01-15T10:00', new Date(2024, 0, 15, 10)],
+        ['date', '0099-01-01', new Date(new Date(99, 0, 1).setFullYear(99))],
         ['date', new Date(5), new Date(5)],
     ] as [ColumnType, unknown, unknown][])('reads a %s column\'s value %o as %o', (type: ColumnType, value: unknown, expected: unknown): void => {
         expect(Planner.convert(value, type)).toEqual(expected);
@@ -532,6 +535,8 @@ describe('Planner.convert', (): void => {
         ['float', new Date(1)],
         ['datetime', ''],
         ['datetime', 'garbage'],
+        ['date', '2024-02-30'],
+        ['datetime', '2024-13-01'],
         ['datetime', true],
         ['datetime', { a: 1 }],
         ['string', 5],

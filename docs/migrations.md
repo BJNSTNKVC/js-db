@@ -67,7 +67,39 @@ class CreateUsersTable extends Migration {
 A migration runs inside the version-change transaction, and IndexedDB commits a transaction the
 moment its request queue drains. So a migration may **only** await operations from this package.
 Awaiting `Schema.*` and `DB.table(...)` is safe. Awaiting a `fetch`, a timer, or any other promise
-ends the transaction, and the next schema call throws `MigrationTransactionClosedException`.
+ends the transaction, and the next schema call or query throws `MigrationTransactionClosedException`.
+
+A query on the connection being migrated joins the version-change transaction, so a migration can
+read and rewrite rows between schema changes:
+
+```ts
+class FillUserSlugs extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        await Schema.table('users', (table: Blueprint): void => {
+            table.string('slug').nullable().unique();
+        });
+
+        for (const user of await DB.table<User>('users').get()) {
+            await DB.table<User>('users').where('id', user.id).update({ slug: user.name.toLowerCase() });
+        }
+    }
+}
+```
+
+The query sees the tables and columns the migration has declared so far, and its writes are coerced
+and checked against them. A write that fails, such as one breaking a unique index, fails the
+migration and rolls back the whole upgrade, rows and schema alike. `DB.table` resolves the default
+connection, so a migration registered on another connection names it, as in
+`DB.connection('reporting').table('events')`. A query on a different database is not part of the
+upgrade, and awaiting it ends the transaction like any other promise.
+
+While a migration runs, every query on its connection joins it, including one the rest of the app
+starts at that moment. Migrating at boot with `await DB.migrate(name)`, before the rest of the app
+starts, keeps that from mattering. Before 7.0.0 a query inside a migration waited for the very
+upgrade it was part of and never settled.
 
 If you need data from the network, that is what a seeder is for. See [Seeding](seeding.md).
 

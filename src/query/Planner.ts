@@ -1,3 +1,4 @@
+import { Calendar } from '../schema/Calendar';
 import { Columns } from './Columns';
 import type { ColumnSchema, ColumnType, IndexSchema, TableSchema } from '../schema/types';
 import type { Constraint, Operator, Order, Plan } from './types';
@@ -361,14 +362,14 @@ export class Planner {
     }
 
     /**
-     * Read a value as a valid date, or null when it is not one.
+     * Read a value as a valid date, a YYYY-MM-DD string as its local day, or null when it is not one.
      */
     static #date(value: unknown): Date | null {
         if (!(value instanceof Date) && typeof value !== 'string' && typeof value !== 'number') {
             return null;
         }
 
-        const date: Date = value instanceof Date ? value : new Date(value);
+        const date: Date = value instanceof Date ? value : Calendar.read(value);
 
         return Number.isNaN(date.getTime()) ? null : date;
     }

@@ -5,6 +5,7 @@ import { Schema } from '../../src/schema/Schema';
 import { Blueprint } from '../../src/schema/Blueprint';
 import { MultipleRecordsFoundException, RecordsNotFoundException, SchemaException, UniqueConstraintViolationException } from '../../src/exceptions';
 import { Executor } from '../../src/query/Executor';
+import { DB } from '../../src/main';
 import { Dispatcher } from '../../src/events/Dispatcher';
 import type { Builder } from '../../src/query/Builder';
 import type { QueryExecuted } from '../../src/events';
@@ -522,6 +523,144 @@ describe('Builder.whereDate in the local timezone', (): void => {
         expect(await moments().whereDate('indexed', operator, '2024-09-08').where('indexed', '>', new Date(2024, 8, 8, 18)).explain()).toEqual('index:moments_indexed_index');
         expect(await named(moments().whereDate('indexed', operator, '2024-09-08').where('indexed', '>', new Date(2024, 8, 8, 18)))).toEqual(['after']);
     });
+
+    describe('beside a date-only string stored before 7.0.0', (): void => {
+        const STORED: Record<string, () => Date> = {
+            before: (): Date => new Date('2024-01-15T00:00:00.000Z'),
+            since : (): Date => '2024-01-15' as unknown as Date,
+            next  : (): Date => '2024-01-16' as unknown as Date,
+        };
+
+        describe.each([
+            ['America/New_York', 'indexed', false],
+            ['America/New_York', 'plain', false],
+            ['Asia/Tokyo', 'indexed', true],
+            ['Asia/Tokyo', 'plain', true],
+            ['America/Santiago', 'indexed', false],
+            ['America/Santiago', 'plain', false],
+        ] as [string, 'indexed' | 'plain', boolean][])('in %s through the %s column', (timezone: string, column: 'indexed' | 'plain', east: boolean): void => {
+            test('matches only the row written since by the same string under where, whereIn and whereBetween', async (): Promise<void> => {
+                await store(timezone, STORED);
+
+                expect(await named(moments().where(column, '2024-01-15'))).toEqual(['since']);
+                expect(await named(moments().whereIn(column, ['2024-01-15']))).toEqual(['since']);
+                expect(await named(moments().whereBetween(column, ['2024-01-15', '2024-01-15']))).toEqual(['since']);
+                expect(await named(moments().whereBetween(column, ['2024-01-15', '2024-01-16']))).toEqual(east ? ['before', 'next', 'since'] : ['next', 'since']);
+            });
+
+            test('reads the row stored before as the day before west of UTC', async (): Promise<void> => {
+                await store(timezone, STORED);
+
+                const before: Moment = await moments().where('name', 'before').firstOrFail();
+
+                expect(before[column].getDate()).toEqual(east ? 15 : 14);
+                expect(await named(moments().whereDate(column, '2024-01-15'))).toEqual(east ? ['before', 'since'] : ['since']);
+                expect(await named(moments().whereDay(column, 15))).toEqual(east ? ['before', 'since'] : ['since']);
+            });
+        });
+    });
+});
+
+describe('Rewriting dates stored before 7.0.0 as local days', (): void => {
+    const zone: string = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    let sequence: number = 0;
+
+    /**
+     * Determine whether a value is a date at exactly midnight UTC, as a date-only string was stored before 7.0.0.
+     */
+    function utcMidnight(value: unknown): value is Date {
+        return value instanceof Date && value.getTime() % 86_400_000 === 0;
+    }
+
+    /**
+     * Get the first moment of the local calendar day a UTC midnight names.
+     */
+    function localDay(held: Date): Date {
+        const day: Date = new Date(2000, 0, 1);
+
+        day.setFullYear(held.getUTCFullYear(), held.getUTCMonth(), held.getUTCDate());
+        day.setHours(0, 0, 0, 0);
+
+        return day;
+    }
+
+    class CreateBirthdaysTable extends Migration {
+        /**
+         * Run the migration.
+         */
+        override async up(): Promise<void> {
+            await Schema.create('birthdays', (table: Blueprint): void => {
+                table.id();
+                table.string('name');
+                table.date('born').nullable().index();
+            });
+        }
+    }
+
+    class StoreBirthdaysAsLocalDays extends Migration {
+        /**
+         * Run the migration.
+         */
+        override async up(): Promise<void> {
+            const held: unknown[] = await DB.table('birthdays').pluck('born');
+            const stale: Map<number, Date> = new Map(held.filter(utcMidnight).map((date: Date): [number, Date] => [date.getTime(), date]));
+
+            for (const date of stale.values()) {
+                await DB.table('birthdays').where('born', date).update({ born: localDay(date) });
+            }
+        }
+    }
+
+    class StoreBirthdaysAsLocalDaysAgain extends StoreBirthdaysAsLocalDays {}
+
+    /**
+     * Get each birthday's name with the local day and hour it holds.
+     */
+    async function held(): Promise<[string, number[] | null][]> {
+        return (await DB.table<{ name: string; born: Date | null }>('birthdays').orderBy('id').get()).map(({ name, born }: { name: string; born: Date | null }): [string, number[] | null] => [
+            name,
+            born === null ? null : [born.getFullYear(), born.getMonth() + 1, born.getDate(), born.getHours()],
+        ]);
+    }
+
+    afterEach((): void => {
+        DB.purge('app');
+        vi.stubEnv('TZ', zone);
+        vi.unstubAllEnvs();
+    });
+
+    test.each(['America/New_York', 'Asia/Tokyo', 'America/Santiago'])('moves each UTC midnight to the local day it names in %s, once however often it runs', async (timezone: string): Promise<void> => {
+        vi.stubEnv('TZ', timezone);
+
+        const database: string = `builder-extras-rewritten-${++sequence}`;
+
+        DB.configure({ default: 'app', connections: { app: { database, migrations: [CreateBirthdaysTable] } } });
+
+        await DB.table('birthdays').insert([
+            { name: 'before', born: new Date('2024-01-15T00:00:00.000Z') },
+            { name: 'twin', born: new Date('2024-01-15T00:00:00.000Z') },
+            { name: 'skipped', born: new Date('2024-09-08T00:00:00.000Z') },
+            { name: 'antiquity', born: new Date('0050-01-15T00:00:00.000Z') },
+            { name: 'since', born: '2024-03-01' },
+            { name: 'noon', born: new Date(2024, 0, 15, 12) },
+            { name: 'unknown', born: null },
+        ]);
+
+        DB.configure({ default: 'app', connections: { app: { database, migrations: [CreateBirthdaysTable, StoreBirthdaysAsLocalDays, StoreBirthdaysAsLocalDaysAgain] } } });
+
+        expect(await DB.migrate('app')).toEqual(['store_birthdays_as_local_days', 'store_birthdays_as_local_days_again']);
+        expect(await held()).toEqual([
+            ['before', [2024, 1, 15, 0]],
+            ['twin', [2024, 1, 15, 0]],
+            ['skipped', [2024, 9, 8, timezone === 'America/Santiago' ? 1 : 0]],
+            ['antiquity', [50, 1, 15, 0]],
+            ['since', [2024, 3, 1, 0]],
+            ['noon', [2024, 1, 15, 12]],
+            ['unknown', null],
+        ]);
+        expect((await DB.table('birthdays').where('born', '2024-01-15').pluck('name')).sort()).toEqual(['before', 'twin']);
+        expect((await DB.table('birthdays').whereDate('born', '2024-01-15').pluck('name')).sort()).toEqual(['before', 'noon', 'twin']);
+    }, 2000);
 });
 
 describe('Builder date parts with an operator', (): void => {

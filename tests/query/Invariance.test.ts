@@ -491,7 +491,7 @@ function prepared(value: unknown, kind: Kind): unknown {
     }
 
     if (kind === 'datetime') {
-        const date: Date = new Date(value as string | number | Date);
+        const date: Date = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T00:00:00`) : new Date(value as string | number | Date);
         const readable: boolean = typeof value === 'string' || typeof value === 'number' || value instanceof Date;
 
         return readable && !Number.isNaN(date.getTime()) ? date : value;

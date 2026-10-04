@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { Enforcer } from '../../src/schema/Enforcer';
 import { NotNullConstraintViolationException } from '../../src/exceptions';
 import type { ColumnSchema, ColumnType, TableSchema } from '../../src/schema/types';
@@ -306,8 +306,6 @@ describe('Enforcer.coerce into a date column', (): void => {
             ['2024-01-15T10:00:00.123+02:00', '2024-01-15T08:00:00.123Z'],
             ['2024-01-15T10:00:00.123456Z', '2024-01-15T10:00:00.123Z'],
             ['2024-01-15T00:30:00-05:30', '2024-01-15T06:00:00.000Z'],
-            ['2024-02-29', '2024-02-29T00:00:00.000Z'],
-            ['2024-01-15', '2024-01-15T00:00:00.000Z'],
             ['2024-12-31T23:59:59Z', '2024-12-31T23:59:59.000Z'],
             [1705312800000, '2024-01-15T10:00:00.000Z'],
             [0, '1970-01-01T00:00:00.000Z'],
@@ -383,6 +381,66 @@ describe('Enforcer.coerce into a date column', (): void => {
 
     test('names the value it refuses', (): void => {
         expect((): unknown => Enforcer.coerce('2024-02-30', 'datetime', true)).toThrow(new TypeError('Unable to coerce [2024-02-30] into a date.'));
+    });
+});
+
+describe('Enforcer.coerce a date-only string as a local day', (): void => {
+    const zone: string = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+    afterEach((): void => {
+        vi.stubEnv('TZ', zone);
+        vi.unstubAllEnvs();
+    });
+
+    describe.each(['America/New_York', 'Asia/Tokyo', 'America/Santiago'])('in %s', (timezone: string): void => {
+        describe.each(TEMPORAL)('%s', (type: ColumnType): void => {
+            test.each([
+                ['2024-01-15', 2024, 0, 15],
+                ['2024-02-29', 2024, 1, 29],
+                ['2024-12-31', 2024, 11, 31],
+                ['0099-01-01', 99, 0, 1],
+            ] as [string, number, number, number][])('stores %o as the first moment of that local day', (value: string, year: number, month: number, day: number): void => {
+                vi.stubEnv('TZ', timezone);
+
+                const stored: Date = Enforcer.coerce(value, type, true) as Date;
+
+                expect([stored.getFullYear(), stored.getMonth(), stored.getDate(), stored.getHours(), stored.getMinutes()]).toEqual([year, month, day, 0, 0]);
+                expect(Enforcer.coerce(value, type, false)).toEqual(stored);
+            });
+
+            test.each([
+                ['2024-01-15T00:00:00Z', '2024-01-15T00:00:00.000Z'],
+                ['2024-01-15T00:00+02:00', '2024-01-14T22:00:00.000Z'],
+            ])('keeps reading %o as the moment it names', (value: string, expected: string): void => {
+                vi.stubEnv('TZ', timezone);
+
+                expect((Enforcer.coerce(value, type, true) as Date).toISOString()).toEqual(expected);
+            });
+
+            test('reads a date followed by a local time as that local time', (): void => {
+                vi.stubEnv('TZ', timezone);
+
+                expect(Enforcer.coerce('2024-01-15 00:00', type, true)).toEqual(Enforcer.coerce('2024-01-15', type, true));
+            });
+
+            test('stores a date-only default as the local day it names', (): void => {
+                vi.stubEnv('TZ', timezone);
+
+                const schema: TableSchema = table([column('on', type, { hasDefault: true, default: '2024-01-15' })]);
+                const stored: Date = Enforcer.insertable({}, schema, true, at)['on'] as Date;
+
+                expect([stored.getFullYear(), stored.getMonth(), stored.getDate(), stored.getHours()]).toEqual([2024, 0, 15, 0]);
+            });
+        });
+    });
+
+    test.each(TEMPORAL)('stores a %s on a day whose midnight is skipped as its first moment', (type: ColumnType): void => {
+        vi.stubEnv('TZ', 'America/Santiago');
+
+        const stored: Date = Enforcer.coerce('2024-09-08', type, true) as Date;
+
+        expect([stored.getDate(), stored.getHours()]).toEqual([8, 1]);
+        expect(new Date(stored.getTime() - 1).getDate()).toEqual(7);
     });
 });
 

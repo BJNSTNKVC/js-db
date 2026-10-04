@@ -1,6 +1,6 @@
-import { describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { Predicate } from '../../src/query/Predicate';
-import type { Conjunction, Constraint, Operator } from '../../src/query/types';
+import type { Conjunction, Constraint, DatePart, Operator } from '../../src/query/types';
 
 /**
  * Build a basic constraint.
@@ -763,5 +763,58 @@ describe('Predicate JSON length', (): void => {
     test('treats a comparison against null as unknown', (): void => {
         expect(matches([length('tags', '=', null as unknown as number)], record)).toEqual(false);
         expect(matches([length('tags', '=', null as unknown as number, true)], record)).toEqual(false);
+    });
+});
+
+describe('Predicate date parts of a held date-only string', (): void => {
+    const zone: string = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+    /**
+     * Build a constraint on one date part of a column.
+     */
+    function part(which: DatePart, value: number): Constraint {
+        return { type: 'part', column: 'on', part: which, operator: '=', value, conjunction: 'and', not: false };
+    }
+
+    /**
+     * Build a constraint on the time of day of a column.
+     */
+    function time(value: string): Constraint {
+        return { type: 'time', column: 'on', operator: '=', value, conjunction: 'and', not: false };
+    }
+
+    afterEach((): void => {
+        vi.stubEnv('TZ', zone);
+        vi.unstubAllEnvs();
+    });
+
+    describe.each(['America/New_York', 'Asia/Tokyo', 'America/Santiago'])('in %s', (timezone: string): void => {
+        test('reads the local day the string names', (): void => {
+            vi.stubEnv('TZ', timezone);
+
+            expect(matches([part('year', 2024), part('month', 1), part('day', 1)], { on: '2024-01-01' })).toEqual(true);
+            expect(matches([part('day', 15)], { on: '2024-01-15' })).toEqual(true);
+            expect(matches([time('00:00:00')], { on: '2024-01-15' })).toEqual(true);
+        });
+
+        test('reads a string with a time as the moment it names', (): void => {
+            vi.stubEnv('TZ', timezone);
+
+            expect(matches([part('day', 15), time('10:30:00')], { on: '2024-01-15T10:30' })).toEqual(true);
+            expect(matches([part('year', 2023)], { on: '2024-01-01T00:00:00Z' })).toEqual(timezone !== 'Asia/Tokyo');
+        });
+
+        test('reads a day the calendar does not have as no date', (): void => {
+            vi.stubEnv('TZ', timezone);
+
+            expect(matches([part('month', 3)], { on: '2024-02-30' })).toEqual(false);
+            expect(matches([nested([part('month', 3)], true)], { on: '2024-02-30' })).toEqual(false);
+        });
+    });
+
+    test('reads a day whose midnight is skipped from its first moment', (): void => {
+        vi.stubEnv('TZ', 'America/Santiago');
+
+        expect(matches([part('day', 8), time('01:00:00')], { on: '2024-09-08' })).toEqual(true);
     });
 });
