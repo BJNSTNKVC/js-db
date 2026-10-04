@@ -405,7 +405,8 @@ await DB.table<User>('users').truncate();
 ```
 
 On insert, the connection applies declared defaults, fills `created_at`/`updated_at` when the table
-declares `timestamps()`, coerces declared column types, and throws
+declares `timestamps()`, coerces declared column types as
+[Coercion on the way in](#coercion-on-the-way-in) describes, and throws
 `NotNullConstraintViolationException` for an absent non-nullable column. On update, only
 `updated_at` is touched.
 
@@ -419,7 +420,9 @@ catches it keeps whatever the failed write changed before the collision.
 `upsert` requires its conflict target to be the key path or a unique index, because IndexedDB cannot
 enforce anything else. Any other column throws `SchemaException`. The conflict key is coerced the way
 an insert coerces it before it is looked up, so `upsert([{ code: '5' }], 'code')` on an integer
-column merges into the record holding 5 rather than inserting a second one.
+column merges into the record holding 5 rather than inserting a second one. A conflict key holding
+`null`, or left out, matches no record, as SQL's `ON CONFLICT` treats null, so the record is
+inserted. A blank string in a nullable number column is such a key.
 
 The key path may not be updated, so `update`, `upsert` and `increment` all refuse it.
 
@@ -429,6 +432,59 @@ serves the order. Without an `orderBy`, they follow the order the plan scans, wh
 when an index drives the query and key order otherwise. With `inRandomOrder()`, a `limit` or
 `offset` picks the records from the shuffled match, so
 `where('role', 'guest').inRandomOrder().limit(10).delete()` removes ten guests at random.
+
+## Coercion on the way in
+
+Every write coerces the value it gives a declared column into that column's type: `insert`,
+`insertOrIgnore`, `insertGetId`, `update`, `updateOrInsert`, `upsert` and its conflict key, the
+extra columns of `increment` and `decrement` and the value they leave behind, and a declared
+default. A strict connection throws `TypeError` for a value its column cannot store faithfully. A
+loose connection writes `null` in its place, and a non-nullable column then holds `null` too, as it
+does for any missing value.
+
+| Column type          | Accepts                                                                     | Stores                                                                  |
+|----------------------|-----------------------------------------------------------------------------|-------------------------------------------------------------------------|
+| `integer`, `decimal` | A finite number, a numeric string, a bigint within the safe integer range   | A whole number. A fraction throws when strict and is rounded when loose |
+| `float`              | A finite number, a numeric string, a bigint within the safe integer range   | The number                                                              |
+| `string`, `enum`     | A string, a finite number, a boolean, a bigint, a valid `Date`              | The string as given, `String(value)`, or a date's `toISOString()`       |
+| `date`, `datetime`   | A valid `Date`, a whole timestamp in milliseconds, an ISO 8601 string       | A `Date`                                                                |
+| `boolean`            | Any value                                                                   | `false` for `'false'`, `'0'` and any falsy value, `true` otherwise      |
+| `json`               | Any value                                                                   | A string parsed as JSON, anything else as given                         |
+
+A numeric string is written in decimal notation: an optional sign, digits with an optional fraction,
+and an optional exponent, with surrounding whitespace ignored. So `' 12 '`, `'+5'`, `'-0.5'`, `'.5'`
+and `'1e3'` are numbers, while `'0x10'`, `'0b11'`, `'Infinity'` and `'12abc'` are not. Arrays,
+objects, booleans and dates are never numbers, so `[5]` and `true` throw rather than becoming 5
+and 1. `NaN` and `Infinity` throw in number, string and date columns, and a bigint outside the safe
+integer range throws in a number column, since it would lose digits.
+
+Rounding uses `Math.round`, which takes a half toward the larger number, so 2.5 becomes 3 and -2.5
+becomes -2. Before 5.0.0 an integer column truncated a fraction on either connection.
+
+A blank string, one that is empty or holds only whitespace, is `null` in a number, `date` or
+`datetime` column. A nullable column stores `null`, and a required one throws
+`NotNullConstraintViolationException` when strict. A string column keeps a blank string as given.
+
+An ISO 8601 string is `YYYY-MM-DD`, optionally followed by `T` or a space and `HH:MM`, then
+optionally `:SS` and a fraction of a second, and then optionally `Z` or an offset such as `+02:00`.
+A time without `Z` or an offset is local, and a date alone is UTC midnight, as `new Date` reads it.
+The date and time must exist, so `'2024-02-30'`, `'2023-02-29'` and `'24:00'` throw rather than
+roll over into the next day or month. Any other form `new Date` reads, such as `'01/15/2024'`,
+`'Jan 15 2024'`, `'2024'` or a `toUTCString()` string, throws, and so do `'1'` and `true`. A `date`
+column takes the same values as a `datetime` column, time of day included.
+
+`increment` and `decrement` throw `TypeError` on either connection for an amount that is not a
+finite number. The value they leave behind is coerced as an update coerces it, so
+`increment('visits', 0.5)` on an integer column throws when strict, writing none of the records,
+and rounds when loose.
+
+A form handler can pass an empty optional field through as it is, since a blank string in a nullable
+number or date column is stored as `null`, or send `null` itself. It should check required fields
+before writing, and turn a value the form holds in its own format, such as a date picker's
+`'01/15/2024'`, into a `Date` first.
+
+Query values are read more leniently, since a value that does not convert is compared as given
+rather than refused. See [Constraints](#constraints).
 
 > Modeled on Laravel's [Database: Query Builder](https://laravel.com/docs/12.x/queries). The method
 > names and their semantics match, and every terminal is asynchronous because IndexedDB is.

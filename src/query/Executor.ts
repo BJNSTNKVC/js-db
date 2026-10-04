@@ -784,7 +784,16 @@ export class Executor<T> {
             }
 
             const previous: Record<string, unknown> = cursor.value as Record<string, unknown>;
-            const record: Record<string, unknown> = change(previous);
+
+            let record: Record<string, unknown>;
+
+            try {
+                record = change(previous);
+            } catch (error: unknown) {
+                writes.failure ??= { record: previous, previous, error };
+
+                return;
+            }
 
             writes.last = Request.settle(cursor.update(record), true).then((): void => undefined, (error: unknown): void => {
                 writes.failure = { record, previous, error };

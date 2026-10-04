@@ -106,6 +106,12 @@ export class Writer {
             new Date(),
         );
 
+        if (columns.some((column: string): boolean => prepared[column] === null || prepared[column] === undefined)) {
+            await this.add(store, schema, strict, value);
+
+            return;
+        }
+
         const key: IDBValidKey = this.#keyOf(columns, prepared);
         const existing: Record<string, unknown> | undefined = await Request.settle(store.index(target.name).get(IDBKeyRange.only(key)) as IDBRequest<Record<string, unknown> | undefined>);
 

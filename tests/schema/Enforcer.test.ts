@@ -43,8 +43,6 @@ describe('Enforcer.coerce', (): void => {
         ['string', 7, '7'],
         ['string', 'seven', 'seven'],
         ['integer', '7', 7],
-        ['integer', 7.9, 7],
-        ['integer', -7.9, -7],
         ['float', '7.5', 7.5],
         ['float', 7.5, 7.5],
         ['boolean', 1, true],
@@ -119,6 +117,339 @@ describe('Enforcer.coerce', (): void => {
         ['json', '{not json}'],
     ] as [ColumnType, unknown][])('yields null for an uncoercible %s when loose', (type: ColumnType, value: unknown): void => {
         expect(Enforcer.coerce(value, type, false)).toBeNull();
+    });
+});
+
+const NUMBERS: ColumnType[] = ['integer', 'float', 'decimal'];
+
+const WHOLE: ColumnType[] = ['integer', 'decimal'];
+
+const TEMPORAL: ColumnType[] = ['date', 'datetime'];
+
+const BLANKS: string[] = ['', ' ', '\t\n', ' '];
+
+describe('Enforcer.coerce into a number column', (): void => {
+    describe.each(NUMBERS)('%s', (type: ColumnType): void => {
+        test.each(BLANKS)('reads the blank string %j as null under strict', (value: string): void => {
+            expect(Enforcer.coerce(value, type, true)).toBeNull();
+        });
+
+        test.each(BLANKS)('reads the blank string %j as null when loose', (value: string): void => {
+            expect(Enforcer.coerce(value, type, false)).toBeNull();
+        });
+
+        test.each([
+            [' 12 ', 12],
+            ['+5', 5],
+            ['-5', -5],
+            ['1e3', 1000],
+            ['1E3', 1000],
+            ['5.', 5],
+            [12, 12],
+            [10n, 10],
+            [-(2n ** 53n - 1n), -(2 ** 53 - 1)],
+        ] as [unknown, number][])('accepts %o', (value: unknown, expected: number): void => {
+            expect(Enforcer.coerce(value, type, true)).toEqual(expected);
+            expect(Enforcer.coerce(value, type, false)).toEqual(expected);
+        });
+
+        test('keeps a negative zero', (): void => {
+            expect(Object.is(Enforcer.coerce('-0', type, true), -0)).toEqual(true);
+        });
+
+        test.each([
+            [[]],
+            [[5]],
+            [['5']],
+            [{}],
+            [true],
+            [false],
+            [Number.NaN],
+            [Number.POSITIVE_INFINITY],
+            [Number.NEGATIVE_INFINITY],
+            ['NaN'],
+            ['Infinity'],
+            ['-Infinity'],
+            ['0x10'],
+            ['0b11'],
+            ['0o7'],
+            ['12abc'],
+            ['1 2'],
+            ['.'],
+            ['e3'],
+            [2n ** 53n],
+            [new Date('2024-01-15T10:00:00.000Z')],
+        ] as [unknown][])('refuses %o under strict', (value: unknown): void => {
+            expect((): unknown => Enforcer.coerce(value, type, true)).toThrow(TypeError);
+        });
+
+        test.each([
+            [[]],
+            [[5]],
+            [{}],
+            [true],
+            [Number.POSITIVE_INFINITY],
+            ['0x10'],
+            [2n ** 53n],
+            [new Date('2024-01-15T10:00:00.000Z')],
+        ] as [unknown][])('writes null in place of %o when loose', (value: unknown): void => {
+            expect(Enforcer.coerce(value, type, false)).toBeNull();
+        });
+    });
+
+    test('names the value it refuses', (): void => {
+        expect((): unknown => Enforcer.coerce(true, 'integer', true)).toThrow(new TypeError('Unable to coerce [true] into a number.'));
+    });
+
+    test('names an infinite value it refuses in a decimal column as a number it cannot hold', (): void => {
+        expect((): unknown => Enforcer.coerce(Number.POSITIVE_INFINITY, 'decimal', true)).toThrow(new TypeError('Unable to coerce [Infinity] into a number.'));
+    });
+
+    test.each(['.5', 0.5])('accepts the fraction %o in a float column', (value: unknown): void => {
+        expect(Enforcer.coerce(value, 'float', true)).toEqual(0.5);
+    });
+});
+
+describe('Enforcer.coerce a fraction into a whole number column', (): void => {
+    describe.each(WHOLE)('%s', (type: ColumnType): void => {
+        test.each([1.9, -7.9, 7.9, '1.9', '-1.5', 0.5, '.5'])('refuses %o under strict', (value: unknown): void => {
+            expect((): unknown => Enforcer.coerce(value, type, true)).toThrow(TypeError);
+        });
+
+        test.each([
+            [7.9, 8],
+            [-7.9, -8],
+            ['1.9', 2],
+            [1.5, 2],
+            [-1.5, -1],
+            [2.5, 3],
+            [-2.5, -2],
+            [0.4, 0],
+        ] as [unknown, number][])('rounds %o to %o when loose', (value: unknown, expected: number): void => {
+            expect(Enforcer.coerce(value, type, false)).toEqual(expected);
+        });
+    });
+
+    test('tells an integer column to round its value first', (): void => {
+        expect((): unknown => Enforcer.coerce('1.9', 'integer', true)).toThrow(
+            new TypeError('An integer column stores a whole number, so [1.9] cannot be written. Round it first, as in Math.round(1.9).'),
+        );
+    });
+
+    test('rounds a fractional integer exactly as a decimal column does', (): void => {
+        const values: number[] = [-3.5, -2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 3.5, -1.49, 1.49];
+
+        expect(values.map((value: number): unknown => Enforcer.coerce(value, 'integer', false))).toEqual(
+            values.map((value: number): unknown => Enforcer.coerce(value, 'decimal', false)),
+        );
+    });
+});
+
+describe('Enforcer.coerce into a string column', (): void => {
+    describe.each(['string', 'enum'] as ColumnType[])('%s', (type: ColumnType): void => {
+        test.each([
+            ['seven', 'seven'],
+            ['', ''],
+            [7, '7'],
+            [-1.5, '-1.5'],
+            [true, 'true'],
+            [false, 'false'],
+            [10n, '10'],
+        ] as [unknown, string][])('stores %o as %o', (value: unknown, expected: string): void => {
+            expect(Enforcer.coerce(value, type, true)).toEqual(expected);
+            expect(Enforcer.coerce(value, type, false)).toEqual(expected);
+        });
+
+        test('stores a date as its ISO string', (): void => {
+            expect(Enforcer.coerce(new Date('2024-01-15T10:00:00.000Z'), type, true)).toEqual('2024-01-15T10:00:00.000Z');
+        });
+
+        test.each([
+            [[]],
+            [[5]],
+            [['a', 'b']],
+            [{}],
+            [{ a: 1 }],
+            [Number.NaN],
+            [Number.POSITIVE_INFINITY],
+            [new Date(Number.NaN)],
+        ] as [unknown][])('refuses %o under strict', (value: unknown): void => {
+            expect((): unknown => Enforcer.coerce(value, type, true)).toThrow(TypeError);
+        });
+
+        test.each([
+            [[]],
+            [[5]],
+            [{}],
+            [Number.NaN],
+            [new Date(Number.NaN)],
+        ] as [unknown][])('writes null in place of %o when loose', (value: unknown): void => {
+            expect(Enforcer.coerce(value, type, false)).toBeNull();
+        });
+    });
+
+    test('names the value it refuses', (): void => {
+        expect((): unknown => Enforcer.coerce({}, 'string', true)).toThrow(new TypeError('Unable to coerce [[object Object]] into a string.'));
+    });
+});
+
+describe('Enforcer.coerce into a date column', (): void => {
+    describe.each(TEMPORAL)('%s', (type: ColumnType): void => {
+        test.each(BLANKS)('reads the blank string %j as null under strict', (value: string): void => {
+            expect(Enforcer.coerce(value, type, true)).toBeNull();
+        });
+
+        test.each([
+            ['2024-01-15T10:00:00.000Z', '2024-01-15T10:00:00.000Z'],
+            ['2024-01-15T10:00:00Z', '2024-01-15T10:00:00.000Z'],
+            ['2024-01-15T10:00Z', '2024-01-15T10:00:00.000Z'],
+            ['2024-01-15T10:00:00.123+02:00', '2024-01-15T08:00:00.123Z'],
+            ['2024-01-15T10:00:00.123456Z', '2024-01-15T10:00:00.123Z'],
+            ['2024-01-15T00:30:00-05:30', '2024-01-15T06:00:00.000Z'],
+            ['2024-02-29', '2024-02-29T00:00:00.000Z'],
+            ['2024-01-15', '2024-01-15T00:00:00.000Z'],
+            ['2024-12-31T23:59:59Z', '2024-12-31T23:59:59.000Z'],
+            [1705312800000, '2024-01-15T10:00:00.000Z'],
+            [0, '1970-01-01T00:00:00.000Z'],
+            [-1, '1969-12-31T23:59:59.999Z'],
+        ] as [unknown, string][])('accepts %o', (value: unknown, expected: string): void => {
+            expect((Enforcer.coerce(value, type, true) as Date).toISOString()).toEqual(expected);
+        });
+
+        test.each([
+            ['2024-01-15T10:00', [2024, 0, 15, 10, 0, 0]],
+            ['2024-01-15T10:00:30', [2024, 0, 15, 10, 0, 30]],
+            ['2024-01-15 10:00:30', [2024, 0, 15, 10, 0, 30]],
+            ['2024-01-15 10:00', [2024, 0, 15, 10, 0, 0]],
+        ] as [string, [number, number, number, number, number, number]][])('reads %o in local time', (value: string, parts: [number, number, number, number, number, number]): void => {
+            expect(Enforcer.coerce(value, type, true)).toEqual(new Date(...parts));
+        });
+
+        test.each([
+            ['1'],
+            ['0'],
+            [true],
+            [false],
+            [[5]],
+            [{}],
+            ['2024-02-30'],
+            ['2023-02-29'],
+            ['2024-04-31T10:00:00Z'],
+            ['2024-13-01'],
+            ['2024-00-10'],
+            ['2024-01-00'],
+            ['2024-01-15T24:00:00Z'],
+            ['2024-01-15T10:60:00Z'],
+            ['2024-01-15T10:00:60Z'],
+            ['2024-01-15T10:00:00+24:00'],
+            ['2024-01-15T10:00:00+02:60'],
+            ['2024-01-15T10:00:00+0200'],
+            ['2024-01-15T10'],
+            ['2024-01-15t10:00:00z'],
+            ['2024'],
+            ['2024-01'],
+            ['20240115'],
+            ['01/15/2024'],
+            ['Jan 15 2024'],
+            ['Mon, 15 Jan 2024 10:00:00 GMT'],
+            ['+002024-01-15'],
+            [' 2024-01-15'],
+            [1.5],
+            [Number.NaN],
+            [Number.POSITIVE_INFINITY],
+            [8.64e15 + 1],
+            [new Date(Number.NaN)],
+            [10n],
+        ] as [unknown][])('refuses %o under strict', (value: unknown): void => {
+            expect((): unknown => Enforcer.coerce(value, type, true)).toThrow(TypeError);
+        });
+
+        test.each([
+            ['1'],
+            [true],
+            [[5]],
+            ['2024-02-30'],
+            ['01/15/2024'],
+            [1.5],
+            [10n],
+        ] as [unknown][])('writes null in place of %o when loose', (value: unknown): void => {
+            expect(Enforcer.coerce(value, type, false)).toBeNull();
+        });
+
+        test('passes the very date it was given', (): void => {
+            expect(Enforcer.coerce(at, type, true)).toBe(at);
+        });
+    });
+
+    test('names the value it refuses', (): void => {
+        expect((): unknown => Enforcer.coerce('2024-02-30', 'datetime', true)).toThrow(new TypeError('Unable to coerce [2024-02-30] into a date.'));
+    });
+});
+
+describe('Enforcer blank strings', (): void => {
+    describe.each([...NUMBERS, ...TEMPORAL])('%s', (type: ColumnType): void => {
+        test('writes null for a blank string in a nullable column on insert', (): void => {
+            const schema: TableSchema = table([column('value', type, { nullable: true })]);
+
+            expect(Enforcer.insertable({ value: ' ' }, schema, true, at)).toEqual({ value: null });
+        });
+
+        test('writes null for a blank string in a nullable column on update', (): void => {
+            const schema: TableSchema = table([column('value', type, { nullable: true })]);
+
+            expect(Enforcer.updatable({ value: '' }, schema, true, at)).toEqual({ value: null });
+        });
+
+        test('throws for a blank string in a required column on insert under strict', (): void => {
+            const schema: TableSchema = table([column('value', type)]);
+
+            expect((): unknown => Enforcer.insertable({ value: '' }, schema, true, at)).toThrow(new NotNullConstraintViolationException('users', 'value'));
+        });
+
+        test('throws for a blank string in a required column on update under strict', (): void => {
+            const schema: TableSchema = table([column('value', type)]);
+
+            expect((): unknown => Enforcer.updatable({ value: ' ' }, schema, true, at)).toThrow(new NotNullConstraintViolationException('users', 'value'));
+        });
+
+        test('writes null for a blank string in a required column when loose', (): void => {
+            const schema: TableSchema = table([column('value', type)]);
+
+            expect(Enforcer.insertable({ value: '' }, schema, false, at)).toEqual({ value: null });
+            expect(Enforcer.updatable({ value: '' }, schema, false, at)).toEqual({ value: null });
+        });
+    });
+
+    test('keeps a blank string in a string column', (): void => {
+        const schema: TableSchema = table([column('value', 'string')]);
+
+        expect(Enforcer.insertable({ value: ' ' }, schema, true, at)).toEqual({ value: ' ' });
+    });
+});
+
+describe('Enforcer.field', (): void => {
+    test('coerces a value for a declared column', (): void => {
+        const schema: TableSchema = table([column('visits', 'integer')]);
+
+        expect(Enforcer.field(2.5, 'visits', schema, false)).toEqual(3);
+    });
+
+    test('refuses a value the column cannot hold under strict', (): void => {
+        const schema: TableSchema = table([column('visits', 'integer')]);
+
+        expect((): unknown => Enforcer.field(2.5, 'visits', schema, true)).toThrow(TypeError);
+    });
+
+    test('enforces nullability', (): void => {
+        const schema: TableSchema = table([column('visits', 'integer')]);
+
+        expect((): unknown => Enforcer.field(Number.NaN, 'visits', schema, true)).toThrow(TypeError);
+        expect((): unknown => Enforcer.field(null, 'visits', schema, true)).toThrow(NotNullConstraintViolationException);
+        expect(Enforcer.field(Number.NaN, 'visits', schema, false)).toBeNull();
+    });
+
+    test('passes a value for an undeclared column through untouched', (): void => {
+        expect(Enforcer.field('kept', 'extra', table([]), true)).toEqual('kept');
     });
 });
 

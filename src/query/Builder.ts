@@ -5,6 +5,7 @@ import { Grouping } from './Grouping';
 import { Executor } from './Executor';
 import { Writer } from './Writer';
 import { Calendar } from '../schema/Calendar';
+import { Enforcer } from '../schema/Enforcer';
 import type { Connection } from '../database/Connection';
 import type { ColumnSchema, TableSchema } from '../schema/types';
 import type {
@@ -988,12 +989,19 @@ export class Builder<T = Record<string, unknown>> {
      */
     async #step(column: Key<T>, amount: number, extra: Partial<T>): Promise<number> {
         const own: string = await this.#own(column);
+
+        if (!Number.isFinite(amount)) {
+            throw new TypeError(`Unable to step column [${own}] by [${String(amount)}], which is not a finite number.`);
+        }
+
+        const schema: TableSchema = await this.#connection.schema(this.#table);
+        const strict: boolean = this.#connection.strict;
         const prepared: Record<string, unknown> = await this.#changes(extra);
 
         return this.#executor().modify((record: Record<string, unknown>): Record<string, unknown> => ({
             ...record,
             ...prepared,
-            [own]: Number(record[own] ?? 0) + amount,
+            [own]: Enforcer.field(Number(record[own] ?? 0) + amount, own, schema, strict),
         }), [own, ...Object.keys(prepared)]);
     }
 

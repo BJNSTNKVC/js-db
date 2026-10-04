@@ -90,6 +90,12 @@ class CreateUsersTable extends Migration {
             table.string('label');
             table.json('slots').unique();
         });
+
+        await Schema.create('seats', (table: Blueprint): void => {
+            table.id();
+            table.string('label');
+            table.integer('seat').nullable().unique();
+        });
     }
 }
 
@@ -1057,5 +1063,229 @@ describe('Builder increment on a null column', (): void => {
         await users().where('name', 'Alice').increment('score', 3);
 
         expect(await users().where('name', 'Alice').value('score')).toEqual(3);
+    });
+});
+
+describe('Builder writes of values a strict connection cannot store faithfully', (): void => {
+    test('stores null for a blank string in a nullable number column on insert', async (): Promise<void> => {
+        await users().insert({ name: 'Alice', email: 'alice@example.com', score: '' as unknown as number });
+
+        expect(await users().value('score')).toBeNull();
+    });
+
+    test('refuses a blank string in a required number column on insert', async (): Promise<void> => {
+        await expect(users().insert({ name: 'Alice', email: 'alice@example.com', visits: ' ' as unknown as number })).rejects.toThrow(
+            new NotNullConstraintViolationException('users', 'visits'),
+        );
+
+        expect(await users().count()).toEqual(0);
+    });
+
+    test('stores null for a blank string in a nullable number column on update', async (): Promise<void> => {
+        await users().insert({ name: 'Alice', email: 'alice@example.com', score: 4 });
+        await users().update({ score: ' ' as unknown as number });
+
+        expect(await users().value('score')).toBeNull();
+    });
+
+    test('refuses a blank string in a required number column on update', async (): Promise<void> => {
+        await users().insert({ name: 'Alice', email: 'alice@example.com', visits: 4 });
+
+        await expect(users().update({ visits: '' as unknown as number })).rejects.toThrow(new NotNullConstraintViolationException('users', 'visits'));
+
+        expect(await users().value('visits')).toEqual(4);
+    });
+
+    test('stores null for a blank string in a nullable datetime column', async (): Promise<void> => {
+        await users().insert({ name: 'Alice', email: 'alice@example.com', created_at: '' as unknown as Date });
+
+        expect(await users().value('created_at')).toBeNull();
+    });
+
+    test.each([
+        ['a fraction in an integer column', { visits: 1.9 }],
+        ['a fractional string in an integer column', { visits: '1.9' }],
+        ['a boolean in a number column', { score: true }],
+        ['an empty array in a number column', { score: [] }],
+        ['an object in a string column', { nickname: {} }],
+        ['a number string in a datetime column', { created_at: '1' }],
+        ['a date that rolls over in a datetime column', { created_at: '2024-02-30' }],
+    ] as [string, Record<string, unknown>][])('refuses %s', async (_: string, values: Record<string, unknown>): Promise<void> => {
+        await expect(users().insert({ name: 'Alice', email: 'alice@example.com', ...values } as Partial<User>)).rejects.toThrow(TypeError);
+
+        expect(await users().count()).toEqual(0);
+    });
+
+    test('stores a date written to a string column as its ISO string', async (): Promise<void> => {
+        await users().insert({ name: 'Alice', email: 'alice@example.com', nickname: new Date('2024-01-15T10:00:00.000Z') as unknown as string });
+
+        expect(await users().value('nickname')).toEqual('2024-01-15T10:00:00.000Z');
+    });
+});
+
+describe('Builder upsert conflict keys a strict connection coerces', (): void => {
+    test('refuses a fractional integer conflict key rather than merging', async (): Promise<void> => {
+        await connection.table('codes').insert({ code: 5, label: 'A' });
+
+        await expect(connection.table('codes').upsert([{ code: '5.5', label: 'B' }], 'code')).rejects.toThrow(TypeError);
+
+        expect(await connection.table('codes').get()).toEqual([{ id: 1, code: 5, label: 'A' }]);
+    });
+
+    test('refuses a fractional key path', async (): Promise<void> => {
+        await expect(users().upsert([{ id: 1.5, name: 'Alice', email: 'alice@example.com' }], 'id')).rejects.toThrow(TypeError);
+
+        expect(await users().count()).toEqual(0);
+    });
+
+    test('inserts when a blank conflict key reads as null, rather than merging into zero', async (): Promise<void> => {
+        await connection.table('seats').insert({ label: 'Zero', seat: 0 });
+
+        expect(await connection.table('seats').upsert([{ label: 'Blank', seat: '' }], 'seat')).toEqual(1);
+        expect(await connection.table('seats').orderBy('id').get()).toEqual([{ id: 1, label: 'Zero', seat: 0 }, { id: 2, label: 'Blank', seat: null }]);
+    });
+
+    test('inserts every record whose conflict key is null', async (): Promise<void> => {
+        await connection.table('nullables').upsert([{ nickname: null, email: 'alice@example.com' }], 'nickname');
+        await connection.table('nullables').upsert([{ nickname: null, email: 'bob@example.com' }], 'nickname');
+
+        expect(await connection.table('nullables').orderBy('id').pluck('email')).toEqual(['alice@example.com', 'bob@example.com']);
+    });
+
+    test('inserts a record missing its conflict key', async (): Promise<void> => {
+        await connection.table('nullables').insert({ nickname: 'al', email: 'alice@example.com' });
+        await connection.table('nullables').upsert([{ email: 'bob@example.com' }], 'nickname');
+
+        expect(await connection.table('nullables').orderBy('id').pluck('nickname')).toEqual(['al', null]);
+    });
+
+    test('reports a null in a required column of a compound conflict key as the insert would', async (): Promise<void> => {
+        await connection.table('pairs').insert({ left: 'a', right: 'b', count: 1 });
+
+        await expect(connection.table('pairs').upsert([{ left: 'a', right: null, count: 9 }], ['left', 'right'])).rejects.toThrow(
+            new NotNullConstraintViolationException('pairs', 'right'),
+        );
+
+        expect(await connection.table('pairs').count()).toEqual(1);
+    });
+});
+
+describe('Builder increment and decrement by values a column cannot hold', (): void => {
+    beforeEach(async (): Promise<void> => {
+        await users().insert([
+            { name: 'Alice', email: 'alice@example.com', visits: 5 },
+            { name: 'Bob', email: 'bob@example.com', visits: 10 },
+        ]);
+    });
+
+    test('refuses a step that leaves a fraction in an integer column and writes none of the records', async (): Promise<void> => {
+        await expect(users().increment('visits', 0.5)).rejects.toThrow(TypeError);
+
+        expect(await users().orderBy('id').pluck('visits')).toEqual([5, 10]);
+    }, 2000);
+
+    test('refuses a decrement that leaves a fraction in an integer column', async (): Promise<void> => {
+        await expect(users().where('name', 'Bob').decrement('visits', 1.5)).rejects.toThrow(TypeError);
+
+        expect(await users().orderBy('id').pluck('visits')).toEqual([5, 10]);
+    }, 2000);
+
+    test('refuses a fractional step inside a transaction and rolls it back', async (): Promise<void> => {
+        await expect(connection.transaction(async (transaction: Transaction): Promise<void> => {
+            await transaction.table<User>('users').where('name', 'Alice').update({ name: 'Alicia' });
+            await transaction.table<User>('users').increment('visits', 0.5);
+        })).rejects.toThrow(TypeError);
+
+        expect(await users().orderBy('id').pluck('name')).toEqual(['Alice', 'Bob']);
+        expect(await users().orderBy('id').pluck('visits')).toEqual([5, 10]);
+    }, 2000);
+
+    test.each([
+        [Number.NaN],
+        [Number.POSITIVE_INFINITY],
+        [Number.NEGATIVE_INFINITY],
+        ['5'],
+        [null],
+    ] as [unknown][])('refuses the amount %o', async (amount: unknown): Promise<void> => {
+        await expect(users().increment('visits', amount as number)).rejects.toThrow(
+            new TypeError(`Unable to step column [visits] by [${String(amount)}], which is not a finite number.`),
+        );
+
+        expect(await users().orderBy('id').pluck('visits')).toEqual([5, 10]);
+    });
+
+    test('refuses a step that leaves a column holding no number', async (): Promise<void> => {
+        await expect(users().increment('name', 1)).rejects.toThrow(TypeError);
+
+        expect(await users().orderBy('id').pluck('name')).toEqual(['Alice', 'Bob']);
+    }, 2000);
+
+    test('refuses a fractional step on a joined query', async (): Promise<void> => {
+        await connection.table('pairs').insert({ left: 'a', right: 'b', count: 5 });
+
+        await expect(users().join('pairs', 'pairs.count', '=', 'users.visits').increment('visits', 0.5)).rejects.toThrow(TypeError);
+
+        expect(await users().orderBy('id').pluck('visits')).toEqual([5, 10]);
+    }, 2000);
+});
+
+describe('Builder writes of values a loose connection cannot store faithfully', (): void => {
+    let loose: Connection;
+
+    /**
+     * Begin a query against the users table on the loose connection.
+     */
+    function people(): Builder<User> {
+        return loose.table<User>('users');
+    }
+
+    beforeEach(async (): Promise<void> => {
+        loose = new Connection('app', { database: `builder-writes-loose-${++sequence}`, migrations: [CreateUsersTable], strict: false });
+
+        await loose.migrate();
+    });
+
+    afterEach((): void => {
+        loose.disconnect();
+    });
+
+    test('writes null for what it cannot store', async (): Promise<void> => {
+        await people().insert({
+            name      : {} as unknown as string,
+            email     : 'alice@example.com',
+            visits    : '' as unknown as number,
+            score     : true as unknown as number,
+            created_at: '1' as unknown as Date,
+        });
+
+        const alice: User = await people().firstOrFail();
+
+        expect([alice.name, alice.visits, alice.score, alice.created_at]).toEqual([null, null, null, null]);
+    });
+
+    test('rounds a fraction written to an integer column', async (): Promise<void> => {
+        await people().insert([
+            { name: 'Alice', email: 'alice@example.com', visits: 1.5 },
+            { name: 'Bob', email: 'bob@example.com', visits: -1.5 },
+            { name: 'Carol', email: 'carol@example.com', visits: '7.9' as unknown as number },
+        ]);
+
+        expect(await people().orderBy('id').pluck('visits')).toEqual([2, -1, 8]);
+    });
+
+    test('rounds a step that leaves a fraction in an integer column', async (): Promise<void> => {
+        await people().insert([
+            { name: 'Alice', email: 'alice@example.com', visits: 5 },
+            { name: 'Bob', email: 'bob@example.com', visits: 10 },
+        ]);
+
+        expect(await people().increment('visits', 0.5)).toEqual(2);
+        expect(await people().orderBy('id').pluck('visits')).toEqual([6, 11]);
+    }, 2000);
+
+    test('still refuses an amount that is not a finite number', async (): Promise<void> => {
+        await people().insert({ name: 'Alice', email: 'alice@example.com', visits: 5 });
+
+        await expect(people().increment('visits', Number.NaN)).rejects.toThrow(TypeError);
     });
 });

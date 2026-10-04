@@ -1,7 +1,8 @@
 # Defining a schema
 
 IndexedDB stores whole objects and enforces only a key path, `autoIncrement` and indexes. Column
-types are recorded as metadata and enforced by this package at write time.
+types are recorded as metadata and enforced by this package at write time, as
+[Coercion on the way in](querying.md#coercion-on-the-way-in) describes.
 
 | Blueprint                                                                       | Effect                                                                             |
 |---------------------------------------------------------------------------------|------------------------------------------------------------------------------------|
@@ -243,7 +244,10 @@ const places: number = columns.find((column: ColumnSchema): boolean => column.na
 const money = (minor: number): string => (minor / 10 ** places).toFixed(places);
 ```
 
-A loose connection rounds instead of throwing, in keeping with every other coercion.
+A loose connection rounds instead of throwing, with `Math.round`, which takes a half toward the
+larger number: 19.5 becomes 20 and -19.5 becomes -19. An `integer` column follows the same rule,
+refusing a fraction under strict and rounding it when loose. See
+[Coercion on the way in](querying.md#coercion-on-the-way-in) for every column type.
 
 ## Enumerated columns are checked on the way in
 

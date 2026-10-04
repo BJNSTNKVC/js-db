@@ -50,13 +50,17 @@ await DB.migrate('app');
 and every example in these docs passes it as `DB.table<User>('users')` so the builder can type its
 constraints, its return values and its aggregate keys.
 
-| Option                         | Meaning                                                                                                 |
-|--------------------------------|---------------------------------------------------------------------------------------------------------|
-| `default`                      | The connection used when none is named                                                                  |
-| `connections[name].database`   | The IndexedDB database name                                                                             |
-| `connections[name].migrations` | Ordered migration classes. Their order **is** the schema version.                                       |
-| `connections[name].seeders`    | Ordered seeder classes, run by `DB.seed(name)`. See [Seeding](seeding.md).                                |
-| `connections[name].strict`     | Defaults to `true`. Nullability violations and uncoercible values throw. `false` writes `null` instead. |
+| Option                         | Meaning                                                                                                    |
+|--------------------------------|------------------------------------------------------------------------------------------------------------|
+| `default`                      | The connection used when none is named                                                                     |
+| `connections[name].database`   | The IndexedDB database name                                                                                |
+| `connections[name].migrations` | Ordered migration classes. Their order **is** the schema version.                                          |
+| `connections[name].seeders`    | Ordered seeder classes, run by `DB.seed(name)`. See [Seeding](seeding.md).                                 |
+| `connections[name].strict`     | Defaults to `true`. Missing required values and values a column cannot store throw. `false` writes `null`. |
+
+A strict connection stores a value only when its column can hold it faithfully, so an empty form
+field never becomes 0 and a fraction never loses its digits unseen. The rules for each column type
+are in [Coercion on the way in](querying.md#coercion-on-the-way-in).
 
 `DB.migrate(name)` is idempotent. It opens the database at the version your migrations ask for, and
 when that already matches, nothing runs. Calling it on every boot is the intended usage, and there

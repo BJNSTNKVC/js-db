@@ -1,7 +1,12 @@
 import { CheckConstraintViolationException, NotNullConstraintViolationException } from '../exceptions';
+import { Calendar } from './Calendar';
 import type { ColumnSchema, ColumnType, TableSchema } from './types';
 
 const FALSY: ReadonlySet<string> = new Set<string>(['false', '0']);
+
+const NUMERIC: RegExp = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
+
+const MOMENT: RegExp = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(?:Z|[+-](\d{2}):(\d{2}))?)?$/;
 
 export class Enforcer {
     /**
@@ -14,22 +19,20 @@ export class Enforcer {
 
         switch (type) {
             case 'string':
-                return String(value);
+            case 'enum':
+                return this.#text(value, strict);
 
             case 'integer':
-                return this.#numeric(value, strict, true);
+                return this.#whole(value, strict, 'integer');
 
             case 'float':
-                return this.#numeric(value, strict, false);
+                return this.#numeric(value, strict);
 
             case 'boolean':
                 return typeof value === 'string' && FALSY.has(value) ? false : Boolean(value);
 
             case 'decimal':
-                return this.#scaled(value, strict);
-
-            case 'enum':
-                return String(value);
+                return this.#whole(value, strict, 'decimal');
 
             case 'date':
             case 'datetime':
@@ -83,6 +86,15 @@ export class Enforcer {
     }
 
     /**
+     * Coerce the value a write gives one column, enforcing nullability, or pass it through when the column is undeclared.
+     */
+    static field(value: unknown, name: string, schema: TableSchema, strict: boolean): unknown {
+        const column: ColumnSchema | undefined = schema.columns.find((candidate: ColumnSchema): boolean => candidate.name === name);
+
+        return column === undefined ? value : this.#value(value, column, schema, strict);
+    }
+
+    /**
      * Coerce a single column value, enforcing nullability.
      */
     static #value(value: unknown, column: ColumnSchema, schema: TableSchema, strict: boolean): unknown {
@@ -120,31 +132,6 @@ export class Enforcer {
     }
 
     /**
-     * Coerce a value into a whole number of a decimal column's smallest unit.
-     */
-    static #scaled(value: unknown, strict: boolean): unknown {
-        const number: number = Number(value);
-
-        if (Number.isNaN(number)) {
-            if (strict) {
-                throw new TypeError(`Unable to coerce [${String(value)}] into a number.`);
-            }
-
-            return null;
-        }
-
-        if (!Number.isInteger(number)) {
-            if (strict) {
-                throw new TypeError(`A decimal column stores a whole number of its smallest unit, so [${String(value)}] cannot be written. Scale it first, as in Math.round(19.99 * 100).`);
-            }
-
-            return Math.round(number);
-        }
-
-        return number;
-    }
-
-    /**
      * Determine whether the column is a key the database generates.
      */
     static #generated(column: ColumnSchema, record: Record<string, unknown>): boolean {
@@ -169,37 +156,129 @@ export class Enforcer {
     }
 
     /**
-     * Coerce a value into a number, truncating when the column is an integer.
+     * Coerce a value into a string, keeping a date as its ISO string.
      */
-    static #numeric(value: unknown, strict: boolean, truncate: boolean): unknown {
-        const number: number = Number(value);
-
-        if (Number.isNaN(number)) {
-            if (strict) {
-                throw new TypeError(`Unable to coerce [${String(value)}] into a number.`);
-            }
-
-            return null;
+    static #text(value: unknown, strict: boolean): string | null {
+        if (typeof value === 'string') {
+            return value;
         }
 
-        return truncate ? Math.trunc(number) : number;
+        if ((typeof value === 'number' && Number.isFinite(value)) || typeof value === 'boolean' || typeof value === 'bigint') {
+            return String(value);
+        }
+
+        if (value instanceof Date && !Number.isNaN(value.getTime())) {
+            return value.toISOString();
+        }
+
+        if (strict) {
+            throw new TypeError(`Unable to coerce [${String(value)}] into a string.`);
+        }
+
+        return null;
     }
 
     /**
-     * Coerce a value into a date.
+     * Coerce a value into a whole number, refusing a fraction under strict and rounding it when loose.
      */
-    static #temporal(value: unknown, strict: boolean): unknown {
-        const date: Date = value instanceof Date ? value : new Date(value as string | number);
+    static #whole(value: unknown, strict: boolean, type: 'integer' | 'decimal'): number | null {
+        const number: number | null = this.#numeric(value, strict);
 
-        if (Number.isNaN(date.getTime())) {
-            if (strict) {
-                throw new TypeError(`Unable to coerce [${String(value)}] into a date.`);
-            }
+        if (number === null || Number.isInteger(number)) {
+            return number;
+        }
 
+        if (strict) {
+            throw new TypeError(type === 'integer'
+                ? `An integer column stores a whole number, so [${String(value)}] cannot be written. Round it first, as in Math.round(${String(value)}).`
+                : `A decimal column stores a whole number of its smallest unit, so [${String(value)}] cannot be written. Scale it first, as in Math.round(19.99 * 100).`);
+        }
+
+        return Math.round(number);
+    }
+
+    /**
+     * Coerce a value into a finite number, reading a blank string as null.
+     */
+    static #numeric(value: unknown, strict: boolean): number | null {
+        if (typeof value === 'string' && value.trim() === '') {
             return null;
         }
 
-        return date;
+        const number: number = this.#number(value);
+
+        if (Number.isFinite(number)) {
+            return number;
+        }
+
+        if (strict) {
+            throw new TypeError(`Unable to coerce [${String(value)}] into a number.`);
+        }
+
+        return null;
+    }
+
+    /**
+     * Read a number, a bigint within the safe integer range or a string in decimal notation, or NaN for anything else.
+     */
+    static #number(value: unknown): number {
+        if (typeof value === 'number') {
+            return value;
+        }
+
+        if (typeof value === 'bigint') {
+            return Number.isSafeInteger(Number(value)) ? Number(value) : NaN;
+        }
+
+        return typeof value === 'string' && NUMERIC.test(value.trim()) ? Number(value) : NaN;
+    }
+
+    /**
+     * Coerce a value into a date, reading a blank string as null.
+     */
+    static #temporal(value: unknown, strict: boolean): Date | null {
+        if (typeof value === 'string' && value.trim() === '') {
+            return null;
+        }
+
+        const date: Date = this.#moment(value);
+
+        if (!Number.isNaN(date.getTime())) {
+            return date;
+        }
+
+        if (strict) {
+            throw new TypeError(`Unable to coerce [${String(value)}] into a date.`);
+        }
+
+        return null;
+    }
+
+    /**
+     * Read a date, a whole timestamp or an ISO 8601 string naming a real moment, or an invalid date for anything else.
+     */
+    static #moment(value: unknown): Date {
+        if (value instanceof Date) {
+            return value;
+        }
+
+        if (typeof value === 'number') {
+            return new Date(Number.isInteger(value) ? value : NaN);
+        }
+
+        const parts: RegExpExecArray | null = typeof value === 'string' ? MOMENT.exec(value) : null;
+
+        return parts !== null && this.#survives(parts) ? new Date((value as string).replace(' ', 'T')) : new Date(NaN);
+    }
+
+    /**
+     * Determine whether the parts of an ISO 8601 string name a moment that exists, rather than one that rolls over.
+     */
+    static #survives(parts: RegExpExecArray): boolean {
+        const [year, month, day, hour, minute, second, hours, minutes]: number[] = parts.slice(1).map((part: string | undefined): number => Number(part ?? 0)) as [number, number, number, number, number, number, number, number];
+        const date: Date = Calendar.midnight(year, month - 1, day);
+
+        return date.getMonth() === month - 1 && date.getDate() === day && hour <= 23 && minute <= 59 && second <= 59 && hours <= 23 && minutes <= 59;
     }
 
     /**

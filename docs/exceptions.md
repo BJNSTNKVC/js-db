@@ -11,7 +11,7 @@ true. All of them are exported from the package root.
 | `MigrationMismatchException`          | The recorded migration list is not a prefix of the registered one, so one was removed, renamed or reordered |
 | `MigrationTransactionClosedException` | A migration awaited something outside this package, letting the versionchange transaction commit early      |
 | `MultipleRecordsFoundException`       | `sole()` matched more than one record                                                                       |
-| `NotNullConstraintViolationException` | A non-nullable column is written as null, or is absent with no default                                      |
+| `NotNullConstraintViolationException` | A non-nullable column is written as null or a blank number or date, or is absent with no default           |
 | `QuotaExceededException`              | The origin's storage quota stopped the operation                                                            |
 | `RecordsNotFoundException`            | `firstOrFail()`, `sole()` or `findOrFail()` matched nothing                                                 |
 | `ReservedTableException`              | A migration tries to create `migrations` or `schema`                                                        |
