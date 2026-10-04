@@ -1,8 +1,11 @@
 import { SchemaException } from '../exceptions';
 import { ColumnDefinition } from './ColumnDefinition';
+import { Enforcer } from './Enforcer';
 import type { BlueprintOperations, ChangedColumn, ColumnSchema, ColumnType, Enumerable, IndexSchema, RenamedColumn, RequestedIndex, TableSchema } from './types';
 
 type IndexChanges = { indexes: IndexSchema[]; created: IndexSchema[]; removed: string[] };
+
+const IDENTIFIER: RegExp = /^[$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*$/u;
 
 export class Blueprint {
     /**
@@ -128,7 +131,13 @@ export class Blueprint {
      * Add a fixed point column, stored as an integer number of its smallest unit.
      */
     decimal(column: string, places: number = 2): ColumnDefinition {
-        return this.#add(column, 'decimal').scaled(places);
+        const definition: ColumnDefinition = this.#add(column, 'decimal');
+
+        if (!Number.isInteger(places) || places < 0) {
+            throw new SchemaException(`Column [${column}] of table [${this.#table}] cannot have a scale of [${places}]. A scale counts decimal places, so it is a whole number of at least 0.`);
+        }
+
+        return definition.scaled(places);
     }
 
     /**
@@ -189,6 +198,8 @@ export class Blueprint {
             throw new SchemaException(`Column [${from}] does not exist on table [${this.#table}].`);
         }
 
+        this.#named(to);
+
         this.#renamed.push({ from, to });
     }
 
@@ -210,7 +221,15 @@ export class Blueprint {
      */
     toSchema(): TableSchema {
         const columns: ColumnSchema[] = this.#resolved();
+
+        for (const definition of this.#columns) {
+            this.#storable(definition);
+        }
+
         const indexes: IndexSchema[] = this.#resolvedIndexes();
+
+        this.#indexable(columns);
+
         const primary: ColumnSchema[] = columns.filter((column: ColumnSchema): boolean => column.primary);
 
         if (primary.length > 1) {
@@ -249,11 +268,120 @@ export class Blueprint {
      * Add a column of the given type to the blueprint.
      */
     #add(column: string, type: ColumnType): ColumnDefinition {
+        this.#named(column);
+
         const definition: ColumnDefinition = new ColumnDefinition(column, type);
 
         this.#columns.push(definition);
 
         return definition;
+    }
+
+    /**
+     * Refuse a column name that is blank, or that a key path, a join or a JSON path would read as more than a name.
+     */
+    #named(column: string): void {
+        const named: string = `Column [${column}] of table [${this.#table}]`;
+
+        if (column.trim() === '') {
+            throw new SchemaException(`${named} needs a name that is not blank.`);
+        }
+
+        if (column.includes('.')) {
+            throw new SchemaException(`${named} may not be named with a dot, which separates the steps of a key path and qualifies a column on a join.`);
+        }
+
+        if (column.includes('->')) {
+            throw new SchemaException(`${named} may not be named with an arrow, which starts a JSON path.`);
+        }
+    }
+
+    /**
+     * Refuse a declared column whose key path or default IndexedDB and the enforcer cannot honor.
+     */
+    #storable(definition: ColumnDefinition): void {
+        const column: ColumnSchema = definition.toSchema();
+        const named: string = `Column [${column.name}] of table [${this.#table}]`;
+
+        if (column.primary) {
+            if (this.#existing !== null && !definition.changed) {
+                throw new SchemaException(`${named} may not become the key path, because IndexedDB fixes it when the store is created.`);
+            }
+
+            if (column.nullable) {
+                throw new SchemaException(`${named} is the key path and may not be nullable, because IndexedDB stores no record without a key.`);
+            }
+
+            if (column.type === 'boolean') {
+                throw new SchemaException(`${named} is a boolean and may not be the key path, because IndexedDB never takes a boolean as a key.`);
+            }
+
+            if (!IDENTIFIER.test(column.name)) {
+                throw new SchemaException(`${named} may not be the key path, because IndexedDB cannot read its name as a key path. Name the column as a JavaScript identifier.`);
+            }
+        }
+
+        if (column.hasDefault) {
+            this.#defaulted(column, named);
+        }
+    }
+
+    /**
+     * Refuse a default a strict connection would not store, or would store as null in a column that is not nullable.
+     */
+    #defaulted(column: ColumnSchema, named: string): void {
+        let stored: unknown;
+
+        try {
+            stored = Enforcer.coerce(column.default, column.type, true);
+        } catch (error: unknown) {
+            throw new SchemaException(`${named} cannot default to [${String(column.default)}]: ${(error as Error).message}`);
+        }
+
+        if (stored === null || stored === undefined) {
+            if (column.nullable) {
+                return;
+            }
+
+            throw new SchemaException(column.default === null || column.default === undefined
+                ? `${named} is not nullable, so it cannot default to null.`
+                : `${named} is not nullable, so it cannot default to a blank string, which it stores as null.`);
+        }
+
+        if (column.values !== null && !column.values.includes(stored as string)) {
+            throw new SchemaException(`${named} cannot default to [${String(column.default)}], which it does not accept. It accepts [${column.values.join(', ')}].`);
+        }
+    }
+
+    /**
+     * Refuse an index that would cover nothing, hold nothing, or that IndexedDB cannot create over its column names.
+     */
+    #indexable(columns: ColumnSchema[]): void {
+        const types: Map<string, ColumnType> = new Map(columns.map((column: ColumnSchema): [string, ColumnType] => [column.name, column.type]));
+
+        for (const index of this.#declaredIndexes()) {
+            const named: string = `Index [${index.name}] of table [${this.#table}]`;
+
+            for (const column of index.columns) {
+                const type: ColumnType | undefined = types.get(column);
+
+                if (type === undefined) {
+                    throw new SchemaException(`${named} covers column [${column}], which the table does not have.`);
+                }
+
+                if (type === 'boolean') {
+                    throw new SchemaException(`${named} covers boolean column [${column}], which IndexedDB never indexes, so the index would hold nothing.`);
+                }
+            }
+        }
+
+        for (const index of this.#indexChanges().created) {
+            const unreadable: string | undefined = index.columns.find((column: string): boolean => !IDENTIFIER.test(column));
+
+            if (unreadable !== undefined) {
+                throw new SchemaException(`Index [${index.name}] of table [${this.#table}] covers column [${unreadable}], whose name IndexedDB cannot read as a key path. Name the column as a JavaScript identifier.`);
+            }
+        }
     }
 
     /**

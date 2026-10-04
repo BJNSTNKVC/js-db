@@ -4,22 +4,22 @@ IndexedDB stores whole objects and enforces only a key path, `autoIncrement` and
 types are recorded as metadata and enforced by this package at write time, as
 [Coercion on the way in](querying.md#coercion-on-the-way-in) describes.
 
-| Blueprint                                                                       | Effect                                                                             |
-|---------------------------------------------------------------------------------|------------------------------------------------------------------------------------|
-| `table.id()`                                                                    | `keyPath: 'id'`, `autoIncrement: true`                                             |
-| `table.uuid('id').primary()`                                                    | `keyPath: 'id'`, no autoIncrement                                                  |
-| `table.string` / `integer` / `float` / `boolean` / `date` / `datetime` / `json` | Column metadata                                                                    |
-| `table.decimal('price', 2)`                                                     | Column metadata, stored as a whole number of the smallest unit                     |
-| `table.enum('role', Role)`                                                      | Column metadata, checked at write time. Takes a list, an enum or a constant object |
-| `.nullable()`                                                                   | Metadata, enforced at write time                                                   |
-| `.default(value)`                                                               | Applied at write time, and backfilled when added to an existing table              |
-| `.primary()`                                                                    | Makes the column the key path. At most one per table.                              |
-| `.index()`                                                                      | `createIndex('users_name_index', 'name')`                                          |
-| `.unique()`                                                                     | `createIndex('users_email_unique', 'email', { unique: true })`                     |
-| `table.index(['a', 'b'])`                                                       | Compound index                                                                     |
-| `.multiEntry()`                                                                 | One index entry per array element, which `whereJsonContains` reads                 |
-| `table.timestamps()`                                                            | Nullable `created_at` / `updated_at`, filled automatically                         |
-| `.change()`                                                                     | Inside `Schema.table`, replaces the existing column of the same name               |
+| Blueprint                                                                       | Effect                                                                                                         |
+|---------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------|
+| `table.id()`                                                                    | `keyPath: 'id'`, `autoIncrement: true`                                                                         |
+| `table.uuid('id').primary()`                                                    | `keyPath: 'id'`, no autoIncrement                                                                              |
+| `table.string` / `integer` / `float` / `boolean` / `date` / `datetime` / `json` | Column metadata                                                                                                |
+| `table.decimal('price', 2)`                                                     | Column metadata, stored as a whole number of the smallest unit. The scale is a whole number of at least 0      |
+| `table.enum('role', Role)`                                                      | Column metadata, checked at write time. Takes a list, an enum or a constant object                             |
+| `.nullable()`                                                                   | Metadata, enforced at write time                                                                               |
+| `.default(value)`                                                               | Applied at write time, and backfilled when added to an existing table. Refused when the column cannot store it |
+| `.primary()`                                                                    | Makes the column the key path. At most one per table, set when the table is created, never nullable or boolean |
+| `.index()`                                                                      | `createIndex('users_name_index', 'name')`. Never over a boolean column                                         |
+| `.unique()`                                                                     | `createIndex('users_email_unique', 'email', { unique: true })`. Never over a boolean column                    |
+| `table.index(['a', 'b'])`                                                       | Compound index                                                                                                 |
+| `.multiEntry()`                                                                 | One index entry per array element, which `whereJsonContains` reads                                             |
+| `table.timestamps()`                                                            | Nullable `created_at` / `updated_at`, filled automatically                                                     |
+| `.change()`                                                                     | Inside `Schema.table`, replaces the existing column of the same name                                           |
 
 Altering a table also supports `dropColumn`, `renameColumn`, `dropIndex`, `change()` and
 `Schema.rename`. The key path may not be dropped, renamed or changed, because IndexedDB fixes it when
@@ -35,6 +35,58 @@ await Schema.table('users', (table: Blueprint): void => {
 ```
 
 `Schema.rename` is implemented as create-copy-drop, so it is O(n) in the number of records.
+
+## Definitions IndexedDB cannot honor
+
+A definition IndexedDB would leave unenforced, or that would fail every insert relying on it, is
+refused with `SchemaException` when its migration runs, and the migration rolls back:
+
+| Definition                                                                                         | Why                                                                        |
+|----------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------|
+| An index over a column the table lacks: `table.index('missing')`, `table.unique(['a', 'missing'])` | It covers nothing, so a unique rule is never enforced                      |
+| An index over a boolean column: `.index()`, `.unique()` or `.multiEntry()`, alone or compound      | A boolean is not a valid key, so the index holds nothing                   |
+| A key path that is nullable or a boolean: `string('code').primary().nullable()`                    | IndexedDB stores no record without a valid key                             |
+| A `.primary()` column added by `Schema.table`                                                      | IndexedDB fixes the key path when the store is created                     |
+| A default the column cannot store: `integer('i').default('abc')`, `decimal('d', 2).default(19.99)` | Every insert relying on it would throw                                     |
+| An enum default outside its values, or a `null` or blank default on a column that is not nullable  | Every insert relying on it would throw                                     |
+| A scale that is not a whole number of at least 0: `decimal('d', -2)`, `decimal('d', 1.5)`          | A scale counts decimal places                                              |
+| A column name that is blank or holds a dot or an arrow: `''`, `' '`, `'a.b'`, `'a->b'`             | A dot separates key path steps and qualifies joins, an arrow starts a path |
+| An index or key path over a name that is not a JavaScript identifier: `'first name'`, `'e-mail'`   | IndexedDB cannot read the name as a key path                               |
+
+```
+SchemaException: Index [users_admin_unique] of table [users] covers boolean column [admin], which
+IndexedDB never indexes, so the index would hold nothing.
+```
+
+A default is checked as a strict connection would write it, whichever connection runs the
+migration, since a loose connection would quietly write `null` or a rounded number into every row
+relying on it. So `decimal('price').default(19.99)` is refused, and `default(1999)` is what was
+meant. A name refused for a dot, an arrow or a blank is refused where it is declared, by the column
+method or by `renameColumn`. A name that is not an identifier, such as `'first name'`, stays
+allowed on a column nothing indexes. Indexes are checked against the table as the blueprint leaves
+it, so an index may be declared before its column in the same callback, while one over a column
+the same blueprint drops or renames away is refused. A compound index may include the key path.
+
+Only what a blueprint declares is checked. Columns and indexes a table already holds from an
+earlier migration are left as they are, so a database migrated before 6.0.0 keeps working, and a
+boolean index it holds is still carried through a rename of its column.
+
+Before 6.0.0 these definitions were accepted. A migration never runs twice, so a device that
+already ran one keeps what it built, but a fresh install runs every migration and now fails on it.
+Edit that migration in place so it declares what it meant, keeping its class name, or `name()`,
+since migrations are recorded by name. The edit reaches only new installs. On devices that already
+ran the migration:
+
+- **A default** the package now refuses fails every insert relying on it there too. Append a
+  migration that redeclares the column with `.change()` and a default it can store, which runs
+  the same on both kinds of device.
+- **An index over a missing or boolean column** holds nothing and does no harm. Leave it, and never
+  `dropIndex` it in a later migration, since new installs never had it.
+- **A nullable or boolean key path, or a scale**, cannot be changed afterwards, so it stays as it
+  was on those devices.
+- **A column name** differs between the two kinds of device, and a migration cannot tell them
+  apart. Append a migration that creates a table under the new names, copies the rows across with
+  `DB.table`, reading the value under either name, drops the old table and renames the new one.
 
 ## Multi-entry indexes serve whereJsonContains
 
@@ -89,6 +141,11 @@ column was declared, counts as filled. When one call adds several such columns, 
 each one some row would lack and counts the rows lacking any of them. A column dropped or renamed in
 the same blueprint frees its name, and a column added under that name starts empty, so the rows
 take its default or, without one, fail the migration.
+
+A row takes the default as the column stores it, so `table.integer('rank').default('2')` writes the
+number 2, while `getColumns` still reports the default as declared. Before 6.0.0 the rows took it
+as given, leaving the string `'2'` in an integer column, where the index sorts it after every
+number. Rows written that way stay as they are.
 
 Each `Schema.table` call is checked on its own, so a default given by a later call in the same
 migration comes too late. Declare the default with the column, or add it as nullable and make it
@@ -192,7 +249,10 @@ Three changes are refused with `SchemaException`:
 - **The scale of a decimal.** Stored values are whole numbers of the smallest unit, so 1999 at two
   places would silently read as 1.999 at three.
 
-Changing a column that does not exist throws `SchemaException`, as `dropColumn` does.
+Changing a column that does not exist throws `SchemaException`, as `dropColumn` does. A change is
+also checked as any declaration is, so it may not give the column a default it cannot store or an
+index over a boolean, as [Definitions IndexedDB cannot honor](#definitions-indexeddb-cannot-honor)
+lists. A default a change adds reaches the rows as the column stores it.
 
 > Modeled on Laravel's [Modifying Columns](https://laravel.com/docs/12.x/migrations#modifying-columns).
 
@@ -218,6 +278,9 @@ await Schema.create('products', (table: Blueprint): void => {
 
 await DB.table<Product>('products').insert({ name: 'Keyboard', price: 1999, weight: 1250 });
 ```
+
+The scale is a whole number of at least 0, so `table.decimal('stock', 0)` counts whole units, and
+`-2` or `1.5` throws `SchemaException` where it is declared.
 
 Writing a fractional value throws, because rounding it silently is how money goes missing:
 
@@ -275,7 +338,8 @@ non-nullable enumerated column still reports the problem as
 `NotNullConstraintViolationException`.
 
 Declaring one over an empty list throws `SchemaException` at migration time, since nothing could
-ever be written to it.
+ever be written to it, and so does a default outside its values, since every insert relying on it
+would throw.
 
 The list can come from a TypeScript string enum or an `as const` object instead, which keeps the
 values in one place and lets the compiler check them at the call site:

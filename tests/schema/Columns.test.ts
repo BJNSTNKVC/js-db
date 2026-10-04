@@ -63,6 +63,22 @@ describe('Blueprint.decimal', (): void => {
         expect(weight.places).toEqual(3);
     });
 
+    test.each([-2, 1.5, Number.NaN, Number.POSITIVE_INFINITY])('refuses a scale of [%s] where it is declared', (places: number): void => {
+        const blueprint: Blueprint = new Blueprint('items');
+
+        expect((): unknown => blueprint.decimal('price', places)).toThrow(
+            new SchemaException(`Column [price] of table [items] cannot have a scale of [${places}]. A scale counts decimal places, so it is a whole number of at least 0.`),
+        );
+    });
+
+    test.each([0, 400])('accepts a scale of [%s]', (places: number): void => {
+        const blueprint: Blueprint = new Blueprint('items');
+
+        blueprint.decimal('price', places);
+
+        expect(blueprint.toSchema().columns[0]?.places).toEqual(places);
+    });
+
     test('stores a whole number of the smallest unit', async (): Promise<void> => {
         await items().insert({ price: 1999, status: 'live' });
 

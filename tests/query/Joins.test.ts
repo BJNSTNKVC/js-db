@@ -1,6 +1,8 @@
 import { beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { Connection } from '../../src/database/Connection';
 import { Migration } from '../../src/migrations/Migration';
+import { Migrator } from '../../src/migrations/Migrator';
+import { Request } from '../../src/database/Request';
 import { Schema } from '../../src/schema/Schema';
 import { Blueprint } from '../../src/schema/Blueprint';
 import { Dispatcher } from '../../src/events/Dispatcher';
@@ -904,7 +906,11 @@ class AddOwnerToUsersTable extends Migration {
      */
     override async up(): Promise<void> {
         await Schema.table('users', (table: Blueprint): void => {
-            table.integer('owner').default('2');
+            table.integer('owner').default(2);
+        });
+
+        await Request.walk(Migrator.alive().transaction.objectStore('users').openCursor(), (cursor: IDBCursorWithValue): void => {
+            cursor.update({ ...cursor.value, owner: '2' });
         });
     }
 }
@@ -1054,7 +1060,7 @@ describe('Joins across the types the columns hold', (): void => {
         expect(await tested(paired('inner', ['users.id', 'posts.author']))).toEqual(16);
     });
 
-    test('matches a value a migration stored unconverted, though both columns are declared integers', async (): Promise<void> => {
+    test('matches a value a migration before 6.0.0 stored unconverted, though both columns are declared integers', async (): Promise<void> => {
         authored.disconnect();
 
         authored = new Connection('app', { database: `joins-authored-${databases}`, migrations: [CreateAuthoredTables, AddOwnerToUsersTable] });

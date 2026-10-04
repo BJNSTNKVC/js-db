@@ -1,12 +1,16 @@
 import { afterEach, beforeAll, describe, expect, test, vi } from 'vitest';
 import { Connection } from '../../src/database/Connection';
 import { Migration } from '../../src/migrations/Migration';
+import { Migrator } from '../../src/migrations/Migrator';
+import { Registry } from '../../src/schema/Registry';
 import { Schema } from '../../src/schema/Schema';
 import { Blueprint } from '../../src/schema/Blueprint';
 import { Dispatcher } from '../../src/events/Dispatcher';
 import { RecordsNotFoundException, SchemaException, TableNotFoundException } from '../../src/exceptions';
 import { Executor } from '../../src/query/Executor';
 import type { Builder } from '../../src/query/Builder';
+import type { MigrationContext } from '../../src/migrations/Migrator';
+import type { TableSchema } from '../../src/schema/types';
 import type { QueryExecuted } from '../../src/events';
 import type { MockInstance } from 'vitest';
 
@@ -55,6 +59,20 @@ class CreateUsersTable extends Migration {
     }
 }
 
+/**
+ * Give a table an index over one column past the blueprint, as a database migrated before 6.0.0 can hold over a boolean column.
+ */
+function grandfathered(table: string, column: string): void {
+    const context: MigrationContext = Migrator.alive();
+    const schema: TableSchema = context.schemas.get(table) as TableSchema;
+    const indexed: TableSchema = { ...schema, indexes: [...schema.indexes, { name: `${table}_${column}_index`, columns: [column], unique: false, multiEntry: false }] };
+
+    context.transaction.objectStore(table).createIndex(`${table}_${column}_index`, column);
+
+    Registry.put(context.transaction, indexed);
+    context.schemas.set(table, indexed);
+}
+
 class CreateRanksTables extends Migration {
     /**
      * Run the migration.
@@ -75,8 +93,10 @@ class CreateRanksTables extends Migration {
         await Schema.create('flags', (table: Blueprint): void => {
             table.id();
             table.string('name');
-            table.boolean('active').index();
+            table.boolean('active');
         });
+
+        grandfathered('flags', 'active');
     }
 }
 

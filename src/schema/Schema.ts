@@ -4,6 +4,7 @@ import { ReservedTableException, SchemaException, TableNotFoundException } from 
 import { Migrator } from '../migrations/Migrator';
 import { Repository } from '../migrations/Repository';
 import { Blueprint } from './Blueprint';
+import { Enforcer } from './Enforcer';
 import { Registry } from './Registry';
 import type { Connection } from '../database/Connection';
 import type { MigrationContext } from '../migrations/Migrator';
@@ -473,7 +474,7 @@ export class Schema {
 
         for (const column of operations.added) {
             if (column.hasDefault && (!Object.hasOwn(record, column.name) || (!column.nullable && this.#empty(record[column.name])))) {
-                record[column.name] = column.default;
+                record[column.name] = Enforcer.coerce(column.default, column.type, true);
             }
         }
 
@@ -487,7 +488,7 @@ export class Schema {
             const required: boolean = change.from.nullable && !change.to.nullable;
 
             if (!Object.hasOwn(record, change.to.name) || (required && this.#empty(record[change.to.name]))) {
-                record[change.to.name] = change.to.default;
+                record[change.to.name] = Enforcer.coerce(change.to.default, change.to.type, true);
             }
         }
 

@@ -440,7 +440,10 @@ Every write coerces the value it gives a declared column into that column's type
 extra columns of `increment` and `decrement` and the value they leave behind, and a declared
 default. A strict connection throws `TypeError` for a value its column cannot store faithfully. A
 loose connection writes `null` in its place, and a non-nullable column then holds `null` too, as it
-does for any missing value.
+does for any missing value. A declared default is checked against these rules, as a strict
+connection reads it, when its migration runs, so a default the column cannot store never reaches a
+write. [Definitions IndexedDB cannot honor](schema.md#definitions-indexeddb-cannot-honor) has the
+details.
 
 | Column type          | Accepts                                                                     | Stores                                                                  |
 |----------------------|-----------------------------------------------------------------------------|-------------------------------------------------------------------------|

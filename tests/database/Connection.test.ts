@@ -1464,8 +1464,15 @@ describe('Schema.table renamed and dropped columns', (): void => {
             await Schema.create('users', (table: Blueprint): void => {
                 table.id();
                 table.string('mail');
-                table.unique('email');
             });
+
+            const context: MigrationContext = Migrator.alive();
+            const stale: TableSchema = { ...context.schemas.get('users') as TableSchema, indexes: [{ name: 'users_email_unique', columns: ['email'], unique: true, multiEntry: false }] };
+
+            context.transaction.objectStore('users').createIndex('users_email_unique', 'email', { unique: true });
+
+            Registry.put(context.transaction, stale);
+            context.schemas.set('users', stale);
         });
 
         const RepairUsersTable: MigrationConstructor = migration('RepairUsersTable', async (): Promise<void> => {
@@ -1489,6 +1496,129 @@ describe('Schema.table renamed and dropped columns', (): void => {
         expect(await listed(connection)).toEqual(['users_mail_unique(mail) unique']);
         expect(await stored(connection)).toEqual(['users_mail_unique(mail) unique']);
         await expect(connection.table('users').insert({ mail: 'a@x' })).rejects.toBeInstanceOf(UniqueConstraintViolationException);
+    });
+});
+
+describe('Schema definitions IndexedDB cannot honor', (): void => {
+    const REFUSALS: [string, (table: Blueprint) => void, string][] = [
+        ['an index over a column the table lacks', (table: Blueprint): void => {
+            table.index('missing');
+        }, 'Index [users_missing_index] of table [users] covers column [missing], which the table does not have.'],
+        ['a compound unique index over a column the table lacks', (table: Blueprint): void => {
+            table.unique(['email', 'missing']);
+        }, 'Index [users_email_missing_unique] of table [users] covers column [missing], which the table does not have.'],
+        ['a unique boolean column', (table: Blueprint): void => {
+            table.boolean('admin').nullable().unique();
+        }, 'Index [users_admin_unique] of table [users] covers boolean column [admin], which IndexedDB never indexes, so the index would hold nothing.'],
+        ['an indexed boolean column', (table: Blueprint): void => {
+            table.boolean('admin').nullable().index();
+        }, 'Index [users_admin_index] of table [users] covers boolean column [admin], which IndexedDB never indexes, so the index would hold nothing.'],
+        ['a string default on an integer column', (table: Blueprint): void => {
+            table.integer('level').default('abc');
+        }, 'Column [level] of table [users] cannot default to [abc]: Unable to coerce [abc] into a number.'],
+        ['a fractional default on a decimal column', (table: Blueprint): void => {
+            table.decimal('price', 2).default(19.99);
+        }, 'Column [price] of table [users] cannot default to [19.99]: A decimal column stores a whole number of its smallest unit, so [19.99] cannot be written. Scale it first, as in Math.round(19.99 * 100).'],
+        ['an enum default outside its values', (table: Blueprint): void => {
+            table.enum('role', ['admin', 'member']).default('owner');
+        }, 'Column [role] of table [users] cannot default to [owner], which it does not accept. It accepts [admin, member].'],
+        ['a null default on a required column', (table: Blueprint): void => {
+            table.integer('level').default(null);
+        }, 'Column [level] of table [users] is not nullable, so it cannot default to null.'],
+        ['a negative scale', (table: Blueprint): void => {
+            table.decimal('price', -2);
+        }, 'Column [price] of table [users] cannot have a scale of [-2]. A scale counts decimal places, so it is a whole number of at least 0.'],
+        ['a column named with a dot', (table: Blueprint): void => {
+            table.string('a.b').nullable();
+        }, 'Column [a.b] of table [users] may not be named with a dot, which separates the steps of a key path and qualifies a column on a join.'],
+        ['a column named with an arrow', (table: Blueprint): void => {
+            table.string('a->b').nullable();
+        }, 'Column [a->b] of table [users] may not be named with an arrow, which starts a JSON path.'],
+        ['a column with an empty name', (table: Blueprint): void => {
+            table.string('').nullable();
+        }, 'Column [] of table [users] needs a name that is not blank.'],
+        ['an index over a column named with a space', (table: Blueprint): void => {
+            table.string('first name').nullable().index();
+        }, 'Index [users_first name_index] of table [users] covers column [first name], whose name IndexedDB cannot read as a key path. Name the column as a JavaScript identifier.'],
+    ];
+
+    test.each(REFUSALS)('refuses %s when creating a table, creating nothing', async (_name: string, callback: (table: Blueprint) => void, message: string): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+
+        const CreateUsersTable: MigrationConstructor = migration('CreateUsersTable', async (): Promise<void> => {
+            await Schema.create('users', (table: Blueprint): void => {
+                table.id();
+                table.string('email');
+                callback(table);
+            });
+        });
+
+        await expect(connect([CreateUsersTable], database).migrate()).rejects.toThrow(new SchemaException(message));
+
+        connections.splice(0).forEach((connection: Connection): void => connection.disconnect());
+
+        expect(await connect([], database).tables()).toEqual([]);
+    });
+
+    test.each([
+        ...REFUSALS,
+        ['a nullable primary column', (table: Blueprint): void => {
+            table.string('code').primary().nullable();
+        }, 'Column [code] of table [users] may not become the key path, because IndexedDB fixes it when the store is created.'],
+        ['a rename onto a name with a dot', (table: Blueprint): void => {
+            table.renameColumn('note', 'a.b');
+        }, 'Column [a.b] of table [users] may not be named with a dot, which separates the steps of a key path and qualifies a column on a join.'],
+        ['a change into a default the column cannot store', (table: Blueprint): void => {
+            table.string('note').nullable().default({}).change();
+        }, 'Column [note] of table [users] cannot default to [[object Object]]: Unable to coerce [[object Object]] into a string.'],
+    ] as [string, (table: Blueprint) => void, string][])('refuses %s when altering a table, leaving its rows alone', async (_name: string, callback: (table: Blueprint) => void, message: string): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+
+        await expect(altered([callback], { database })).rejects.toThrow(new SchemaException(message));
+
+        connections.splice(0).forEach((connection: Connection): void => connection.disconnect());
+
+        const restored: Connection = connect([CreateIndexedUsersTable], database);
+
+        expect(await listed(restored)).toEqual(before);
+        expect(await records(restored, 'users')).toEqual(people.map((person: Record<string, unknown>, position: number): Record<string, unknown> => ({ id: position + 1, ...person })));
+    });
+
+    test('refuses a primary column added to an empty keyless table', async (): Promise<void> => {
+        const CreateNotesTable: MigrationConstructor = migration('CreateNotesTable', async (): Promise<void> => {
+            await Schema.create('notes', (table: Blueprint): void => {
+                table.string('body');
+            });
+        });
+
+        const AddIdToNotesTable: MigrationConstructor = migration('AddIdToNotesTable', async (): Promise<void> => {
+            await Schema.table('notes', (table: Blueprint): void => {
+                table.id();
+            });
+        });
+
+        await expect(connect([CreateNotesTable, AddIdToNotesTable]).migrate()).rejects.toThrow(new SchemaException('Column [id] of table [notes] may not become the key path, because IndexedDB fixes it when the store is created.'));
+    });
+
+    test('backfills an added column with its default as the column stores it', async (): Promise<void> => {
+        const connection: Connection = await altered([(table: Blueprint): void => {
+            table.integer('rank').default('2');
+            table.datetime('seen').default('2024-01-15T10:30:00Z');
+        }]);
+
+        expect((await records(connection, 'users')).map((record: Record<string, unknown>): unknown[] => [record['rank'], record['seen']])).toEqual([
+            [2, new Date('2024-01-15T10:30:00Z')],
+            [2, new Date('2024-01-15T10:30:00Z')],
+        ]);
+        expect((await connection.getColumns('users')).find((column: ColumnSchema): boolean => column.name === 'rank')?.default).toEqual('2');
+    });
+
+    test('backfills a changed column with its default as the column stores it', async (): Promise<void> => {
+        const connection: Connection = await altered([(table: Blueprint): void => {
+            table.integer('age').nullable().default('30').change();
+        }], { rows: [{ email: 'a@x', name: 'Alice' }, { email: 'b@x', name: 'Bob', age: 40 }] });
+
+        expect((await records(connection, 'users')).map((record: Record<string, unknown>): unknown => record['age'])).toEqual([30, 40]);
     });
 });
 

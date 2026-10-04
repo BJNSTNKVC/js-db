@@ -33,6 +33,14 @@ true. All of them are exported from the package root.
 - adding a required column with no default inside `Schema.table` while some row would hold no
   value in it
 - declaring an enumerated column over an empty list of values
+- naming a column with a blank name, a dot or an arrow, in a column method or in `renameColumn`
+- declaring a decimal scale that is not a whole number of at least 0
+- declaring a default its column cannot store as a strict connection writes it, an enumerated
+  default outside its values, or a `null` or blank default on a column that is not nullable
+- declaring a key path that is nullable, a boolean or named other than as a JavaScript identifier,
+  or adding a `.primary()` column inside `Schema.table`
+- declaring an index over a column the table does not have once the blueprint is applied, over a
+  boolean column, or over a column whose name is not a JavaScript identifier
 - `upsert` whose conflict target is neither the key path nor a unique index
 - `update`, `upsert`, `increment` or `decrement` touching the key path
 - a qualified column naming a table the query does not join

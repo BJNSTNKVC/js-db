@@ -25,8 +25,9 @@ Each resolves to a description of the plan chosen:
   described below.
 - A non-nullable column can still lack values: a loose connection stores `null` where a required
   value is missing, a column added by `Schema.table` without a default before 4.0.0 left every row
-  already in the table without it, and an index on a boolean column holds nothing, since a boolean
-  is not a valid key. So before ordering through an index, the query compares the index's `count()`
+  already in the table without it, and an index on a boolean column, which a database migrated
+  before 6.0.0 can still hold, holds nothing, since a boolean is not a valid key. So before ordering
+  through an index, the query compares the index's `count()`
   with the table's, reading no records. When they differ, it sorts in memory instead, placing `null` and missing
   values first ascending and last descending, and the plan reads `'scan'`. Reads, `explain` and
   ordered writes all take this check, and `count`, `sum`, `avg`, `min` and `max` set the order
