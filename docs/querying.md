@@ -422,6 +422,25 @@ declares `timestamps()`, coerces declared column types as
 `NotNullConstraintViolationException` for an absent non-nullable column. On update, only
 `updated_at` is touched.
 
+`increment` and `decrement` leave a column holding `null`, or missing from the record, as it is,
+since SQL evaluates `visits + 1` over `NULL` as `NULL`. The record still takes the extra columns,
+`updated_at` is still touched, and it counts in the number returned. To count from zero, give the
+column a default of 0, so new rows start there, and fill the rows that already hold `null` once:
+
+```ts
+// In a migration, for new rows.
+await Schema.table('users', (table: Blueprint): void => {
+    table.integer('visits').nullable().default(0).change();
+});
+
+// Once, for the rows that already hold null.
+await DB.table<User>('users').whereNull('visits').update({ visits: 0 });
+```
+
+Declaring the column required with `.default(0).change()` fills those rows in the same migration
+instead, as [Changing columns](schema.md#changing-columns) describes. Before 9.0.0 `increment`
+turned a `null` into the amount.
+
 A violated unique index surfaces as `UniqueConstraintViolationException` naming the table and the
 index, rather than a bare `DOMException`, whether the write is an `insert`, an `update`, an `upsert`,
 an `increment` or a `decrement`. An `update`, `increment` or `decrement` that collides on any of the
@@ -449,7 +468,7 @@ when an index drives the query and key order otherwise. With `inRandomOrder()`, 
 
 Every write coerces the value it gives a declared column into that column's type: `insert`,
 `insertOrIgnore`, `insertGetId`, `update`, `updateOrInsert`, `upsert` and its conflict key, the
-extra columns of `increment` and `decrement` and the value they leave behind, and a declared
+extra columns of `increment` and `decrement` and the number they leave behind, and a declared
 default. A strict connection throws `TypeError` for a value its column cannot store faithfully. A
 loose connection writes `null` in its place, and a non-nullable column then holds `null` too, as it
 does for any missing value. A declared default is checked against these rules, as a strict
@@ -495,9 +514,10 @@ roll over into the next day or month. Any other form `new Date` reads, such as `
 column takes the same values as a `datetime` column, time of day included.
 
 `increment` and `decrement` throw `TypeError` on either connection for an amount that is not a
-finite number. The value they leave behind is coerced as an update coerces it, so
+finite number. The number they leave behind is coerced as an update coerces it, so
 `increment('visits', 0.5)` on an integer column throws when strict, writing none of the records,
-and rounds when loose.
+and rounds when loose. A column holding `null` is left as it is, so nothing is coerced there, and
+`increment('visits', 0.5)` leaves a `null` alone on either connection.
 
 A form handler can pass an empty optional field through as it is, since a blank string in a nullable
 number or date column is stored as `null`, or send `null` itself. It should check required fields

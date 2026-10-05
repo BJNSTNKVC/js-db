@@ -184,7 +184,8 @@ await DB.table('users')
 ```
 
 A row joined to several others is written once, so `increment` adds its amount once however many
-posts a user has. A row a right join keeps for the other table alone is skipped, since there is no
+posts a user has, and a row holding `null` in the column keeps it, as an `increment` without a join
+leaves it, counted once. A row a right join keeps for the other table alone is skipped, since there is no
 record of this table behind it.
 
 - **Only this table is written.** `update` takes its columns qualified or not, so `'users.active'`

@@ -959,14 +959,14 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Add the given amount to a column of every record matching the query.
+     * Add the given amount to a column of every record matching the query, leaving a column that holds null as it is.
      */
     async increment(column: Key<T>, amount: number = 1, extra: Partial<T> = {} as Partial<T>): Promise<number> {
         return this.#step(column, amount, extra);
     }
 
     /**
-     * Subtract the given amount from a column of every record matching the query.
+     * Subtract the given amount from a column of every record matching the query, leaving a column that holds null as it is.
      */
     async decrement(column: Key<T>, amount: number = 1, extra: Partial<T> = {} as Partial<T>): Promise<number> {
         return this.#step(column, -amount, extra);
@@ -987,7 +987,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Add the given amount to a column of every record matching the query.
+     * Add the given amount to a column of every record matching the query, leaving a column that holds null or nothing as it is.
      */
     async #step(column: Key<T>, amount: number, extra: Partial<T>): Promise<number> {
         const own: string = await this.#own(column);
@@ -1001,11 +1001,15 @@ export class Builder<T = Record<string, unknown>> {
         const timezone: string = this.#connection.timezone;
         const prepared: Record<string, unknown> = await this.#changes(extra);
 
-        return this.#executor().modify((record: Record<string, unknown>): Record<string, unknown> => ({
-            ...record,
-            ...prepared,
-            [own]: Enforcer.field(Number(record[own] ?? 0) + amount, own, schema, strict, timezone),
-        }), [own, ...Object.keys(prepared)]);
+        return this.#executor().modify((record: Record<string, unknown>): Record<string, unknown> => {
+            const held: unknown = record[own];
+
+            if (held === null || held === undefined) {
+                return { ...record, ...prepared };
+            }
+
+            return { ...record, ...prepared, [own]: Enforcer.field(Number(held) + amount, own, schema, strict, timezone) };
+        }, [own, ...Object.keys(prepared)]);
     }
 
     /**

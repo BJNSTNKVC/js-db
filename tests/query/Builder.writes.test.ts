@@ -464,7 +464,7 @@ describe('Builder increment and decrement', (): void => {
         expect(alice.role).toEqual('owner');
     });
 
-    test('treats an absent column as zero', async (): Promise<void> => {
+    test('steps a column holding zero', async (): Promise<void> => {
         await users().where('name', 'Alice').update({ visits: 0 });
         await users().where('name', 'Alice').increment('visits', 2);
 
@@ -662,6 +662,16 @@ describe('Builder ordered writes through an index that leaves records out', (): 
     test('updates the first record when the write changes the ordering column', async (): Promise<void> => {
         expect(await ranks().orderBy('rank').limit(1).update({ rank: 5 })).toEqual(1);
         expect(await ranks().pluck('rank')).toEqual([5, 1, 2]);
+    });
+
+    test('counts a record whose ordering column stays null among those an increment of it reaches', async (): Promise<void> => {
+        expect(await ranks().orderBy('rank').limit(2).increment('rank')).toEqual(2);
+        expect(await ranks().pluck('rank')).toEqual([null, 2, 2]);
+    });
+
+    test('leaves a record holding null out of a range on the column an increment of it walks', async (): Promise<void> => {
+        expect(await ranks().where('rank', '>=', 1).orderBy('rank').limit(1).increment('rank')).toEqual(1);
+        expect(await ranks().pluck('rank')).toEqual([null, 2, 2]);
     });
 
     test('deletes the first record in the requested order inside a transaction', async (): Promise<void> => {
@@ -1073,14 +1083,100 @@ describe('Builder writes through key path point lookups', (): void => {
 });
 
 describe('Builder increment on a null column', (): void => {
-    test('treats a null value as zero', async (): Promise<void> => {
+    const EPOCH: Date = new Date(0);
+
+    /**
+     * Write records to the users table past the package.
+     */
+    async function planted(records: Record<string, unknown>[]): Promise<void> {
+        const database: IDBDatabase = await connection.open();
+        const transaction: IDBTransaction = database.transaction('users', 'readwrite');
+
+        for (const record of records) {
+            transaction.objectStore('users').add(record);
+        }
+
+        await new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
+            transaction.oncomplete = (): void => resolve();
+            transaction.onerror = (): void => reject(transaction.error);
+        });
+    }
+
+    test('leaves a null value null', async (): Promise<void> => {
         await users().insert({ name: 'Alice', email: 'alice@example.com' });
 
         expect(await users().where('name', 'Alice').value('score')).toBeNull();
 
         await users().where('name', 'Alice').increment('score', 3);
 
-        expect(await users().where('name', 'Alice').value('score')).toEqual(3);
+        expect(await users().where('name', 'Alice').value('score')).toBeNull();
+    });
+
+    test('leaves a null value null on a decrement', async (): Promise<void> => {
+        await users().insert({ name: 'Alice', email: 'alice@example.com' });
+
+        expect(await users().decrement('score', 3)).toEqual(1);
+        expect(await users().value('score')).toBeNull();
+    });
+
+    test('applies the extra columns and touches updated_at while the column stays null', async (): Promise<void> => {
+        await users().insert({ name: 'Alice', email: 'alice@example.com', created_at: EPOCH, updated_at: EPOCH });
+
+        await users().increment('score', 1, { role: 'owner' });
+
+        const alice: User = await users().firstOrFail();
+
+        expect([alice.score, alice.role, alice.created_at]).toEqual([null, 'owner', EPOCH]);
+        expect(alice.updated_at?.getTime()).toBeGreaterThan(0);
+    });
+
+    test('steps a column holding a number beside one holding null, counting both', async (): Promise<void> => {
+        await users().insert([
+            { name: 'Alice', email: 'alice@example.com' },
+            { name: 'Bob', email: 'bob@example.com', score: 4 },
+        ]);
+
+        expect(await users().increment('score', 3)).toEqual(2);
+        expect(await users().orderBy('id').pluck('score')).toEqual([null, 7]);
+    });
+
+    test('leaves a column absent from the record absent', async (): Promise<void> => {
+        await planted([{ id: 1, name: 'Alice', email: 'alice@example.com', role: 'member', visits: 0, nickname: null, updated_at: EPOCH }]);
+
+        expect(await users().increment('score', 1, { role: 'owner' })).toEqual(1);
+
+        const alice: Record<string, unknown> = await users().firstOrFail() as unknown as Record<string, unknown>;
+
+        expect(Object.hasOwn(alice, 'score')).toEqual(false);
+        expect(alice.role).toEqual('owner');
+        expect((alice.updated_at as Date).getTime()).toBeGreaterThan(0);
+    });
+
+    test('leaves null in a required column without refusing the write', async (): Promise<void> => {
+        await planted([{ id: 1, name: 'Alice', email: 'alice@example.com', role: 'member', visits: null, nickname: null, score: null }]);
+
+        expect(await users().increment('visits', 1, { role: 'owner' })).toEqual(1);
+        expect(await users().firstOrFail()).toMatchObject({ visits: null, role: 'owner' });
+    });
+
+    test('leaves a null value null under a fractional amount', async (): Promise<void> => {
+        await users().insert({ name: 'Alice', email: 'alice@example.com' });
+
+        expect(await users().increment('score', 0.5)).toEqual(1);
+        expect(await users().value('score')).toBeNull();
+    });
+
+    test('still refuses an amount that is not a finite number on a null value', async (): Promise<void> => {
+        await users().insert({ name: 'Alice', email: 'alice@example.com' });
+
+        await expect(users().increment('score', Number.NaN)).rejects.toThrow(TypeError);
+    });
+
+    test('leaves a null value out of a unique index the other records step through', async (): Promise<void> => {
+        await connection.table('seats').insert([{ label: 'A', seat: null }, { label: 'B', seat: 5 }]);
+
+        expect(await connection.table('seats').increment('seat', 5)).toEqual(2);
+        expect(await connection.table('seats').orderBy('id').pluck('seat')).toEqual([null, 10]);
     });
 });
 
@@ -1506,5 +1602,19 @@ describe('Builder writes of values a loose connection cannot store faithfully', 
         await people().insert({ name: 'Alice', email: 'alice@example.com', visits: 5 });
 
         await expect(people().increment('visits', Number.NaN)).rejects.toThrow(TypeError);
+    });
+
+    test('leaves null in a nullable and a required column as null', async (): Promise<void> => {
+        await people().insert([
+            { name: 'Alice', email: 'alice@example.com', visits: '' as unknown as number },
+            { name: 'Bob', email: 'bob@example.com', visits: 4, score: 4 },
+        ]);
+
+        expect(await people().increment('visits', 1, { role: 'owner' })).toEqual(2);
+        expect(await people().decrement('score', 2)).toEqual(2);
+        expect(await people().orderBy('id').get()).toMatchObject([
+            { visits: null, score: null, role: 'owner' },
+            { visits: 5, score: 2, role: 'owner' },
+        ]);
     });
 });

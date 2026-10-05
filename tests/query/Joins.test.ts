@@ -492,6 +492,7 @@ interface Member {
     name: string;
     active: boolean;
     votes: number;
+    karma: number | null;
 }
 
 interface Note {
@@ -511,6 +512,7 @@ class CreateWritableTables extends Migration {
             table.string('name');
             table.boolean('active');
             table.integer('votes');
+            table.integer('karma').nullable();
         });
 
         await Schema.create('posts', (table: Blueprint): void => {
@@ -650,6 +652,16 @@ describe('Writing through a join', (): void => {
         await joined('inner').where('users.name', 'Alice').increment('votes', 5);
 
         expect(await named('votes', 5)).toEqual(['Alice']);
+    });
+
+    test('leaves a null column null on a base row joined twice, counting the row once', async (): Promise<void> => {
+        await members().where('name', 'Bob').update({ karma: 3 });
+
+        expect(await joined('left').increment('karma', 2, { active: true })).toEqual(2);
+        expect(await members().orderBy('id').get()).toMatchObject([
+            { name: 'Alice', karma: null, active: true },
+            { name: 'Bob', karma: 5, active: true },
+        ]);
     });
 
     test('deletes the base rows with no match through a left join', async (): Promise<void> => {
