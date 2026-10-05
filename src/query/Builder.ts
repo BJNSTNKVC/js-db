@@ -485,6 +485,7 @@ export class Builder<T = Record<string, unknown>> {
         records.#random = false;
         records.#limit = null;
         records.#offset = 0;
+        records.#distinct = false;
 
         return new Grouping<T, G>(
             async (read: string[]): Promise<Record<string, unknown>[]> => {
@@ -734,12 +735,16 @@ export class Builder<T = Record<string, unknown>> {
     async pluck<V = unknown>(column: Key<T>): Promise<V[]>;
     async pluck<V = unknown>(column: Key<T>, key: Key<T>): Promise<Record<string, V>>;
     async pluck<V = unknown>(column: Key<T>, key?: Key<T>): Promise<V[] | Record<string, V>> {
-        if (key === undefined && this.#qualifies([column])) {
-            return this.clone().select(`${column} as value`).pluck<V>('value');
-        }
+        const columns: string[] = key === undefined ? [column] : [column, key];
 
-        if (key !== undefined && this.#qualifies([column, key])) {
-            return this.clone().select(`${column} as value`, `${key} as key`).pluck<V>('value', 'key');
+        if (this.#distinct || this.#qualifies(columns)) {
+            const rows: Record<string, unknown>[] = await this.clone().select(key === undefined ? [`${column} as value`] : [`${column} as value`, `${key} as key`]).get() as Record<string, unknown>[];
+
+            if (key === undefined) {
+                return rows.map((row: Record<string, unknown>): V => row.value as V);
+            }
+
+            return Object.fromEntries(rows.map((row: Record<string, unknown>): [string, V] => [String(row.key), row.value as V]));
         }
 
         const records: Record<string, unknown>[] = await this.#executor().records() as Record<string, unknown>[];
@@ -849,10 +854,11 @@ export class Builder<T = Record<string, unknown>> {
         }
 
         const keys: IDBValidKey[] = await executor.keys();
+        const once: (rows: T[]) => T[] = await executor.once();
         let page: number = 0;
 
         for (let index: number = 0; index < keys.length; index += size) {
-            const records: T[] = await executor.fetch(keys.slice(index, index + size));
+            const records: T[] = once(executor.shape(await executor.fetch(keys.slice(index, index + size))));
 
             // Every record on a page may have stopped matching since the keys were taken. A callback
             // never receives an empty page, so the page number counts only the pages delivered.
@@ -860,7 +866,7 @@ export class Builder<T = Record<string, unknown>> {
                 continue;
             }
 
-            if (await callback(executor.shape(records), ++page) === false) {
+            if (await callback(records, ++page) === false) {
                 return false;
             }
         }
@@ -885,11 +891,12 @@ export class Builder<T = Record<string, unknown>> {
         }
 
         const keys: IDBValidKey[] = await executor.keys();
+        const once: (rows: T[]) => T[] = await executor.once();
 
         // Only the keys are held for the whole walk. Each page of records is fetched when the caller
         // reaches it, and released once consumed.
         for (let index: number = 0; index < keys.length; index += size) {
-            yield* executor.shape(await executor.fetch(keys.slice(index, index + size)));
+            yield* once(executor.shape(await executor.fetch(keys.slice(index, index + size))));
         }
     }
 

@@ -163,6 +163,19 @@ await DB.table('users').leftJoin('posts', 'users.id', '=', 'posts.user_id').coun
 Like `paginate`'s total and every other aggregate, the count takes every row the join and its
 `where` clauses keep, whatever the `limit`, `offset` and order. `explain` on a joined query returns `'join'`, the plan it runs under.
 
+`distinct` removes duplicate joined rows, after `select` has flattened them, before `limit` and
+`offset` apply. `count` and `paginate` then count the distinct rows, `pluck` returns each value once,
+and `chunk`, `lazy` and `each` deliver each distinct row once:
+
+```ts
+// Alice wrote two posts and Bob one.
+await DB.table('users').join('posts', 'users.id', '=', 'posts.user_id').select('users.name').distinct().count();
+```
+
+```
+2
+```
+
 ## Writing through a join
 
 `update`, `delete`, `increment` and `decrement` on a joined query write to the rows of this table

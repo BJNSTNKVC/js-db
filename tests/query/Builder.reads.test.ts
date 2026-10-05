@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { Connection } from '../../src/database/Connection';
 import { Migration } from '../../src/migrations/Migration';
 import { Migrator } from '../../src/migrations/Migrator';
@@ -6,7 +6,7 @@ import { Registry } from '../../src/schema/Registry';
 import { Schema } from '../../src/schema/Schema';
 import { Blueprint } from '../../src/schema/Blueprint';
 import { Dispatcher } from '../../src/events/Dispatcher';
-import { RecordsNotFoundException, SchemaException, TableNotFoundException } from '../../src/exceptions';
+import { MultipleRecordsFoundException, RecordsNotFoundException, SchemaException, TableNotFoundException } from '../../src/exceptions';
 import { Executor } from '../../src/query/Executor';
 import type { Builder } from '../../src/query/Builder';
 import type { MigrationContext } from '../../src/migrations/Migrator';
@@ -110,6 +110,44 @@ class AddTierToRanksTable extends Migration {
         });
     }
 }
+
+class CreateMembersTables extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        await Schema.create('members', (table: Blueprint): void => {
+            table.id();
+            table.string('name');
+            table.string('role');
+            table.integer('visits').index();
+            table.json('meta').nullable();
+            table.datetime('seen').nullable();
+        });
+
+        await Schema.create('words', (table: Blueprint): void => {
+            table.string('word');
+        });
+    }
+}
+
+interface Member {
+    id: number;
+    name: string;
+    role: string;
+    visits: number;
+    meta: unknown;
+    seen: Date | null;
+}
+
+const members: Omit<Member, 'id'>[] = [
+    { name: 'u0', role: 'a', visits: 5, meta: { x: 1, y: 2 }, seen: new Date('2024-01-15T00:00:00.000Z') },
+    { name: 'u1', role: 'a', visits: 5, meta: { y: 2, x: 1 }, seen: new Date('2024-01-15T00:00:00.000Z') },
+    { name: 'u2', role: 'a', visits: 3, meta: { x: 1 }, seen: new Date('2024-02-01T00:00:00.000Z') },
+    { name: 'u3', role: 'b', visits: 3, meta: { x: 1 }, seen: new Date('2024-02-01T00:00:00.000Z') },
+    { name: 'u4', role: 'b', visits: 3, meta: [1, 2], seen: null },
+    { name: 'u5', role: 'c', visits: 1, meta: [2, 1], seen: null },
+];
 
 interface Named {
     id: number;
@@ -1359,5 +1397,241 @@ describe('Builder.whereAny, whereAll and whereNone', (): void => {
     test('keeps its comparisons inside the group', async (): Promise<void> => {
         // Were the or to leak out of the group, the email of Alice, who is no member, would match.
         expect(await names(users().where('role', 'member').whereAny(['name', 'email'], 'like', 'a%'))).toEqual([]);
+    });
+});
+
+describe('Builder distinct', (): void => {
+    let distinct: Connection;
+
+    /**
+     * Begin a query against the members table.
+     */
+    function table(): Builder<Member> {
+        return distinct.table<Member>('members');
+    }
+
+    /**
+     * Begin a query for the distinct roles of the members.
+     */
+    function roles(): Builder<Member> {
+        return table().select('role').distinct();
+    }
+
+    /**
+     * Run a query, collecting the events it announces.
+     */
+    async function announced(run: () => Promise<unknown>): Promise<QueryExecuted[]> {
+        const seen: QueryExecuted[] = [];
+        const listener: (event: Event) => void = ((event: QueryExecuted): void => {
+            seen.push(event);
+        }) as (event: Event) => void;
+
+        Dispatcher.listen('db:query', listener);
+
+        try {
+            await run();
+        } finally {
+            Dispatcher.forget('db:query', listener);
+        }
+
+        return seen;
+    }
+
+    beforeAll(async (): Promise<void> => {
+        distinct = new Connection('app', { database: 'builder-reads-distinct', migrations: [CreateMembersTables] });
+
+        await distinct.migrate();
+    });
+
+    beforeEach(async (): Promise<void> => {
+        await table().truncate();
+        await table().insert(members);
+        await distinct.table('words').truncate();
+        await distinct.table('words').insert([{ word: 'x' }, { word: 'x' }, { word: 'y' }]);
+    });
+
+    test('removes duplicates before the limit', async (): Promise<void> => {
+        expect(await roles().limit(2).get()).toEqual([{ role: 'a' }, { role: 'b' }]);
+    });
+
+    test('removes duplicates before the offset', async (): Promise<void> => {
+        expect(await roles().offset(1).get()).toEqual([{ role: 'b' }, { role: 'c' }]);
+    });
+
+    test('removes duplicates before the offset and the limit together', async (): Promise<void> => {
+        expect(await roles().offset(1).limit(1).get()).toEqual([{ role: 'b' }]);
+    });
+
+    test('returns nothing under a limit of 0', async (): Promise<void> => {
+        expect(await roles().limit(0).get()).toEqual([]);
+    });
+
+    test('returns nothing for an offset past every distinct row', async (): Promise<void> => {
+        expect(await roles().offset(3).get()).toEqual([]);
+    });
+
+    test('keeps the first row of each value in the order the query asks for', async (): Promise<void> => {
+        expect(await roles().orderBy('name', 'desc').get()).toEqual([{ role: 'c' }, { role: 'b' }, { role: 'a' }]);
+    });
+
+    test('fills an ordered limit walked through an index with distinct rows', async (): Promise<void> => {
+        expect(await roles().orderBy('visits', 'desc').explain()).toEqual('index:members_visits_index');
+        expect(await roles().orderBy('visits', 'desc').limit(2).get()).toEqual([{ role: 'a' }, { role: 'b' }]);
+    });
+
+    test('fills a random limit with distinct rows', async (): Promise<void> => {
+        for (let attempt: number = 0; attempt < 20; attempt++) {
+            const rows: Member[] = await roles().inRandomOrder().limit(2).get();
+
+            expect(new Set(rows.map((row: Member): string => row.role)).size).toEqual(2);
+        }
+    });
+
+    test('counts the distinct rows', async (): Promise<void> => {
+        expect(await roles().count()).toEqual(3);
+        expect(await roles().where('visits', '>=', 3).count()).toEqual(2);
+        expect(await roles().limit(1).offset(5).count()).toEqual(3);
+    });
+
+    test('pages through the distinct rows without repeating one', async (): Promise<void> => {
+        expect(await roles().paginate(1, 2)).toEqual({ data: [{ role: 'a' }, { role: 'b' }], total: 3, perPage: 2, currentPage: 1, lastPage: 2 });
+        expect((await roles().paginate(2, 2)).data).toEqual([{ role: 'c' }]);
+        expect((await roles().paginate(3, 2)).data).toEqual([]);
+    });
+
+    test('plucks the distinct values of a column', async (): Promise<void> => {
+        expect(await roles().pluck('role')).toEqual(['a', 'b', 'c']);
+        expect(await table().distinct().pluck('role')).toEqual(['a', 'b', 'c']);
+        expect(await table().select('name').distinct().pluck('role')).toEqual(['a', 'b', 'c']);
+    });
+
+    test('plucks the distinct pairs of a column and a key', async (): Promise<void> => {
+        expect(await table().distinct().pluck('visits', 'role')).toEqual({ a: 3, b: 3, c: 1 });
+    });
+
+    test('reads the first distinct row for value, first and exists', async (): Promise<void> => {
+        expect(await roles().value('role')).toEqual('a');
+        expect(await roles().first()).toEqual({ role: 'a' });
+        expect(await roles().exists()).toEqual(true);
+    });
+
+    test('finds more than one distinct row for sole', async (): Promise<void> => {
+        expect(await roles().where('visits', 5).sole()).toEqual({ role: 'a' });
+        await expect(roles().where('visits', '>=', 3).orderBy('name').sole()).rejects.toBeInstanceOf(MultipleRecordsFoundException);
+    });
+
+    test('sums and averages the distinct values of a column', async (): Promise<void> => {
+        expect(await table().distinct().sum('visits')).toEqual(9);
+        expect(await table().distinct().avg('visits')).toEqual(3);
+        expect(await roles().sum('visits')).toEqual(9);
+        expect(await roles().avg('visits')).toEqual(3);
+    });
+
+    test('sums each value once as distinct compares it, keeping a number apart from its string', async (): Promise<void> => {
+        await distinct.table('words').insert([{ word: 'n', weight: 5 }, { word: 'n', weight: '5' }, { word: 'n', weight: 5 }]);
+
+        expect(await distinct.table('words').where('word', 'n').distinct().sum('weight')).toEqual(10);
+        expect(await distinct.table('words').where('word', 'n').distinct().pluck('weight')).toEqual([5, '5']);
+    });
+
+    test('takes the least and the greatest value whether or not it is distinct', async (): Promise<void> => {
+        expect([await roles().min('visits'), await roles().max('visits')]).toEqual([1, 5]);
+        expect([await roles().where('visits', '>', 1).min('visits'), await roles().where('visits', '>', 1).max('visits')]).toEqual([3, 5]);
+    });
+
+    test('chunks the distinct rows', async (): Promise<void> => {
+        const pages: Member[][] = [];
+
+        await roles().chunk(2, (records: Member[]): void => {
+            pages.push(records);
+        });
+
+        expect(pages).toEqual([[{ role: 'a' }, { role: 'b' }], [{ role: 'c' }]]);
+    });
+
+    test('walks the distinct rows lazily across several pages', async (): Promise<void> => {
+        const rows: Member[] = [];
+
+        for await (const row of roles().lazy(1)) {
+            rows.push(row);
+        }
+
+        expect(rows).toEqual([{ role: 'a' }, { role: 'b' }, { role: 'c' }]);
+    });
+
+    test('walks the distinct rows one at a time', async (): Promise<void> => {
+        const seen: [string, number][] = [];
+
+        await roles().each((row: Member, index: number): void => {
+            seen.push([row.role, index]);
+        });
+
+        expect(seen).toEqual([['a', 0], ['b', 1], ['c', 2]]);
+    });
+
+    test('never delivers a row twice when a chunk callback makes a later row repeat it', async (): Promise<void> => {
+        const pages: [Member[], number][] = [];
+
+        await roles().orderBy('name').chunk(1, async (records: Member[], page: number): Promise<void> => {
+            pages.push([records, page]);
+
+            if (page === 1) {
+                await table().where('name', 'u3').update({ role: 'a' });
+            }
+        });
+
+        expect(pages).toEqual([[[{ role: 'a' }], 1], [[{ role: 'c' }], 2]]);
+    });
+
+    test('removes duplicates by the value a JSON column holds', async (): Promise<void> => {
+        const metas: Builder<Member> = table().select('meta').distinct();
+
+        expect(await metas.clone().count()).toEqual(4);
+        expect(await metas.clone().offset(1).limit(2).get()).toEqual([{ meta: { x: 1 } }, { meta: [1, 2] }]);
+        expect(await table().distinct().pluck('meta')).toEqual([{ x: 1, y: 2 }, { x: 1 }, [1, 2], [2, 1]]);
+    });
+
+    test('removes duplicates by the moment a date column holds', async (): Promise<void> => {
+        const seen: Builder<Member> = table().select('seen').distinct();
+
+        expect(await seen.clone().count()).toEqual(3);
+        expect(await seen.clone().limit(2).get()).toEqual([{ seen: new Date('2024-01-15T00:00:00.000Z') }, { seen: new Date('2024-02-01T00:00:00.000Z') }]);
+        expect(await table().distinct().pluck('seen')).toEqual([new Date('2024-01-15T00:00:00.000Z'), new Date('2024-02-01T00:00:00.000Z'), null]);
+    });
+
+    test('changes nothing without a select on a table with a key', async (): Promise<void> => {
+        const pages: number[] = [];
+
+        await table().distinct().chunk(4, (records: Member[]): void => {
+            pages.push(records.length);
+        });
+
+        expect(await table().distinct().get()).toHaveLength(6);
+        expect(await table().distinct().count()).toEqual(6);
+        expect(pages).toEqual([4, 2]);
+    });
+
+    test('removes identical records without a select on a table without a key', async (): Promise<void> => {
+        const words: Builder<{ word: string }> = distinct.table<{ word: string }>('words').distinct();
+
+        expect(await words.clone().get()).toEqual([{ word: 'x' }, { word: 'y' }]);
+        expect(await words.clone().count()).toEqual(2);
+        expect((await words.clone().paginate(1, 1)).total).toEqual(2);
+    });
+
+    test('counts every member of a group whatever distinct says', async (): Promise<void> => {
+        expect(await roles().groupBy('role').aggregate({ total: { count: '*' } }).get()).toEqual([
+            { role: 'a', total: 3 },
+            { role: 'b', total: 2 },
+            { role: 'c', total: 1 },
+        ]);
+    });
+
+    test('reports the distinct rows it returns and counts', async (): Promise<void> => {
+        const paged: QueryExecuted[] = await announced((): Promise<unknown> => roles().offset(1).get());
+        const counted: QueryExecuted[] = await announced((): Promise<unknown> => roles().count());
+
+        expect(paged.map((event: QueryExecuted): number => event.records)).toEqual([2]);
+        expect(counted.map((event: QueryExecuted): number => event.records)).toEqual([3]);
     });
 });

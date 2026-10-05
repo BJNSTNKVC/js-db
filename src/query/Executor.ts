@@ -125,7 +125,7 @@ export class Executor<T> {
         const schema: TableSchema = await this.#connection.schema(this.#query.table);
         const plan: Plan = Planner.plan(this.#prepared(schema), [], schema);
 
-        if (plan.residual.length > 0 || plan.values !== null) {
+        if (plan.residual.length > 0 || plan.values !== null || this.#deduplicates(schema, this.#query.distinct)) {
             return (await this.records()).length;
         }
 
@@ -140,15 +140,20 @@ export class Executor<T> {
     }
 
     /**
-     * Get the numeric values of a column across the records matching the query.
+     * Get the numeric values of a column across the records matching the query, each value once when the query is distinct.
      */
     async numbers(column: string): Promise<number[]> {
-        const records: Record<string, unknown>[] = await this.records() as Record<string, unknown>[];
+        const records: Record<string, unknown>[] = (await this.#matched(false)).records as Record<string, unknown>[];
 
-        return records
+        const held: unknown[] = records
             .map((record: Record<string, unknown>): unknown => record[column])
-            .filter((value: unknown): boolean => value !== null && value !== undefined)
-            .map((value: unknown): number => Number(value));
+            .filter((value: unknown): boolean => value !== null && value !== undefined);
+
+        const values: unknown[] = this.#query.distinct
+            ? [...new Map<string, unknown>(held.map((value: unknown): [string, unknown] => [Signature.value(value), value])).values()]
+            : held;
+
+        return values.map((value: unknown): number => Number(value));
     }
 
     /**
@@ -363,30 +368,53 @@ export class Executor<T> {
     }
 
     /**
-     * Project and deduplicate the records the query returns.
+     * Project the records the query returns.
      */
     shape(records: T[]): T[] {
+        return records.map((record: T): T => this.#projected(record));
+    }
+
+    /**
+     * Get a filter that, across every page it is given, lets each row of a distinct query through once.
+     */
+    async once(): Promise<(rows: T[]) => T[]> {
+        if (!this.#deduplicates(await this.#connection.schema(this.#query.table), this.#query.distinct)) {
+            return (rows: T[]): T[] => rows;
+        }
+
+        const fresh: (row: Record<string, unknown>) => boolean = this.#fresh();
+
+        return (rows: T[]): T[] => rows.filter((row: T): boolean => fresh(row as Record<string, unknown>));
+    }
+
+    /**
+     * Project a record onto the selected columns.
+     */
+    #projected(record: T): T {
         const columns: readonly string[] | null = this.#query.columns;
 
         // A joined query has already projected, since only there can a column need qualifying.
-        const projected: T[] = columns === null || this.#query.joins.length > 0
-            ? records
-            : records.map((record: T): T => Object.fromEntries(
-                columns.map((expression: string): [string, unknown] => {
-                    const projection: Projection = Columns.parse(expression);
-
-                    return [projection.alias, Columns.read(record as Record<string, unknown>, projection.column)];
-                }),
-            ) as T);
-
-        if (!this.#query.distinct) {
-            return projected;
+        if (columns === null || this.#query.joins.length > 0) {
+            return record;
         }
 
+        return Object.fromEntries(
+            columns.map((expression: string): [string, unknown] => {
+                const projection: Projection = Columns.parse(expression);
+
+                return [projection.alias, Columns.read(record as Record<string, unknown>, projection.column)];
+            }),
+        ) as T;
+    }
+
+    /**
+     * Get a check that passes the first row of each signature it is shown and fails every later one.
+     */
+    #fresh(): (row: Record<string, unknown>) => boolean {
         const seen: Set<string> = new Set<string>();
 
-        return projected.filter((record: T): boolean => {
-            const signature: string = Signature.of(record as Record<string, unknown>);
+        return (row: Record<string, unknown>): boolean => {
+            const signature: string = Signature.of(row);
 
             if (seen.has(signature)) {
                 return false;
@@ -395,7 +423,14 @@ export class Executor<T> {
             seen.add(signature);
 
             return true;
-        });
+        };
+    }
+
+    /**
+     * Determine whether a distinct read of this table can find two records alike, which it cannot when it projects nothing away from records that each hold their key.
+     */
+    #deduplicates(schema: TableSchema, distinct: boolean): boolean {
+        return distinct && (this.#query.columns !== null || schema.key === null);
     }
 
     /**
@@ -461,11 +496,11 @@ export class Executor<T> {
     }
 
     /**
-     * Run the query, collecting the matching records and their keys.
+     * Run the query, collecting the matching records and their keys, only the first record of each distinct row when told to.
      */
-    async #matched(): Promise<{ records: T[]; keys: IDBValidKey[] }> {
+    async #matched(distinct: boolean = this.#query.distinct): Promise<{ records: T[]; keys: IDBValidKey[] }> {
         if (this.#query.joins.length > 0) {
-            const rows: Record<string, unknown>[] = await this.#joined();
+            const rows: Record<string, unknown>[] = await this.#joined(distinct);
 
             return { records: rows as T[], keys: [] };
         }
@@ -475,13 +510,20 @@ export class Executor<T> {
         const started: number = performance.now();
         const plan: Plan = await this.#planned(schema, store);
         const matches: (record: Record<string, unknown>) => boolean = Predicate.compile(plan.residual);
+        const first: ((row: Record<string, unknown>) => boolean) | null = this.#deduplicates(schema, distinct) ? this.#fresh() : null;
+        const fresh: ((record: T) => boolean) | null = first === null ? null : (record: T): boolean => first(this.#projected(record) as Record<string, unknown>);
 
         const collected: Entry<T>[] = plan.values === null
-            ? await this.#cursored(store, plan, matches)
+            ? await this.#cursored(store, plan, matches, plan.ordered ? fresh : null)
             : await this.#points(store, plan, matches);
 
         const ordered: Entry<T>[] = plan.ordered ? collected : this.#sorted(collected);
-        const paged: Entry<T>[] = this.#paged(ordered);
+
+        const unique: Entry<T>[] = fresh === null || plan.ordered
+            ? ordered
+            : ordered.filter((entry: Entry<T>): boolean => fresh(entry.record));
+
+        const paged: Entry<T>[] = this.#paged(unique);
 
         this.#emit(Planner.describe(plan), started, paged.length);
 
@@ -522,15 +564,15 @@ export class Executor<T> {
     }
 
     /**
-     * Collect the records a cursor over the planned source yields.
+     * Collect the records a cursor over the planned source yields, only those the fresh check passes when there is one.
      */
-    async #cursored(store: IDBObjectStore, plan: Plan, matches: (record: Record<string, unknown>) => boolean): Promise<Entry<T>[]> {
+    async #cursored(store: IDBObjectStore, plan: Plan, matches: (record: Record<string, unknown>) => boolean, fresh: ((record: T) => boolean) | null = null): Promise<Entry<T>[]> {
         const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index);
         const collected: Entry<T>[] = [];
         const ceiling: number | null = plan.ordered && this.#query.limit !== null ? this.#query.offset + this.#query.limit : null;
 
         await Request.walk(source.openCursor(plan.range, plan.direction), (cursor: IDBCursorWithValue): boolean => {
-            if (matches(cursor.value as Record<string, unknown>)) {
+            if (matches(cursor.value as Record<string, unknown>) && (fresh === null || fresh(cursor.value as T))) {
                 collected.push({ record: cursor.value as T, key: cursor.primaryKey });
             }
 
@@ -693,9 +735,9 @@ export class Executor<T> {
     }
 
     /**
-     * Run the joins, returning rows whose keys are all qualified by table.
+     * Run the joins, returning flat rows, only the first of each distinct row when told to.
      */
-    async #joined(): Promise<Record<string, unknown>[]> {
+    async #joined(distinct: boolean): Promise<Record<string, unknown>[]> {
         const tables: Map<string, string[]> = await this.#tables();
         const constraints: Constraint[] = await this.#qualified(tables);
         const stores: (table: string) => IDBObjectStore = await this.#stores([...tables.keys()], 'readonly');
@@ -706,17 +748,23 @@ export class Executor<T> {
         const sorted: Row[] = this.#query.random
             ? this.#shuffled(kept)
             : Comparator.sort(kept, orders, (row: Row, column: string): unknown => Columns.read(row, column));
-        const paged: Row[] = this.#paged(sorted);
+        const rows: Record<string, unknown>[] = distinct
+            ? this.#paged(Joiner.flatten(sorted, tables, this.#query.columns).filter(this.#fresh()))
+            : Joiner.flatten(this.#paged(sorted), tables, this.#query.columns);
 
-        this.#emit('join', started, paged.length);
+        this.#emit('join', started, rows.length);
 
-        return Joiner.flatten(paged, tables, this.#query.columns);
+        return rows;
     }
 
     /**
      * Count the rows the joins and the constraints keep, whatever the paging.
      */
     async #tally(): Promise<number> {
+        if (this.#query.distinct) {
+            return (await this.#joined(true)).length;
+        }
+
         const tables: Map<string, string[]> = await this.#tables();
         const constraints: Constraint[] = await this.#qualified(tables);
         const stores: (table: string) => IDBObjectStore = await this.#stores([...tables.keys()], 'readonly');

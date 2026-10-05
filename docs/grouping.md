@@ -45,7 +45,9 @@ await DB.table<User>('users').groupBy('team', 'role').aggregate({ total: { count
 ```
 
 `aggregate()` is optional. Grouping with nothing aggregated gives you one row per distinct
-combination, which is what `distinct()` does over the same columns.
+combination, which is what `distinct()` does over the same columns. Calling `distinct()` on the
+query you group changes nothing, since every group is already distinct, and each aggregate still
+sees every record of its group.
 
 A JSON column groups by content, comparing values the way `distinct()` does, as described in
 [Querying](querying.md#shaping). Objects holding the same keys and values fall into one group in

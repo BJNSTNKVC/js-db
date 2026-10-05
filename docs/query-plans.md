@@ -20,9 +20,9 @@ Each resolves to a description of the plan chosen:
 - One index only. IndexedDB has no index intersection, so the planner picks the most selective
   candidate: the key path, then a unique index, then a plain index.
 - `orderBy` on a single indexed, **non-nullable** column cursors that index, which lets `limit`
-  short-circuit the scan. Nullable columns are excluded because an IndexedDB index drops records
-  with no value for its key path, which would silently lose rows, and so are multi-entry indexes,
-  described below.
+  short-circuit the scan, on a `distinct` query once it has met enough distinct rows. Nullable
+  columns are excluded because an IndexedDB index drops records with no value for its key path,
+  which would silently lose rows, and so are multi-entry indexes, described below.
 - A non-nullable column can still lack values: a loose connection stores `null` where a required
   value is missing, a column added by `Schema.table` without a default before 4.0.0 left every row
   already in the table without it, and an index on a boolean column, which a database migrated
@@ -68,7 +68,8 @@ Each resolves to a description of the plan chosen:
   an index on its column can serve. `whereYear`, `whereMonth`, `whereDay` and `whereTime` never
   drive the query.
 - `count()` with no residual constraints uses `count()` on the store or index, reading no records,
-  unless the query joins.
+  unless the query joins, or is `distinct` and either selects columns or reads a table without a key
+  column, when it reads the records to count the distinct rows.
 - A joined query reads every table it joins in full and runs the join in memory, so no index takes
   part. `explain()` on one returns `'join'`, the plan the `QueryExecuted` event reports for it, and
   `count()` counts the joined rows.

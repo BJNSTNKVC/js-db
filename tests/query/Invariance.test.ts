@@ -86,6 +86,8 @@ type Shaping = <T extends Item>(query: Builder<T>) => Builder<T>;
 
 type Shape = [string, Shaping];
 
+type Arrangement = 'natural' | 'visits' | 'visits desc';
+
 type Scope = [string, (query: Builder<Weighed>) => Builder<Weighed>, (row: Weighed) => boolean];
 
 type Listing = [string, (query: Builder<Tagged>) => Builder<Tagged>, (row: Tagged) => Truth];
@@ -257,6 +259,15 @@ const SHAPES: Shape[] = [
     ['orderBy(\'visits\', \'desc\').limit(2)', <T extends Item>(query: Builder<T>): Builder<T> => query.orderBy('visits', 'desc').limit(2)],
     ['inRandomOrder().limit(2)', <T extends Item>(query: Builder<T>): Builder<T> => query.inRandomOrder().limit(2)],
 ];
+
+const DISTINCT_PAGES: Record<string, [Arrangement, Page]> = {
+    'limit(2)'                              : ['natural', [0, 2]],
+    'limit(1)'                              : ['natural', [0, 1]],
+    'offset(1)'                             : ['natural', [1, null]],
+    'offset(9)'                             : ['natural', [9, null]],
+    'offset(1).limit(2)'                    : ['natural', [1, 2]],
+    'orderBy(\'visits\', \'desc\').limit(2)': ['visits desc', [0, 2]],
+};
 
 const SCOPES: Scope[] = [
     ['every row', (query: Builder<Weighed>): Builder<Weighed> => query, (): boolean => true],
@@ -676,6 +687,29 @@ function paged<R>(rows: R[], [offset, limit]: Page): R[] {
 }
 
 /**
+ * Get the distinct roles the reference model pages out of a copy, read in the order the copy holds its rows unless arranged by visits.
+ */
+function deduplicated([arrangement, page]: [Arrangement, Page], copy: Copy): Pick<Item, 'role'>[] {
+    const natural: Item[] = copy === 'indexed' ? sorted(ROWS) : ROWS;
+    const arranged: Item[] = arrangement === 'natural'
+        ? natural
+        : [...natural].sort((a: Item, b: Item): number => arrangement === 'visits' ? a.visits - b.visits : b.visits - a.visits);
+    const seen: Set<string | null> = new Set<string | null>();
+
+    const unique: Item[] = arranged.filter((row: Item): boolean => {
+        if (seen.has(row.role)) {
+            return false;
+        }
+
+        seen.add(row.role);
+
+        return true;
+    });
+
+    return paged(unique, page).map((row: Item): Pick<Item, 'role'> => ({ role: row.role }));
+}
+
+/**
  * Order a query and apply an offset and a limit to it.
  */
 function arranged<T extends Item>(query: Builder<T>, column: Ranking, direction: Direction, [offset, limit]: Page): Builder<T> {
@@ -1041,5 +1075,37 @@ describe('counting through a join', (): void => {
 
             expect(answers).toEqual({ indexed: expected, plain: expected });
         });
+    });
+});
+
+describe('distinct over a projection', (): void => {
+    const roles: Set<string | null> = new Set(ROWS.map((row: Item): string | null => row.role));
+
+    test.each(SHAPES)('select(\'role\').distinct() under %s gives the same rows and count through an index, through a scan and from the model', async (name: string, shape: Shaping): Promise<void> => {
+        const answers: Record<Copy, { rows: Item[]; count: number }> = await both(async (query: Builder<Item>): Promise<{ rows: Item[]; count: number }> => {
+            const unique: Builder<Item> = shape(query.select('role').distinct());
+
+            return { rows: await unique.clone().get(), count: await unique.clone().count() };
+        });
+
+        for (const copy of ['indexed', 'plain'] as Copy[]) {
+            const { rows, count }: { rows: Item[]; count: number } = answers[copy];
+
+            if (name.startsWith('inRandomOrder')) {
+                expect({ distinct: new Set(rows.map((row: Item): string | null => row.role)).size, count }).toEqual({ distinct: 2, count: roles.size });
+                expect(rows.every((row: Item): boolean => roles.has(row.role))).toEqual(true);
+
+                continue;
+            }
+
+            expect({ copy, rows, count }).toEqual({ copy, rows: deduplicated(DISTINCT_PAGES[name] as [Arrangement, Page], copy), count: roles.size });
+        }
+    });
+
+    test('an ordered limit walked through an index stops only once it holds enough distinct rows', async (): Promise<void> => {
+        const answers: Record<Copy, Item[]> = await both((query: Builder<Item>): Promise<Item[]> => query.select('role').distinct().orderBy('visits').limit(4).get());
+
+        expect(await connection.table<Item>('indexed').orderBy('visits').explain()).toEqual('index:indexed_visits_index');
+        expect(answers).toEqual({ indexed: deduplicated(['visits', [0, 4]], 'indexed'), plain: deduplicated(['visits', [0, 4]], 'plain') });
     });
 });

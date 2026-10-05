@@ -427,6 +427,95 @@ describe('Terminals on a joined query', (): void => {
     });
 });
 
+describe('Distinct on a joined query', (): void => {
+    /**
+     * Begin a query for the distinct names of the users who wrote a post.
+     */
+    function writers(): Builder<Row> {
+        return users().join<Row>('posts', 'users.id', '=', 'posts.user_id').select('users.name').distinct();
+    }
+
+    test('removes duplicates before the offset and the limit', async (): Promise<void> => {
+        expect(await writers().get()).toEqual([{ name: 'Alice' }, { name: 'Bob' }]);
+        expect(await writers().limit(1).get()).toEqual([{ name: 'Alice' }]);
+        expect(await writers().offset(1).get()).toEqual([{ name: 'Bob' }]);
+        expect(await writers().offset(1).limit(1).get()).toEqual([{ name: 'Bob' }]);
+        expect(await writers().limit(0).get()).toEqual([]);
+        expect(await writers().offset(2).get()).toEqual([]);
+    });
+
+    test('counts and pages through the distinct rows', async (): Promise<void> => {
+        expect(await writers().count()).toEqual(2);
+        expect(await writers().paginate(1, 1)).toEqual({ data: [{ name: 'Alice' }], total: 2, perPage: 1, currentPage: 1, lastPage: 2 });
+        expect((await writers().paginate(2, 1)).data).toEqual([{ name: 'Bob' }]);
+    });
+
+    test('plucks the distinct values of a column', async (): Promise<void> => {
+        expect(await writers().pluck('users.name')).toEqual(['Alice', 'Bob']);
+        expect(await writers().pluck('name')).toEqual(['Alice', 'Bob']);
+        expect(await writers().pluck('posts.user_id', 'users.name')).toEqual({ Alice: 1, Bob: 2 });
+    });
+
+    test('reads the first distinct row for value, first and exists', async (): Promise<void> => {
+        expect(await writers().value('users.name')).toEqual('Alice');
+        expect(await writers().first()).toEqual({ name: 'Alice' });
+        expect(await writers().exists()).toEqual(true);
+    });
+
+    test('sums and averages the distinct values of a column', async (): Promise<void> => {
+        const joined: Builder<Row> = users().join<Row>('posts', 'users.id', '=', 'posts.user_id').distinct();
+
+        expect(await joined.clone().sum('user_id')).toEqual(3);
+        expect(await joined.clone().avg('user_id')).toEqual(1.5);
+    });
+
+    test('walks the distinct rows in chunks, lazily and one at a time', async (): Promise<void> => {
+        const pages: Row[][] = [];
+        const lazy: Row[] = [];
+        const each: [Row, number][] = [];
+
+        await writers().chunk(1, (rows: Row[]): void => {
+            pages.push(rows);
+        });
+
+        for await (const row of writers().lazy(1)) {
+            lazy.push(row);
+        }
+
+        await writers().each((row: Row, index: number): void => {
+            each.push([row, index]);
+        });
+
+        expect(pages).toEqual([[{ name: 'Alice' }], [{ name: 'Bob' }]]);
+        expect(lazy).toEqual([{ name: 'Alice' }, { name: 'Bob' }]);
+        expect(each).toEqual([[{ name: 'Alice' }, 0], [{ name: 'Bob' }, 1]]);
+    });
+
+    test('keeps every joined row without a select, since each holds the post it joined', async (): Promise<void> => {
+        const joined: Builder<Row> = users().join<Row>('posts', 'users.id', '=', 'posts.user_id').distinct();
+
+        expect(await joined.clone().get()).toHaveLength(3);
+        expect(await joined.clone().count()).toEqual(3);
+    });
+
+    test('reports the distinct rows it returns', async (): Promise<void> => {
+        const records: number[] = [];
+        const listener: (event: Event) => void = ((event: QueryExecuted): void => {
+            records.push(event.records);
+        }) as (event: Event) => void;
+
+        Dispatcher.listen('db:query', listener);
+
+        try {
+            await writers().offset(1).get();
+        } finally {
+            Dispatcher.forget('db:query', listener);
+        }
+
+        expect(records).toEqual([1]);
+    });
+});
+
 describe('Joins and clone', (): void => {
     test('carries the joins onto the clone', async (): Promise<void> => {
         const query: Builder<Row> = users().join<Row>('posts', 'users.id', '=', 'posts.user_id');

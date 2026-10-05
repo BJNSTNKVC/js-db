@@ -263,13 +263,18 @@ DB.table<User>('users')
 the result rather than saving any work.
 
 `distinct()` drops a row when an earlier one holds the same value in every column it returns, and
-keeps the first. A JSON column compares by content, as SQL's JSON comparison does: two objects
-holding the same keys and values are one value in whatever order their keys were written, at every
-depth, while arrays compare element by element in order, so `[1, 2]` and `[2, 1]` stay apart. Inside
-a JSON value, every distinction a column makes still holds: `1` and `'1'`, `true` and `'true'`, a
-date and its ISO string, `null` and `undefined`, a key holding `undefined` and a missing key, a hole
-in an array and `undefined`, and `{}` and `[]` are all different values, while `NaN` matches `NaN`
-and `-0` matches `0`.
+keeps the first, in the order the query asks for. It does so across the whole match before `limit`
+and `offset` apply, as SQL's `DISTINCT` does, so `select('role').distinct().limit(2)` returns two
+different roles. Without `select`, every record holds its own key, so `distinct()` changes nothing,
+except on a table without a key column, where identical records are one row.
+
+A JSON column compares by content, as SQL's JSON comparison does: two objects holding the same keys
+and values are one value in whatever order their keys were written, at every depth, while arrays
+compare element by element in order, so `[1, 2]` and `[2, 1]` stay apart. Inside a JSON value,
+every distinction a column makes still holds: `1` and `'1'`, `true` and `'true'`, a date and its ISO
+string, `null` and `undefined`, a key holding `undefined` and a missing key, a hole in an array and
+`undefined`, and `{}` and `[]` are all different values, while `NaN` matches `NaN` and `-0` matches
+`0`.
 
 ```ts
 await DB.table<User>('users').select('settings').distinct().get();
@@ -354,6 +359,27 @@ const page: Order[] = await DB.table<Order>('orders').orderBy('created_at').limi
 const total: number = page.reduce((sum: number, order: Order): number => sum + order.amount, 0);
 ```
 
+On a `distinct` query, `count` counts the distinct rows, as SQL's `COUNT(*)` over a `SELECT DISTINCT`
+does, so `paginate`'s total and last page match the pages it returns. `sum` and `avg` take each
+value of their column once, as SQL's `SUM(DISTINCT x)` does, whatever the `select`, telling values
+apart as `distinct()` does, so `5` and `'5'` are two values. `min` and `max` give the same answer
+either way. To aggregate every row instead, drop `distinct` for that call.
+
+```ts
+// Visits of 5, 5 and 3.
+await DB.table<User>('users').distinct().sum('visits');
+await DB.table<User>('users').sum('visits');
+```
+
+```
+8
+13
+```
+
+`pluck` on a `distinct` query returns each value of its column once, and with a key, each pair of
+value and key once, whatever the `select`, as `SELECT DISTINCT` over those columns does. `value`
+reads the first distinct row, which is the first matching row.
+
 `min` and `max` read the answer straight off the index when the column has one and the query is
 unconstrained, whatever its order and paging, so they cost one cursor rather than a full scan.
 
@@ -391,6 +417,13 @@ out, so every record is delivered at most once, and only while it still matches.
 starts matching during the walk is not picked up. Since records can drop out, any page may be
 shorter than the size asked for. A page left empty is skipped, and the page numbers stay
 consecutive.
+
+On a `distinct` query, a walk delivers each distinct row once, fetching it through the first record
+that holds it, so its pages are full and no page repeats a row another delivered. A row that a write
+during the walk makes repeat one already delivered is not delivered again, and a row whose first
+record stops matching before its page arrives is left out, as any record that stops matching is.
+Besides the keys, such a walk holds what each row it delivered looks like, unless it reads whole
+records from a table with a key column, which can never repeat.
 
 `chunk` and `lazy` throw `SchemaException` for a size that is not a whole number of at least 1, as
 Laravel's `lazy` does, since a walk in pages of nothing would never end.
