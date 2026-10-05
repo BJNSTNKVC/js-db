@@ -41,6 +41,10 @@ A transaction whose callback awaited something outside this package commits earl
 `transaction-committed` and never `transaction-rolled-back`, even though `DB.transaction` rejects with
 `TransactionClosedException`. See [What the callback may await](transactions.md#what-the-callback-may-await).
 
+A `DB.transaction` that joins one already running, whether a transaction or a migration, announces
+nothing of its own. Inside a migration the migration events cover it. See
+[What a migration may await](migrations.md#what-a-migration-may-await).
+
 > Modeled on Laravel's [Migrations: Events](https://laravel.com/docs/12.x/migrations#events), with
 > each event dispatched as a browser event and listened for by key.
 

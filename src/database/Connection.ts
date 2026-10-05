@@ -244,7 +244,7 @@ export class Connection {
     }
 
     /**
-     * Run the callback inside a transaction, committing when it resolves.
+     * Run the callback inside a transaction, committing when it resolves, or inside the migration running on this connection when there is one.
      */
     async transaction<R>(callback: (transaction: Transaction) => R | Promise<R>, options: TransactionOptions = {}): Promise<R> {
         // A nested call joins the transaction already running rather than opening a second one.
@@ -252,6 +252,12 @@ export class Connection {
         // overlapping transactions over the same stores would deadlock.
         if (this.#active !== null) {
             return callback(this.#active);
+        }
+
+        const migration: MigrationContext | null = this.#migration();
+
+        if (migration !== null) {
+            return callback(new Transaction(this, migration.transaction));
         }
 
         const database: IDBDatabase = await this.open();

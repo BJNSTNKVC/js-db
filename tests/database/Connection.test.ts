@@ -24,6 +24,7 @@ import type { MigrationConstructor, MigrationStatus } from '../../src/migrations
 import type { ColumnSchema, TableSchema } from '../../src/schema/types';
 import type { MockInstance } from 'vitest';
 import type { MigrationContext } from '../../src/migrations/Migrator';
+import type { Transaction } from '../../src/database/Transaction';
 import type { DatabaseVersionChanged, IndexSchema } from '../../src/main';
 
 let sequence: number = 0;
@@ -906,6 +907,212 @@ describe('Querying inside a migration', (): void => {
             expect(await upgraded.tables()).toEqual(['users']);
         });
     }, 2000);
+
+    describe('through a transaction', (): void => {
+        test('writes through connection.transaction within the upgrade, resolving with what the callback returns', async (): Promise<void> => {
+            const returned: unknown[] = [];
+
+            expect(await upgrade(async (): Promise<void> => {
+                returned.push(await upgraded.transaction(async (transaction: Transaction): Promise<number> => {
+                    await transaction.table('users').insert({ name: 'Carol', email: 'c@x', age: 50 });
+                    await transaction.table('users').where('name', 'Bob').update({ age: 41 });
+
+                    return transaction.table('users').count();
+                }));
+            })).toEqual(['UpgradeUsers']);
+
+            expect(returned).toEqual([3]);
+            expect(await upgraded.table('users').orderBy('name').pluck('age')).toEqual([30, 41, 50]);
+        }, 2000);
+
+        test('writes through DB.transaction within the upgrade', async (): Promise<void> => {
+            const database: string = `connection-${++sequence}`;
+
+            DB.configure({ default: 'app', connections: { app: { database, migrations: [CreateUsersTable] } } });
+
+            try {
+                await DB.table('users').insert([{ name: 'Alice', email: 'a@x', age: 30 }, { name: 'Bob', email: 'b@x', age: 40 }]);
+
+                DB.configure({ default: 'app', connections: { app: { database, migrations: [CreateUsersTable, migration('UpgradeUsers', async (): Promise<void> => {
+                    expect(await DB.transaction(async (transaction: Transaction): Promise<string[]> => {
+                        await transaction.table('users').where('name', 'Bob').update({ age: 41 });
+
+                        return transaction.table('users').orderBy('name').pluck('name');
+                    })).toEqual(['Alice', 'Bob']);
+                })] } } });
+
+                expect(await DB.migrate('app')).toEqual(['UpgradeUsers']);
+                expect(await DB.table('users').orderBy('name').pluck('age')).toEqual([30, 41]);
+            } finally {
+                DB.purge('app');
+            }
+        }, 2000);
+
+        test('joins the upgrade again from a nested transaction and from a query beside it', async (): Promise<void> => {
+            await upgrade(async (): Promise<void> => {
+                await upgraded.transaction(async (outer: Transaction): Promise<void> => {
+                    await outer.table('users').where('name', 'Alice').update({ age: 31 });
+
+                    await upgraded.transaction(async (inner: Transaction): Promise<void> => {
+                        await inner.table('users').insert({ name: 'Carol', email: 'c@x', age: 50 });
+                    });
+
+                    await upgraded.table('users').where('name', 'Bob').update({ age: 41 });
+
+                    expect(await outer.table('users').orderBy('name').pluck('age')).toEqual([31, 41, 50]);
+                });
+            });
+
+            expect(await upgraded.table('users').orderBy('name').pluck('age')).toEqual([31, 41, 50]);
+        }, 2000);
+
+        test.each([
+            ['a table the migration created earlier', ['notes']],
+            ['a table it has not created yet', ['later']],
+            ['a table that does not exist', ['missing']],
+        ])('reaches every table the upgrade holds when options.tables names %s', async (_: string, tables: string[]): Promise<void> => {
+            await upgrade(async (): Promise<void> => {
+                await Schema.create('notes', (table: Blueprint): void => {
+                    table.id();
+                    table.string('body');
+                });
+
+                await upgraded.transaction(async (transaction: Transaction): Promise<void> => {
+                    await transaction.table('users').where('name', 'Bob').update({ age: 41 });
+                    await transaction.table('notes').insert({ body: 'Written in a transaction' });
+                }, { tables });
+
+                await Schema.create('later', (table: Blueprint): void => {
+                    table.id();
+                });
+            });
+
+            expect(await upgraded.table('users').orderBy('name').pluck('age')).toEqual([30, 41]);
+            expect(await upgraded.table('notes').pluck('body')).toEqual(['Written in a transaction']);
+        }, 2000);
+
+        test('rolls the whole upgrade back when the callback throws', async (): Promise<void> => {
+            const database: string = `connection-${++sequence}`;
+            const failure: Error = new Error('Nope.');
+
+            await expect(upgrade(async (): Promise<void> => {
+                await Schema.create('notes', (table: Blueprint): void => {
+                    table.id();
+                });
+
+                await upgraded.transaction(async (transaction: Transaction): Promise<void> => {
+                    await transaction.table('users').where('name', 'Alice').update({ age: 31 });
+
+                    throw failure;
+                });
+            }, database)).rejects.toBe(failure);
+
+            connections.splice(0).forEach((connection: Connection): void => connection.disconnect());
+
+            const restored: Connection = connect([CreateUsersTable], database);
+
+            expect(await restored.tables()).toEqual(['users']);
+            expect(await restored.table('users').orderBy('name').pluck('age')).toEqual([30, 40]);
+        }, 2000);
+
+        test('carries on when the callback catches its own failed write', async (): Promise<void> => {
+            const caught: unknown[] = [];
+
+            expect(await upgrade(async (): Promise<void> => {
+                await upgraded.transaction(async (transaction: Transaction): Promise<void> => {
+                    await transaction.table('users').where('name', 'Alice').update({ age: 31 });
+
+                    try {
+                        await transaction.table('users').where('name', 'Bob').update({ email: 'a@x' });
+                    } catch (error: unknown) {
+                        caught.push(error);
+                    }
+
+                    await transaction.table('users').where('name', 'Bob').update({ age: 41 });
+                });
+            })).toEqual(['UpgradeUsers']);
+
+            expect(caught).toEqual([new UniqueConstraintViolationException('users', 'users_email_unique')]);
+            expect(await upgraded.table('users').orderBy('name').get()).toMatchObject([
+                { name: 'Alice', email: 'a@x', age: 31 },
+                { name: 'Bob', email: 'b@x', age: 41 },
+            ]);
+        }, 2000);
+
+        test('announces the migration and no transaction', async (): Promise<void> => {
+            const types: string[] = [
+                'db:migrations-started',
+                'db:migration-started',
+                'db:migration-ended',
+                'db:migrations-ended',
+                'db:transaction-beginning',
+                'db:transaction-committed',
+                'db:transaction-rolled-back',
+            ];
+
+            const heard: string[] = [];
+            const listener: (event: Event) => void = (event: Event): void => {
+                heard.push(event.type);
+            };
+
+            types.forEach((type: string): void => Dispatcher.listen(type, listener));
+
+            try {
+                await upgrade(async (): Promise<void> => {
+                    await upgraded.transaction(async (transaction: Transaction): Promise<void> => {
+                        await transaction.table('users').where('name', 'Bob').update({ age: 41 });
+                    });
+                });
+            } finally {
+                types.forEach((type: string): void => Dispatcher.forget(type, listener));
+            }
+
+            expect(heard).toEqual([
+                'db:migrations-started',
+                'db:migration-started',
+                'db:migration-ended',
+                'db:migrations-ended',
+                'db:migrations-started',
+                'db:migration-started',
+                'db:migration-ended',
+                'db:migrations-ended',
+            ]);
+        }, 2000);
+
+        test.each([
+            ['the transaction', (transaction: Transaction): Promise<unknown> => transaction.table('users').get()],
+            ['DB.table', (): Promise<unknown> => upgraded.table('users').get()],
+            ['a nested transaction', (): Promise<unknown> => upgraded.transaction((): string => 'nested')],
+        ])('reports a query through %s after the callback awaited work outside the upgrade', async (_: string, query: (transaction: Transaction) => Promise<unknown>): Promise<void> => {
+            await expect(upgrade(async (): Promise<void> => {
+                const context: MigrationContext = Migrator.alive();
+
+                await upgraded.transaction(async (transaction: Transaction): Promise<void> => {
+                    await new Promise<void>((resolve: () => void): void => {
+                        context.transaction.addEventListener('complete', (): void => resolve());
+                    });
+
+                    await query(transaction);
+                });
+            })).rejects.toBeInstanceOf(MigrationTransactionClosedException);
+        }, 2000);
+
+        test('leaves a transaction on another database to that database, whose await closes the upgrade', async (): Promise<void> => {
+            const other: Connection = connect([CreatePostsTable]);
+
+            await other.migrate();
+
+            await expect(upgrade(async (): Promise<void> => {
+                await other.transaction(async (transaction: Transaction): Promise<void> => {
+                    await transaction.table('posts').insert({ title: 'Written elsewhere' });
+                });
+
+                await upgraded.table('users').get();
+            })).rejects.toBeInstanceOf(MigrationTransactionClosedException);
+
+            expect(await other.table('posts').pluck('title')).toEqual(['Written elsewhere']);
+        }, 2000);
+    });
 });
 
 describe('Reserved tables', (): void => {

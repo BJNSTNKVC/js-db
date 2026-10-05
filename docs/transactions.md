@@ -24,6 +24,12 @@ await DB.transaction(async (transaction: Transaction): Promise<void> => {
 A nested `DB.transaction` **joins** the one already running. IndexedDB has no savepoints, so there is
 no partial rollback.
 
+Inside a migration, `DB.transaction` on the connection being migrated joins the migration's
+version-change transaction the same way. It ignores `options.tables`, dispatches no transaction
+events, and an error it throws fails the migration, rolling back the whole upgrade. While a migration
+runs, a `DB.transaction` the rest of the app starts on that connection joins it as well. See
+[What a migration may await](migrations.md#what-a-migration-may-await).
+
 There is no `beginTransaction()` / `commit()` / `rollBack()`. A manually held IndexedDB transaction
 commits behind your back the first time you await anything outside it, so offering that API would be
 offering a trap. The same rule as migrations applies here: the callback may only await operations

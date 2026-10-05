@@ -66,7 +66,7 @@ class CreateUsersTable extends Migration {
 
 A migration runs inside the version-change transaction, and IndexedDB commits a transaction the
 moment its request queue drains. So a migration may **only** await operations from this package.
-Awaiting `Schema.*` and `DB.table(...)` is safe. Awaiting a `fetch`, a timer, or any other promise
+Awaiting `Schema.*`, `DB.table(...)` and `DB.transaction(...)` is safe. Awaiting a `fetch`, a timer, or any other promise
 ends the transaction, and the next schema call or query throws `MigrationTransactionClosedException`.
 
 A query on the connection being migrated joins the version-change transaction, so a migration can
@@ -96,10 +96,23 @@ connection, so a migration registered on another connection names it, as in
 `DB.connection('reporting').table('events')`. A query on a different database is not part of the
 upgrade, and awaiting it ends the transaction like any other promise.
 
-While a migration runs, every query on its connection joins it, including one the rest of the app
-starts at that moment. Migrating at boot with `await DB.migrate(name)`, before the rest of the app
-starts, keeps that from mattering. Before 7.0.0 a query inside a migration waited for the very
-upgrade it was part of and never settled.
+`DB.transaction` on the connection being migrated joins the upgrade too, so a seeder or helper that
+wraps its writes in one can run inside a migration. Its callback runs in the version-change
+transaction, and resolves with what the callback returns:
+
+- `options.tables` is ignored, since the version-change transaction covers every table.
+- No `transaction-beginning`, `transaction-committed` or `transaction-rolled-back` is dispatched,
+  since nothing begins or ends there. The migration events cover it.
+- An error the callback throws fails the migration and rolls back the whole upgrade, as a failing
+  `DB.table` write does. A failed write the callback catches leaves the rest of the upgrade in place.
+- A callback that awaits something outside this package ends the upgrade's transaction, and its next
+  query throws `MigrationTransactionClosedException`, as `DB.table` does.
+
+While a migration runs, every query and every `DB.transaction` on its connection joins it, including
+one the rest of the app starts at that moment. Migrating at boot with `await DB.migrate(name)`,
+before the rest of the app starts, keeps that from mattering. Before 7.0.0 a query inside a migration
+waited for the very upgrade it was part of and never settled, and before 9.0.1 so did
+`DB.transaction`.
 
 If you need data from the network, that is what a seeder is for. See [Seeding](seeding.md).
 
