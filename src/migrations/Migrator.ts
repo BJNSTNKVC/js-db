@@ -12,6 +12,7 @@ export interface MigrationContext {
     transaction: IDBTransaction;
     migration: string;
     schemas: Map<string, TableSchema>;
+    timezone: string;
     alive: boolean;
 }
 
@@ -81,9 +82,9 @@ export class Migrator {
     }
 
     /**
-     * Run the migrations still pending inside the version change transaction.
+     * Run the migrations still pending inside the version change transaction, reading dates in the migrating connection's timezone.
      */
-    static async run(connection: string, database: IDBDatabase, transaction: IDBTransaction, migrations: MigrationConstructor[], from: number, at: Date): Promise<string[]> {
+    static async run(connection: string, timezone: string, database: IDBDatabase, transaction: IDBTransaction, migrations: MigrationConstructor[], from: number, at: Date): Promise<string[]> {
         Repository.create(database);
         Registry.create(database);
 
@@ -100,6 +101,7 @@ export class Migrator {
             migration: 'unknown',
             schemas  : new Map<string, TableSchema>(schemas.map((schema: TableSchema): [string, TableSchema] => [schema.table, schema])),
             alive    : true,
+            timezone,
         };
 
         transaction.addEventListener('complete', this.#close);

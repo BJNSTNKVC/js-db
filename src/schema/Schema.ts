@@ -109,7 +109,7 @@ export class Schema {
 
         const store: IDBObjectStore = context.transaction.objectStore(table);
 
-        await this.#check(store, schema, operations);
+        await this.#check(store, schema, operations, context.timezone);
 
         // Indexes are removed before the rewrite and created after it, so neither an index on its
         // way out nor one still to be built can reject a row the rewrite writes.
@@ -117,7 +117,7 @@ export class Schema {
             store.deleteIndex(name);
         }
 
-        await this.#rewrite(store, operations);
+        await this.#rewrite(store, operations, context.timezone);
 
         for (const index of operations.indexed) {
             this.#createIndex(store, index);
@@ -260,9 +260,9 @@ export class Schema {
     }
 
     /**
-     * Refuse the operations when a record, once rewritten, would break an added column, a changed column or a unique index.
+     * Refuse the operations when a record, once rewritten with dates read in the timezone, would break an added column, a changed column or a unique index.
      */
-    static async #check(store: IDBObjectStore, schema: TableSchema, operations: BlueprintOperations): Promise<void> {
+    static async #check(store: IDBObjectStore, schema: TableSchema, operations: BlueprintOperations, timezone: string): Promise<void> {
         const filled: string[] = operations.changed
             .filter((change: ChangedColumn): boolean => change.to.hasDefault)
             .map((change: ChangedColumn): string => change.to.name);
@@ -293,7 +293,7 @@ export class Schema {
         let row: number = 0;
 
         await Request.walk(store.openCursor(), (cursor: IDBCursorWithValue): void => {
-            const record: Record<string, unknown> = this.#rewritten(cursor.value, operations);
+            const record: Record<string, unknown> = this.#rewritten(cursor.value, operations, timezone);
             const empty: ColumnSchema[] = added.filter((column: ColumnSchema): boolean => this.#empty(record[column.name]));
 
             for (const column of empty) {
@@ -439,9 +439,9 @@ export class Schema {
     }
 
     /**
-     * Rewrite every record of a store to match the applied operations.
+     * Rewrite every record of a store to match the applied operations, reading dates in the timezone.
      */
-    static async #rewrite(store: IDBObjectStore, operations: BlueprintOperations): Promise<void> {
+    static async #rewrite(store: IDBObjectStore, operations: BlueprintOperations, timezone: string): Promise<void> {
         const rewrites: boolean = operations.added.some((column: ColumnSchema): boolean => column.hasDefault)
             || operations.dropped.length > 0
             || operations.renamed.length > 0
@@ -452,14 +452,14 @@ export class Schema {
         }
 
         await Request.walk(store.openCursor(), (cursor: IDBCursorWithValue): void => {
-            cursor.update(this.#rewritten(cursor.value, operations));
+            cursor.update(this.#rewritten(cursor.value, operations, timezone));
         });
     }
 
     /**
-     * Apply the operations to a copy of a record.
+     * Apply the operations to a copy of a record, reading the dates a default names in the timezone.
      */
-    static #rewritten(value: unknown, operations: BlueprintOperations): Record<string, unknown> {
+    static #rewritten(value: unknown, operations: BlueprintOperations, timezone: string): Record<string, unknown> {
         const record: Record<string, unknown> = { ...value as Record<string, unknown> };
 
         for (const rename of operations.renamed) {
@@ -474,7 +474,7 @@ export class Schema {
 
         for (const column of operations.added) {
             if (column.hasDefault && (!Object.hasOwn(record, column.name) || (!column.nullable && this.#empty(record[column.name])))) {
-                record[column.name] = Enforcer.coerce(column.default, column.type, true);
+                record[column.name] = Enforcer.coerce(column.default, column.type, true, timezone);
             }
         }
 
@@ -488,7 +488,7 @@ export class Schema {
             const required: boolean = change.from.nullable && !change.to.nullable;
 
             if (!Object.hasOwn(record, change.to.name) || (required && this.#empty(record[change.to.name]))) {
-                record[change.to.name] = Enforcer.coerce(change.to.default, change.to.type, true);
+                record[change.to.name] = Enforcer.coerce(change.to.default, change.to.type, true, timezone);
             }
         }
 

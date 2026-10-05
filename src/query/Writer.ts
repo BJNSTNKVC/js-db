@@ -6,10 +6,10 @@ import type { IndexSchema, TableSchema } from '../schema/types';
 
 export class Writer {
     /**
-     * Add a record to the store, reporting a violated constraint by its index.
+     * Add a record to the store, reading its dates in the timezone and reporting a violated constraint by its index.
      */
-    static async add(store: IDBObjectStore, schema: TableSchema, strict: boolean, record: Record<string, unknown>): Promise<IDBValidKey> {
-        const prepared: Record<string, unknown> = Enforcer.insertable(record, schema, strict, new Date());
+    static async add(store: IDBObjectStore, schema: TableSchema, strict: boolean, timezone: string, record: Record<string, unknown>): Promise<IDBValidKey> {
+        const prepared: Record<string, unknown> = Enforcer.insertable(record, schema, strict, timezone, new Date());
 
         try {
             return await Request.settle(store.add(prepared), true);
@@ -47,10 +47,10 @@ export class Writer {
     }
 
     /**
-     * Prepare the changes an update writes, refusing any that touch the key path.
+     * Prepare the changes an update writes, reading their dates in the timezone and refusing any that touch the key path.
      */
-    static changes(values: Record<string, unknown>, schema: TableSchema, strict: boolean): Record<string, unknown> {
-        const prepared: Record<string, unknown> = Enforcer.updatable(values, schema, strict, new Date());
+    static changes(values: Record<string, unknown>, schema: TableSchema, strict: boolean, timezone: string): Record<string, unknown> {
+        const prepared: Record<string, unknown> = Enforcer.updatable(values, schema, strict, timezone, new Date());
 
         if (schema.key !== null && Object.hasOwn(prepared, schema.key)) {
             throw new SchemaException(`Column [${schema.key}] is the key path of table [${schema.table}] and may not be updated.`);
@@ -79,11 +79,11 @@ export class Writer {
     }
 
     /**
-     * Insert a record, or merge it into the one already holding its conflict key.
+     * Insert a record, or merge it into the one already holding its conflict key, reading its dates in the timezone.
      */
-    static async merge(store: IDBObjectStore, schema: TableSchema, strict: boolean, columns: string[], target: IndexSchema | null, value: Record<string, unknown>, update: string[] | undefined, rollback: boolean): Promise<void> {
+    static async merge(store: IDBObjectStore, schema: TableSchema, strict: boolean, timezone: string, columns: string[], target: IndexSchema | null, value: Record<string, unknown>, update: string[] | undefined, rollback: boolean): Promise<void> {
         if (target === null) {
-            const record: Record<string, unknown> = Enforcer.insertable(value, schema, strict, new Date());
+            const record: Record<string, unknown> = Enforcer.insertable(value, schema, strict, timezone, new Date());
 
             try {
                 await Request.settle(store.put(record), true);
@@ -103,11 +103,12 @@ export class Writer {
             Object.fromEntries(columns.map((column: string): [string, unknown] => [column, value[column]])),
             schema,
             strict,
+            timezone,
             new Date(),
         );
 
         if (columns.some((column: string): boolean => prepared[column] === null || prepared[column] === undefined)) {
-            await this.add(store, schema, strict, value);
+            await this.add(store, schema, strict, timezone, value);
 
             return;
         }
@@ -116,7 +117,7 @@ export class Writer {
         const existing: Record<string, unknown> | undefined = await Request.settle(store.index(target.name).get(IDBKeyRange.only(key)) as IDBRequest<Record<string, unknown> | undefined>);
 
         if (existing === undefined) {
-            await this.add(store, schema, strict, value);
+            await this.add(store, schema, strict, timezone, value);
 
             return;
         }
@@ -125,7 +126,7 @@ export class Writer {
             ? value
             : Object.fromEntries(update.map((column: string): [string, unknown] => [column, value[column]]));
 
-        const record: Record<string, unknown> = { ...existing, ...this.changes(changes, schema, strict) };
+        const record: Record<string, unknown> = { ...existing, ...this.changes(changes, schema, strict, timezone) };
 
         try {
             await Request.settle(store.put(record), true);

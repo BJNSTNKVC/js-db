@@ -15,6 +15,7 @@ import { Migrator } from '../migrations/Migrator';
 import { Repository } from '../migrations/Repository';
 import { Registry } from '../schema/Registry';
 import { Builder } from '../query/Builder';
+import { Calendar } from '../schema/Calendar';
 import { Handles } from './Handles';
 import { Request } from './Request';
 import { Resolver } from './Resolver';
@@ -36,6 +37,11 @@ export class Connection {
      * The configuration of the connection.
      */
     readonly #config: ConnectionConfig;
+
+    /**
+     * The timezone every calendar day and time of day is read and stored in.
+     */
+    readonly #timezone: string;
 
     /**
      * The open database handle.
@@ -68,6 +74,7 @@ export class Connection {
     constructor(name: string, config: ConnectionConfig) {
         this.#name = name;
         this.#config = config;
+        this.#timezone = Connection.#zone(name, config.timezone ?? 'UTC');
     }
 
     /**
@@ -89,6 +96,13 @@ export class Connection {
      */
     get strict(): boolean {
         return this.#config.strict !== false;
+    }
+
+    /**
+     * Get the timezone every calendar day and time of day is read and stored in, 'UTC', 'local' or a canonical IANA name.
+     */
+    get timezone(): string {
+        return this.#timezone;
     }
 
     /**
@@ -395,6 +409,17 @@ export class Connection {
     }
 
     /**
+     * Resolve the timezone a connection names, refusing one Intl does not know.
+     */
+    static #zone(name: string, timezone: string): string {
+        try {
+            return Calendar.zone(timezone);
+        } catch (error: unknown) {
+            throw new RangeError(`Connection [${name}] names the timezone [${timezone}], which is not one this browser knows. Use 'UTC', 'local' or an IANA name such as 'America/New_York'.`, { cause: error });
+        }
+    }
+
+    /**
      * Get the migration running on this connection's database, refusing one whose transaction has closed, or null when there is none.
      */
     #migration(): MigrationContext | null {
@@ -431,6 +456,7 @@ export class Connection {
 
                 runner = Migrator.run(
                     this.#name,
+                    this.#timezone,
                     request.result,
                     transaction,
                     migrations,

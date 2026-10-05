@@ -1,4 +1,5 @@
 import { Calendar } from '../schema/Calendar';
+import type { Parts } from '../schema/Calendar';
 import { Columns } from './Columns';
 import type { Constraint, DatePart, Operator } from './types';
 
@@ -111,13 +112,13 @@ export class Predicate {
         }
 
         if (constraint.type === 'part') {
-            const part: number | null = this.#part(held, constraint.part);
+            const part: number | null = this.#part(held, constraint.part, constraint.timezone);
 
             return part === null ? null : this.#negate(constraint.not, this.#compared(part, constraint.operator, constraint.value));
         }
 
         if (constraint.type === 'time') {
-            const time: string | null = this.#time(held);
+            const time: string | null = this.#time(held, constraint.timezone);
 
             return time === null ? null : this.#negate(constraint.not, this.#compare(time, constraint.operator, constraint.value));
         }
@@ -161,42 +162,46 @@ export class Predicate {
     }
 
     /**
-     * Read one part of a value that should hold a date.
+     * Read one part of a value that should hold a date, in the timezone.
      */
-    static #part(held: unknown, part: DatePart): number | null {
-        const date: Date | null = this.#date(held);
+    static #part(held: unknown, part: DatePart, timezone: string): number | null {
+        const date: Date | null = this.#date(held, timezone);
 
         if (date === null) {
             return null;
         }
 
+        const parts: Parts = Calendar.parts(date, timezone);
+
         if (part === 'year') {
-            return date.getFullYear();
+            return parts.year;
         }
 
-        return part === 'month' ? date.getMonth() + 1 : date.getDate();
+        return part === 'month' ? parts.month + 1 : parts.day;
     }
 
     /**
-     * Read the time of day of a value that should hold a date, as a zero padded HH:MM:SS string.
+     * Read the time of day of a value that should hold a date in the timezone, as a zero padded HH:MM:SS string.
      */
-    static #time(held: unknown): string | null {
-        const date: Date | null = this.#date(held);
+    static #time(held: unknown, timezone: string): string | null {
+        const date: Date | null = this.#date(held, timezone);
 
         if (date === null) {
             return null;
         }
 
-        return [date.getHours(), date.getMinutes(), date.getSeconds()]
+        const parts: Parts = Calendar.parts(date, timezone);
+
+        return [parts.hour, parts.minute, parts.second]
             .map((part: number): string => String(part).padStart(2, '0'))
             .join(':');
     }
 
     /**
-     * Read a value that should hold a date, a YYYY-MM-DD string as its local day, or null when it does not.
+     * Read a value that should hold a date, a YYYY-MM-DD string, alone or with a time but no offset, in the timezone, or null when it does not.
      */
-    static #date(held: unknown): Date | null {
-        const date: Date = held instanceof Date ? held : Calendar.read(held as string | number);
+    static #date(held: unknown, timezone: string): Date | null {
+        const date: Date = held instanceof Date ? held : Calendar.read(held as string | number, timezone);
 
         return Number.isNaN(date.getTime()) ? null : date;
     }

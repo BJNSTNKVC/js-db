@@ -99,7 +99,7 @@ export class Executor<T> {
     async find(key: IDBValidKey | null | undefined): Promise<T | null> {
         const schema: TableSchema = await this.#connection.schema(this.#query.table);
         const column: ColumnSchema | undefined = schema.columns.find((candidate: ColumnSchema): boolean => candidate.name === schema.key);
-        const prepared: unknown = column === undefined ? key : Planner.convert(key, column.type);
+        const prepared: unknown = column === undefined ? key : Planner.convert(key, column.type, this.#connection.timezone);
 
         if (!Planner.keyable(prepared)) {
             return null;
@@ -195,7 +195,7 @@ export class Executor<T> {
 
         for (const row of rows) {
             try {
-                await Writer.add(store, schema, this.#connection.strict, row as Record<string, unknown>);
+                await Writer.add(store, schema, this.#connection.strict, this.#connection.timezone, row as Record<string, unknown>);
 
                 inserted++;
             } catch (error: unknown) {
@@ -219,7 +219,7 @@ export class Executor<T> {
         const schema: TableSchema = await this.#connection.schema(this.#query.table);
         const store: IDBObjectStore = await this.#store('readwrite');
         const started: number = performance.now();
-        const key: IDBValidKey = await Writer.add(store, schema, this.#connection.strict, record as Record<string, unknown>);
+        const key: IDBValidKey = await Writer.add(store, schema, this.#connection.strict, this.#connection.timezone, record as Record<string, unknown>);
 
         this.#emit('insert', started, 1);
 
@@ -238,7 +238,7 @@ export class Executor<T> {
         const started: number = performance.now();
 
         for (const value of values) {
-            await Writer.merge(store, schema, this.#connection.strict, columns, target, value as Record<string, unknown>, update, this.#query.transaction === null);
+            await Writer.merge(store, schema, this.#connection.strict, this.#connection.timezone, columns, target, value as Record<string, unknown>, update, this.#query.transaction === null);
         }
 
         this.#emit('upsert', started, values.length);
@@ -423,7 +423,7 @@ export class Executor<T> {
             schema.columns.map((column: ColumnSchema): [string, ColumnType] => [column.name, column.type]),
         );
 
-        return Planner.prepare(this.#query.constraints, types);
+        return Planner.prepare(this.#query.constraints, types, this.#connection.timezone);
     }
 
     /**
@@ -645,7 +645,7 @@ export class Executor<T> {
             }
         }
 
-        return Planner.prepare(this.#query.constraints.map((constraint: Constraint): Constraint => Joiner.qualified(constraint, tables)), types);
+        return Planner.prepare(this.#query.constraints.map((constraint: Constraint): Constraint => Joiner.qualified(constraint, tables)), types, this.#connection.timezone);
     }
 
     /**

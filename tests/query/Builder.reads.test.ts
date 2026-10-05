@@ -135,11 +135,10 @@ interface Visit {
     at: Date | string | null;
 }
 
-// Built from local parts, since a time of day is read in local time.
 const visits: Omit<Visit, 'id'>[] = [
-    { label: 'morning', at: new Date(2026, 0, 5, 9, 30, 0) },
-    { label: 'later', at: new Date(2026, 1, 10, 9, 30, 15) },
-    { label: 'evening', at: new Date(2026, 2, 1, 18, 45, 0) },
+    { label: 'morning', at: new Date(Date.UTC(2026, 0, 5, 9, 30, 0)) },
+    { label: 'later', at: new Date(Date.UTC(2026, 1, 10, 9, 30, 15)) },
+    { label: 'evening', at: new Date(Date.UTC(2026, 2, 1, 18, 45, 0)) },
     { label: 'never', at: null },
     { label: 'garbled', at: 'not a date' },
 ];

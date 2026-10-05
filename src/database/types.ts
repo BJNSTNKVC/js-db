@@ -6,6 +6,7 @@ export interface ConnectionConfig {
     migrations?: MigrationConstructor[];
     seeders?: SeederConstructor[];
     strict?: boolean;
+    timezone?: 'UTC' | 'local' | (string & {});
 }
 
 export interface FreshOptions {

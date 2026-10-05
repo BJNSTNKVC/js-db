@@ -333,7 +333,7 @@ export class Blueprint {
         let stored: unknown;
 
         try {
-            stored = Enforcer.coerce(column.default, column.type, true);
+            stored = Enforcer.coerce(column.default, column.type, true, 'UTC');
         } catch (error: unknown) {
             throw new SchemaException(`${named} cannot default to [${String(column.default)}]: ${(error as Error).message}`);
         }

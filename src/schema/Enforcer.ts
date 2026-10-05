@@ -6,13 +6,13 @@ const FALSY: ReadonlySet<string> = new Set<string>(['false', '0']);
 
 const NUMERIC: RegExp = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
 
-const MOMENT: RegExp = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(?:Z|[+-](\d{2}):(\d{2}))?)?$/;
+const MOMENT: RegExp = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|[+-](\d{2}):(\d{2}))?)?$/;
 
 export class Enforcer {
     /**
-     * Coerce a value into its declared column type.
+     * Coerce a value into its declared column type, reading a calendar day or a time of day in the timezone.
      */
-    static coerce(value: unknown, type: ColumnType, strict: boolean): unknown {
+    static coerce(value: unknown, type: ColumnType, strict: boolean, timezone: string): unknown {
         if (value === null || value === undefined) {
             return value;
         }
@@ -36,7 +36,7 @@ export class Enforcer {
 
             case 'date':
             case 'datetime':
-                return this.#temporal(value, strict);
+                return this.#temporal(value, strict, timezone);
 
             default:
                 return this.#structured(value, strict);
@@ -46,7 +46,7 @@ export class Enforcer {
     /**
      * Prepare a record for insertion, applying defaults, timestamps and coercion.
      */
-    static insertable(record: Record<string, unknown>, schema: TableSchema, strict: boolean, at: Date): Record<string, unknown> {
+    static insertable(record: Record<string, unknown>, schema: TableSchema, strict: boolean, timezone: string, at: Date): Record<string, unknown> {
         const prepared: Record<string, unknown> = { ...record };
 
         this.#stamp(prepared, schema, at, true);
@@ -60,7 +60,7 @@ export class Enforcer {
                 prepared[column.name] = column.default;
             }
 
-            prepared[column.name] = this.#value(prepared[column.name], column, schema, strict);
+            prepared[column.name] = this.#value(prepared[column.name], column, schema, strict, timezone);
         }
 
         return prepared;
@@ -69,7 +69,7 @@ export class Enforcer {
     /**
      * Prepare a partial record for update, touching timestamps and coercing provided columns.
      */
-    static updatable(record: Record<string, unknown>, schema: TableSchema, strict: boolean, at: Date): Record<string, unknown> {
+    static updatable(record: Record<string, unknown>, schema: TableSchema, strict: boolean, timezone: string, at: Date): Record<string, unknown> {
         const prepared: Record<string, unknown> = { ...record };
 
         this.#stamp(prepared, schema, at, false);
@@ -79,7 +79,7 @@ export class Enforcer {
                 continue;
             }
 
-            prepared[column.name] = this.#value(prepared[column.name], column, schema, strict);
+            prepared[column.name] = this.#value(prepared[column.name], column, schema, strict, timezone);
         }
 
         return prepared;
@@ -88,17 +88,17 @@ export class Enforcer {
     /**
      * Coerce the value a write gives one column, enforcing nullability, or pass it through when the column is undeclared.
      */
-    static field(value: unknown, name: string, schema: TableSchema, strict: boolean): unknown {
+    static field(value: unknown, name: string, schema: TableSchema, strict: boolean, timezone: string): unknown {
         const column: ColumnSchema | undefined = schema.columns.find((candidate: ColumnSchema): boolean => candidate.name === name);
 
-        return column === undefined ? value : this.#value(value, column, schema, strict);
+        return column === undefined ? value : this.#value(value, column, schema, strict, timezone);
     }
 
     /**
      * Coerce a single column value, enforcing nullability.
      */
-    static #value(value: unknown, column: ColumnSchema, schema: TableSchema, strict: boolean): unknown {
-        const coerced: unknown = this.#accepted(this.coerce(value, column.type, strict), column, schema, strict);
+    static #value(value: unknown, column: ColumnSchema, schema: TableSchema, strict: boolean, timezone: string): unknown {
+        const coerced: unknown = this.#accepted(this.coerce(value, column.type, strict, timezone), column, schema, strict);
 
         if (coerced !== null && coerced !== undefined) {
             return coerced;
@@ -236,12 +236,12 @@ export class Enforcer {
     /**
      * Coerce a value into a date, reading a blank string as null.
      */
-    static #temporal(value: unknown, strict: boolean): Date | null {
+    static #temporal(value: unknown, strict: boolean, timezone: string): Date | null {
         if (typeof value === 'string' && value.trim() === '') {
             return null;
         }
 
-        const date: Date = this.#moment(value);
+        const date: Date = this.#moment(value, timezone);
 
         if (!Number.isNaN(date.getTime())) {
             return date;
@@ -255,9 +255,9 @@ export class Enforcer {
     }
 
     /**
-     * Read a date, a whole timestamp or an ISO 8601 string naming a real moment, a date alone as its local day, or an invalid date for anything else.
+     * Read a date, a whole timestamp or an ISO 8601 string naming a real moment, one without an offset as that wall clock in the timezone, or an invalid date for anything else.
      */
-    static #moment(value: unknown): Date {
+    static #moment(value: unknown, timezone: string): Date {
         if (value instanceof Date) {
             return value;
         }
@@ -272,17 +272,17 @@ export class Enforcer {
             return new Date(NaN);
         }
 
-        return parts[4] === undefined ? Calendar.read(value as string) : new Date((value as string).replace(' ', 'T'));
+        return parts[7] === undefined ? Calendar.read(value as string, timezone) : new Date((value as string).replace(' ', 'T'));
     }
 
     /**
      * Determine whether the parts of an ISO 8601 string name a moment that exists, rather than one that rolls over.
      */
     static #survives(parts: RegExpExecArray): boolean {
-        const [year, month, day, hour, minute, second, hours, minutes]: number[] = parts.slice(1).map((part: string | undefined): number => Number(part ?? 0)) as [number, number, number, number, number, number, number, number];
-        const date: Date = Calendar.midnight(year, month - 1, day);
+        const [year, month, day, hour, minute, second, , hours, minutes]: number[] = parts.slice(1).map((part: string | undefined): number => Number(part ?? 0)) as [number, number, number, number, number, number, number, number, number];
+        const date: Date = Calendar.midnight(year, month - 1, day, 'UTC');
 
-        return date.getMonth() === month - 1 && date.getDate() === day && hour <= 23 && minute <= 59 && second <= 59 && hours <= 23 && minutes <= 59;
+        return date.getUTCMonth() === month - 1 && date.getUTCDate() === day && hour <= 23 && minute <= 59 && second <= 59 && hours <= 23 && minutes <= 59;
     }
 
     /**

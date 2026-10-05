@@ -58,7 +58,8 @@ DB.table<User>('users')
 | `whereAll`  | Every one of the columns meets it       |
 | `whereNone` | None of the columns meets it            |
 
-Date columns can be constrained by their parts, read in local time:
+Date columns can be constrained by their parts, read in the connection's
+[timezone](#dates-and-timezones), UTC unless configured otherwise:
 
 ```ts
 DB.table<Post>('posts')
@@ -85,13 +86,17 @@ which compares as that number. Any other string, such as `''`, `'2026.0'`, `'-1'
 throws `SchemaException`.
 
 `whereTime` compares zero padded `HH:MM:SS` strings, and pads `HH:MM` with `:00`, so `'09:30'`
-means `09:30:00`. `whereDate` reads a `YYYY-MM-DD` string as that calendar day in the local
-timezone, so `'2026-02-01'` matches 1 February wherever the code runs, and a day the calendar does
-not have, such as `'2026-02-30'`, matches nothing. It reads any other string as `new Date` does, and
-a `Date` by the local day it falls on, and a value it cannot read as a date matches nothing under
-any operator. A column holding a date as a string is read the same way by every part: a `YYYY-MM-DD`
-string as the first moment of that local day, and any other string as `new Date` reads it. It compares whole days: `>` matches from the start of the next day, `<=` up to the end
-of the day, and `!=` everything before or after it.
+means `09:30:00`. Every part and `whereTime` read the day and time in the connection's timezone, so
+on a connection left at `'UTC'` a post at 21:00 on 14 January in New York falls on 15 January at
+`02:00:00`, and on one set to `'America/New_York'` on 14 January at `21:00:00`, on every device.
+`whereDate` reads a `YYYY-MM-DD` string as that calendar day in the connection's timezone, so
+`'2026-02-01'` matches 1 February wherever the code runs, and a day the calendar does not have,
+such as `'2026-02-30'`, matches nothing. It reads a date and time without an offset as that wall
+clock in the same timezone, any other string as `new Date` does, and a `Date` by the day it falls
+on in that timezone, and a value it cannot read as a date matches nothing under any operator. A
+column holding a date as a string is read the same way by every part. It compares whole days: `>`
+matches from the start of the next day, `<=` up to the end of the day, and `!=` everything before
+or after it.
 
 `whereDate` becomes a range and can be served by an index under every operator but `!=` and `<>`,
 which become a nested pair of ranges joined with `or` and are checked against every record the
@@ -117,15 +122,16 @@ to `where` and its `or` and `not` forms with every operator except `===`, `!==`,
 
 A date string therefore matches the moment it names, and `'true'` or `'false'` compared with a
 boolean column matches the rows holding `true` or `false`. A date-only string such as `'2026-02-01'`
-is the first moment of that local day, the moment a write stores for it, so
-`where('born_on', '2026-02-01')` finds the row the same string wrote, through an index or a scan.
-A day the calendar does not have, such as `'2026-02-30'`, is compared as given, so `=` matches no
-date. Any other string is the moment `new Date` reads. To match every moment of a day in a
-`datetime` column, use `whereDate`. Before 7.0.0 a date-only string was midnight UTC here as it was
-in a write, so the rows written before 7.0.0 no longer match it; see
-[Dates stored before 7.0.0](#dates-stored-before-700). A boolean column reads a string the way
-an insert stores it: `'false'`, `'0'` and `''` are `false` and every other string is `true`, so
-`where('active', 'no')` matches the active rows, just as inserting `'no'` stores `true`.
+is the first moment of that day in the connection's timezone, the moment a write stores for it, so
+`where('born_on', '2026-02-01')` finds the row the same string wrote, through an index or a scan,
+and a date and time without an offset, such as `'2026-02-01 09:30'`, is that wall clock in the same
+timezone. A day the calendar does not have, such as `'2026-02-30'`, is compared as given, so `=`
+matches no date. Any other string is the moment `new Date` reads. To match every moment of a day in
+a `datetime` column, use `whereDate`. A row written by an earlier release, or under another
+setting, can hold a different moment for the same string; see
+[Dates stored by earlier releases](#dates-stored-by-earlier-releases). A boolean column reads a
+string the way an insert stores it: `'false'`, `'0'` and `''` are `false` and every other string is
+`true`, so `where('active', 'no')` matches the active rows, just as inserting `'no'` stores `true`.
 
 A value that does not convert cleanly, such as `'1.5'` or `''` for an integer column or `'soon'` for
 a date column, is compared as given, the same loose way as before. `===` and `!==` never convert,
@@ -476,12 +482,13 @@ A blank string, one that is empty or holds only whitespace, is `null` in a numbe
 
 An ISO 8601 string is `YYYY-MM-DD`, optionally followed by `T` or a space and `HH:MM`, then
 optionally `:SS` and a fraction of a second, and then optionally `Z` or an offset such as `+02:00`.
-A time without `Z` or an offset is local, and a date alone is the first moment of that local day, so
-`'2024-01-15'` and `'2024-01-15 00:00'` store the same moment, and `getDate()` and `whereDay` read
-back the day that was written, wherever the code runs. On a day whose midnight a clock change skips,
-such as 8 September 2024 in Santiago, that first moment is 01:00. A date-only default is read when
-the row is written, so it names that day on the device writing it. Before 7.0.0 a date alone was
-stored as midnight UTC, as `new Date` reads it, which west of UTC is the evening before.
+A time without `Z` or an offset is that wall clock in the connection's timezone, and a date alone is
+the first moment of that day there, so `'2024-01-15'` and `'2024-01-15 00:00'` store the same
+moment, and `whereDay` reads back the day that was written, on every device. On a day whose midnight
+a clock change skips, such as 8 September 2024 in Santiago, that first moment is 01:00, and a time
+the clock skips moves forward by the gap. A time in an hour the clock repeats is its earlier moment.
+A date-only default is read when the row is written, in the timezone of the connection writing it.
+[Dates and timezones](#dates-and-timezones) shows what each setting stores.
 The date and time must exist, so `'2024-02-30'`, `'2023-02-29'` and `'24:00'` throw rather than
 roll over into the next day or month. Any other form `new Date` reads, such as `'01/15/2024'`,
 `'Jan 15 2024'`, `'2024'` or a `toUTCString()` string, throws, and so do `'1'` and `true`. A `date`
@@ -500,23 +507,110 @@ before writing, and turn a value the form holds in its own format, such as a dat
 Query values are read more leniently, since a value that does not convert is compared as given
 rather than refused. See [Constraints](#constraints).
 
-### Dates stored before 7.0.0
+### Dates and timezones
 
-A date-only string written before 7.0.0 was stored as midnight UTC, and the row still holds that
-moment. Upgrading changes new writes only, since rewriting the old rows needs the timezone each date
-was entered in, which the database never recorded. A table can therefore hold both:
+Each connection reads and stores every calendar day and time of day in the timezone its
+[`timezone`](configuration.md) option names:
 
-| Read                                             | West of UTC, as in New York        | East of UTC, as in Tokyo |
-|--------------------------------------------------|------------------------------------|--------------------------|
-| `getDate()`, `whereDay`, `whereDate` on that day | Old rows read as the day before    | Both read as that day    |
-| `where`, `whereIn`, `whereBetween` on the string | Only the rows written since 7.0.0  | The same                 |
-| `upsert` keyed on the string                     | Inserts beside an old row that day | The same                 |
+| Setting              | `'2024-01-15'` is stored as                 | 21:00 on 14 January in New York reads as |
+|----------------------|---------------------------------------------|------------------------------------------|
+| `'UTC'`, the default | `2024-01-15T00:00:00.000Z`, on every device | 15 January, `02:00:00`                   |
+| `'America/New_York'` | `2024-01-15T05:00:00.000Z`, on every device | 14 January, `21:00:00`                   |
+| `'local'`            | Midnight on the device that wrote it        | The day and time on the device reading   |
 
-An app whose users all share one timezone can move the old rows to the local day they name with a
-migration of its own, which runs once on each device, in that device's timezone. It rewrites only a
-date at exactly midnight UTC, so a value written since 7.0.0 or holding a time of day is left alone
-(except where the local timezone is UTC itself, where the two are the same moment), and running it a
-second time changes nothing:
+The setting never changes which moment a `datetime` column holds, only the day and time read from
+it. A `Date`'s own methods, such as `getDate()` and `toLocaleDateString()`, read the device's
+timezone, so a date stored as `'2024-01-15'` on a `'UTC'` connection shows as 14 January in New
+York. To show it as the day that was written, read it in the connection's timezone:
+
+```ts
+const born: Date = await DB.table('users').where('name', 'Alice').value<Date>('born_on') as Date;
+const timezone: string = DB.connection().timezone;
+
+born.toLocaleDateString(undefined, { timeZone: timezone === 'local' ? undefined : timezone });
+```
+
+On a `'UTC'` connection `getUTCDate()`, `getUTCMonth()` and `getUTCFullYear()` read the day
+directly. A date picker's `YYYY-MM-DD` value is best written as it is, since a write reads it as that
+day in the connection's timezone.
+
+### Dates stored by earlier releases
+
+A date-only string has been stored three ways, and a table that went through each release can hold
+all of them:
+
+- **Before 7.0.0**, as midnight UTC.
+- **By 7.0.0**, as midnight on the device that wrote it.
+- **Since 8.0.0**, as midnight in the connection's timezone.
+
+Rows written before 7.0.0 read correctly again under the default `'UTC'`, with nothing to do. Rows
+written by 7.0.0 west of UTC still fall on their day there, but not on the moment the string now
+names:
+
+| Setting          | `whereDate`, `whereDay` on that day                 | `where`, `whereIn`, `whereBetween` and `upsert` on the string |
+|------------------|-----------------------------------------------------|---------------------------------------------------------------|
+| `'UTC'`          | All but 7.0.0's from east of UTC, a day early there | Rows from before 7.0.0 and since 8.0.0                        |
+| `'local'`        | 7.0.0's and 8.0.0's, and older ones east of UTC     | Rows from 7.0.0 and since 8.0.0                               |
+| A named timezone | 8.0.0's, and 7.0.0's from a device in that timezone | The same                                                      |
+
+So an `upsert` keyed on the string inserts beside a row it does not match. An app that ran 7.0.0
+can keep reading those rows as written with `timezone: 'local'`, or move them to midnight UTC of
+the day they name with a migration of its own, which runs once on each device, in the timezone of
+the device that wrote them. It rewrites only a date at exactly the first moment of a local day, so a
+time of day and a midnight UTC written before 7.0.0 are left alone (except where the device's
+timezone is UTC itself on that date, where the two are the same moment and the date stays as it
+is), and running it a second time changes nothing:
+
+```ts
+function localMidnight(value: unknown): value is Date {
+    if (!(value instanceof Date)) {
+        return false;
+    }
+
+    const day: Date = new Date(2000, 0, 1);
+
+    // setFullYear keeps a year below 100 as given, where new Date(y, m, d) would read 19xx.
+    day.setFullYear(value.getFullYear(), value.getMonth(), value.getDate());
+    day.setHours(0, 0, 0, 0);
+
+    return day.getTime() === value.getTime();
+}
+
+function utcDay(held: Date): Date {
+    const day: Date = new Date(0);
+
+    day.setUTCFullYear(held.getFullYear(), held.getMonth(), held.getDate());
+
+    return day;
+}
+
+class StoreBirthdaysAsUtcDays extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        const held: unknown[] = await DB.table('users').pluck('born_on');
+        const stale: Map<number, Date> = new Map(held.filter(localMidnight).map((date: Date): [number, Date] => [date.getTime(), date]));
+
+        for (const date of stale.values()) {
+            await DB.table('users').where('born_on', date).update({ born_on: utcDay(date) });
+        }
+    }
+}
+```
+
+A day whose midnight a clock change skipped was stored at its first moment, such as 01:00 on
+8 September 2024 in Santiago, and `localMidnight` finds it too. Run it on a `date` column, or on a
+`datetime` column only when every local midnight in it came from a date-only string, since a moment
+really entered as midnight looks the same. On a table with `timestamps()`, the rewrite stamps
+`updated_at` on every row it moves. The queries join the migration's transaction, as
+[What a migration may await](migrations.md#what-a-migration-may-await) describes.
+
+An app that sets `timezone: 'local'` and still holds rows from before 7.0.0 can move them the other
+way, to the local day they name, with a migration that runs once on each device, in that device's
+timezone. It rewrites only a date at exactly midnight UTC, so a value written since 7.0.0 or holding
+a time of day is left alone (except where the local timezone is UTC itself, where the two are the
+same moment), and running it a second time changes nothing:
 
 ```ts
 function utcMidnight(value: unknown): value is Date {
@@ -549,10 +643,8 @@ class StoreBirthdaysAsLocalDays extends Migration {
 ```
 
 Run it on a `date` column, or on a `datetime` column only when every midnight UTC in it came from a
-date-only string, since a moment really entered as midnight UTC looks the same. On a table with
-`timestamps()`, the rewrite stamps `updated_at` on every row it moves. The queries join the
-migration's transaction, as [What a migration may await](migrations.md#what-a-migration-may-await)
-describes.
+date-only string, since a moment really entered as midnight UTC looks the same. It stamps
+`updated_at` and joins the migration's transaction as the one above does.
 
 > Modeled on Laravel's [Database: Query Builder](https://laravel.com/docs/12.x/queries). The method
 > names and their semantics match, and every terminal is asynchronous because IndexedDB is.

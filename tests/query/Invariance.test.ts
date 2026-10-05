@@ -491,7 +491,7 @@ function prepared(value: unknown, kind: Kind): unknown {
     }
 
     if (kind === 'datetime') {
-        const date: Date = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T00:00:00`) : new Date(value as string | number | Date);
+        const date: Date = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T00:00:00Z`) : new Date(value as string | number | Date);
         const readable: boolean = typeof value === 'string' || typeof value === 'number' || value instanceof Date;
 
         return readable && !Number.isNaN(date.getTime()) ? date : value;
@@ -584,23 +584,23 @@ function contains(held: unknown, value: unknown): Truth {
 }
 
 /**
- * Apply the documented semantics of whereYear, whereMonth and whereDay to one value, three-valued, reading its part in local time.
+ * Apply the documented semantics of whereYear, whereMonth and whereDay to one value, three-valued, reading its part in UTC.
  */
 function parted(held: unknown, which: DatePart, operator: DateOperator, given: number): Truth {
     if (!(held instanceof Date)) {
         return null;
     }
 
-    const part: number = which === 'year' ? held.getFullYear() : (which === 'month' ? held.getMonth() + 1 : held.getDate());
+    const part: number = which === 'year' ? held.getUTCFullYear() : (which === 'month' ? held.getUTCMonth() + 1 : held.getUTCDate());
 
     return compare(part, operator, given);
 }
 
 /**
- * Apply the documented semantics of whereDate to one value, three-valued, comparing it with the local day the given value names.
+ * Apply the documented semantics of whereDate to one value, three-valued, comparing it with the UTC day the given value names.
  */
 function dated(held: unknown, operator: DateOperator, given: Date | string): Truth {
-    const named: Date = typeof given === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(given) ? new Date(`${given}T00:00:00`) : new Date(given);
+    const named: Date = typeof given === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(given) ? new Date(`${given}T00:00:00Z`) : new Date(given);
 
     if (Number.isNaN(named.getTime())) {
         return false;
@@ -610,8 +610,8 @@ function dated(held: unknown, operator: DateOperator, given: Date | string): Tru
         return null;
     }
 
-    const first: number = new Date(named.getFullYear(), named.getMonth(), named.getDate()).getTime();
-    const next: number = new Date(named.getFullYear(), named.getMonth(), named.getDate() + 1).getTime();
+    const first: number = Date.UTC(named.getUTCFullYear(), named.getUTCMonth(), named.getUTCDate());
+    const next: number = Date.UTC(named.getUTCFullYear(), named.getUTCMonth(), named.getUTCDate() + 1);
     const at: number = held.getTime();
 
     switch (operator) {

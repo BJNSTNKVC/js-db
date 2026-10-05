@@ -35,8 +35,8 @@ const listeners: ((event: Event) => void)[] = [];
 /**
  * Build a connection against a uniquely named database.
  */
-function connect(migrations: MigrationConstructor[], database: string = `connection-${++sequence}`, strict: boolean = true): Connection {
-    const connection: Connection = new Connection('app', { database, migrations, strict });
+function connect(migrations: MigrationConstructor[], database: string = `connection-${++sequence}`, strict: boolean = true, timezone?: string): Connection {
+    const connection: Connection = new Connection('app', { database, migrations, strict, timezone });
 
     connections.push(connection);
 
@@ -707,6 +707,35 @@ describe('Connection strictness', (): void => {
     });
 });
 
+describe('Connection timezone', (): void => {
+    test('reads dates in UTC by default', (): void => {
+        expect(new Connection('app', { database: 'timezone-default' }).timezone).toEqual('UTC');
+    });
+
+    test.each([
+        ['UTC', 'UTC'],
+        ['local', 'local'],
+        ['America/New_York', 'America/New_York'],
+        ['america/new_york', 'America/New_York'],
+        ['Etc/UTC', 'UTC'],
+    ])('reads %o as %o', (timezone: string, resolved: string): void => {
+        expect(new Connection('app', { database: 'timezone-named', timezone }).timezone).toEqual(resolved);
+    });
+
+    test('refuses a timezone Intl does not know when it is built, naming the connection', (): void => {
+        const refused: unknown = ((): unknown => {
+            try {
+                return new Connection('reporting', { database: 'timezone-unknown', timezone: 'America/NewYork' });
+            } catch (error: unknown) {
+                return error;
+            }
+        })();
+
+        expect(refused).toEqual(new RangeError('Connection [reporting] names the timezone [America/NewYork], which is not one this browser knows. Use \'UTC\', \'local\' or an IANA name such as \'America/New_York\'.'));
+        expect((refused as RangeError).cause).toBeInstanceOf(RangeError);
+    });
+});
+
 describe('Migration transaction hazard', (): void => {
     const Slow: MigrationConstructor = migration('SlowMigration', async (): Promise<void> => {
         const context: MigrationContext = Migrator.alive();
@@ -1368,11 +1397,12 @@ const before: string[] = ['by_nickname(nickname)', 'users_city_age_index(city,ag
 /**
  * Migrate a users table holding the given rows, then alter it once with each given callback.
  */
-async function altered(callbacks: ((table: Blueprint) => void)[], options: { database?: string; rows?: Record<string, unknown>[]; strict?: boolean } = {}): Promise<Connection> {
+async function altered(callbacks: ((table: Blueprint) => void)[], options: { database?: string; rows?: Record<string, unknown>[]; strict?: boolean; timezone?: string } = {}): Promise<Connection> {
     const database: string = options.database ?? `connection-${++sequence}`;
     const strict: boolean = options.strict ?? true;
+    const timezone: string | undefined = options.timezone;
     const rows: Record<string, unknown>[] = options.rows ?? people;
-    const first: Connection = connect([CreateIndexedUsersTable], database, strict);
+    const first: Connection = connect([CreateIndexedUsersTable], database, strict, timezone);
 
     await first.migrate();
 
@@ -1389,7 +1419,7 @@ async function altered(callbacks: ((table: Blueprint) => void)[], options: { dat
         }
     });
 
-    const second: Connection = connect([CreateIndexedUsersTable, AlterUsersTable], database, strict);
+    const second: Connection = connect([CreateIndexedUsersTable, AlterUsersTable], database, strict, timezone);
 
     await second.migrate();
 
@@ -1736,21 +1766,40 @@ describe('Schema definitions IndexedDB cannot honor', (): void => {
             vi.unstubAllEnvs();
         });
 
-        test.each(['America/New_York', 'Asia/Tokyo', 'America/Santiago'])('backfills the local day it names in %s', async (timezone: string): Promise<void> => {
-            vi.stubEnv('TZ', timezone);
-
+        /**
+         * Add date columns defaulting to a date-only string and change another to one, on a connection set to the given timezone, and read what Alice holds.
+         */
+        async function backfilled(timezone?: string): Promise<{ connection: Connection; alice: Record<string, unknown> }> {
             const connection: Connection = await altered([(table: Blueprint): void => {
                 table.date('joined').default('2024-01-15');
                 table.datetime('seen').default('2024-01-15');
                 table.date('left').nullable();
             }, (table: Blueprint): void => {
                 table.date('left').nullable().default('2024-02-29').change();
-            }], { rows: [{ email: 'a@x', name: 'Alice' }] });
+            }], { rows: [{ email: 'a@x', name: 'Alice' }], timezone });
 
             const [alice]: Record<string, unknown>[] = await records(connection, 'users');
 
-            expect([alice?.['joined'], alice?.['seen'], alice?.['left']]).toEqual([new Date(2024, 0, 15), new Date(2024, 0, 15), new Date(2024, 1, 29)]);
+            return { connection, alice: alice as Record<string, unknown> };
+        }
+
+        test.each(['America/New_York', 'Asia/Tokyo', 'America/Santiago'])('backfills the local day it names in %s on a local connection', async (timezone: string): Promise<void> => {
+            vi.stubEnv('TZ', timezone);
+
+            const { connection, alice }: { connection: Connection; alice: Record<string, unknown> } = await backfilled('local');
+
+            expect([alice['joined'], alice['seen'], alice['left']]).toEqual([new Date(2024, 0, 15), new Date(2024, 0, 15), new Date(2024, 1, 29)]);
             expect((await connection.getColumns('users')).find((column: ColumnSchema): boolean => column.name === 'joined')?.default).toEqual('2024-01-15');
+        });
+
+        test.each(['America/New_York', 'Asia/Tokyo', 'America/Santiago'])('backfills midnight UTC by default and midnight in the migrating connection\'s timezone, with the process in %s', async (process: string): Promise<void> => {
+            vi.stubEnv('TZ', process);
+
+            const utc: Record<string, unknown> = (await backfilled()).alice;
+            const york: Record<string, unknown> = (await backfilled('America/New_York')).alice;
+
+            expect([utc['joined'], utc['seen'], utc['left']]).toEqual([new Date('2024-01-15T00:00:00.000Z'), new Date('2024-01-15T00:00:00.000Z'), new Date('2024-02-29T00:00:00.000Z')]);
+            expect([york['joined'], york['seen'], york['left']]).toEqual([new Date('2024-01-15T05:00:00.000Z'), new Date('2024-01-15T05:00:00.000Z'), new Date('2024-02-29T05:00:00.000Z')]);
         });
     });
 });

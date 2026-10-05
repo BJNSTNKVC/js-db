@@ -514,13 +514,25 @@ describe('Planner.convert', (): void => {
         ['boolean', 0, false],
         ['datetime', '2024-01-15T00:00:00.000Z', new Date('2024-01-15T00:00:00.000Z')],
         ['datetime', 0, new Date(0)],
-        ['date', '2024-01-15', new Date(2024, 0, 15)],
-        ['datetime', '2024-01-15', new Date(2024, 0, 15)],
-        ['datetime', '2024-01-15T10:00', new Date(2024, 0, 15, 10)],
-        ['date', '0099-01-01', new Date(new Date(99, 0, 1).setFullYear(99))],
         ['date', new Date(5), new Date(5)],
     ] as [ColumnType, unknown, unknown][])('reads a %s column\'s value %o as %o', (type: ColumnType, value: unknown, expected: unknown): void => {
-        expect(Planner.convert(value, type)).toEqual(expected);
+        expect(Planner.convert(value, type, 'UTC')).toEqual(expected);
+    });
+
+    test.each([
+        ['date', '2024-01-15', new Date(2024, 0, 15), '2024-01-15T00:00:00.000Z', '2024-01-15T05:00:00.000Z'],
+        ['datetime', '2024-01-15', new Date(2024, 0, 15), '2024-01-15T00:00:00.000Z', '2024-01-15T05:00:00.000Z'],
+        ['datetime', '2024-01-15T10:00', new Date(2024, 0, 15, 10), '2024-01-15T10:00:00.000Z', '2024-01-15T15:00:00.000Z'],
+        ['datetime', '2024-01-15 10:00', new Date(2024, 0, 15, 10), '2024-01-15T10:00:00.000Z', '2024-01-15T15:00:00.000Z'],
+        ['date', '0099-01-01', new Date(new Date(99, 0, 1).setFullYear(99)), '0099-01-01T00:00:00.000Z', '0099-01-01T04:56:02.000Z'],
+    ] as [ColumnType, string, Date, string, string][])('reads a %s column\'s value %o as a write does, in local time, in UTC and in a named timezone', (type: ColumnType, value: string, local: Date, utc: string, york: string): void => {
+        expect(Planner.convert(value, type, 'local')).toEqual(local);
+        expect((Planner.convert(value, type, 'UTC') as Date).toISOString()).toEqual(utc);
+        expect((Planner.convert(value, type, 'America/New_York') as Date).toISOString()).toEqual(york);
+    });
+
+    test.each(['local', 'UTC', 'America/New_York'])('keeps a string with Z or an offset as the moment it names in %s', (timezone: string): void => {
+        expect((Planner.convert('2024-01-15T10:00:00+02:00', 'datetime', timezone) as Date).toISOString()).toEqual('2024-01-15T08:00:00.000Z');
     });
 
     test.each([
@@ -544,64 +556,74 @@ describe('Planner.convert', (): void => {
         ['enum', 'draft'],
         ['json', '{"a":1}'],
     ] as [ColumnType, unknown][])('leaves a %s column\'s value %o as given', (type: ColumnType, value: unknown): void => {
-        expect(Planner.convert(value, type)).toBe(value);
+        for (const timezone of ['local', 'UTC', 'America/New_York']) {
+            expect(Planner.convert(value, type, timezone)).toBe(value);
+        }
     });
 });
 
 describe('Planner.prepare', (): void => {
     test.each(['=', '==', '!=', '<>', '<', '>', '<=', '>='] as Operator[])('converts the value compared by %s', (operator: Operator): void => {
-        expect(Planner.prepare([basic('age', operator, '18')], types)).toEqual([basic('age', operator, 18)]);
+        expect(Planner.prepare([basic('age', operator, '18')], types, 'UTC')).toEqual([basic('age', operator, 18)]);
     });
 
     test.each(['===', '!==', 'like', 'not like'] as Operator[])('keeps the value compared by %s as given', (operator: Operator): void => {
-        expect(Planner.prepare([basic('age', operator, '18')], types)).toEqual([basic('age', operator, '18')]);
+        expect(Planner.prepare([basic('age', operator, '18')], types, 'UTC')).toEqual([basic('age', operator, '18')]);
     });
 
     test('converts every value of a whereIn and both bounds of a between', (): void => {
         expect(Planner.prepare([
             { type: 'in', column: 'id', values: ['1', 2], conjunction: 'and', not: true },
             { type: 'between', column: 'born', from: '2024-01-01T00:00:00.000Z', to: 0, conjunction: 'or', not: false },
-        ], types)).toEqual([
+        ], types, 'UTC')).toEqual([
             { type: 'in', column: 'id', values: [1, 2], conjunction: 'and', not: true },
             { type: 'between', column: 'born', from: new Date('2024-01-01T00:00:00.000Z'), to: new Date(0), conjunction: 'or', not: false },
         ]);
     });
 
+    test.each([
+        ['local', new Date(2024, 0, 15)],
+        ['UTC', new Date('2024-01-15T00:00:00.000Z')],
+        ['America/New_York', new Date('2024-01-15T05:00:00.000Z')],
+    ])('converts a date string in %s', (timezone: string, expected: Date): void => {
+        expect(Planner.prepare([basic('born', '=', '2024-01-15')], types, timezone)).toEqual([basic('born', '=', expected)]);
+    });
+
     test('converts inside a nested group', (): void => {
         const nested: Constraint = { type: 'nested', constraints: [basic('active', '=', 'true')], conjunction: 'and', not: true };
 
-        expect(Planner.prepare([nested], types)).toEqual([{ ...nested, constraints: [basic('active', '=', true)] }]);
+        expect(Planner.prepare([nested], types, 'UTC')).toEqual([{ ...nested, constraints: [basic('active', '=', true)] }]);
     });
 
     test('keeps the value given for a JSON path, which has no declared type', (): void => {
-        expect(Planner.prepare([basic('tags->count', '=', '18')], types)).toEqual([basic('tags->count', '=', '18')]);
+        expect(Planner.prepare([basic('tags->count', '=', '18')], types, 'UTC')).toEqual([basic('tags->count', '=', '18')]);
     });
 
     test('keeps the value given for an undeclared column', (): void => {
-        expect(Planner.prepare([basic('missing', '=', '18')], types)).toEqual([basic('missing', '=', '18')]);
+        expect(Planner.prepare([basic('missing', '=', '18')], types, 'UTC')).toEqual([basic('missing', '=', '18')]);
     });
 
     test('keeps a value that fails to convert as given, and off the index', (): void => {
-        const prepared: Constraint[] = Planner.prepare([basic('age', '<', '1.5')], types);
+        const prepared: Constraint[] = Planner.prepare([basic('age', '<', '1.5')], types, 'UTC');
 
         expect(prepared).toEqual([basic('age', '<', '1.5')]);
         expect(Planner.plan(prepared, [], users)).toMatchObject({ source: 'scan', residual: prepared });
     });
 
     test('puts a converted value on the index', (): void => {
-        expect(Planner.plan(Planner.prepare([basic('age', '<', '18')], types), [], users).range).toEqual(IDBKeyRange.upperBound(18, true));
+        expect(Planner.plan(Planner.prepare([basic('age', '<', '18')], types, 'UTC'), [], users).range).toEqual(IDBKeyRange.upperBound(18, true));
     });
 
     test('leaves constraints that carry no comparable value alone', (): void => {
         const constraints: Constraint[] = [
             { type: 'null', column: 'age', conjunction: 'and', not: false },
             { type: 'column', column: 'age', operator: '=', other: 'score', conjunction: 'and', not: false },
-            { type: 'part', column: 'born', part: 'year', operator: '=', value: 2024, conjunction: 'and', not: false },
-            { type: 'time', column: 'born', operator: '=', value: '09:30:00', conjunction: 'and', not: false },
+            { type: 'part', column: 'born', part: 'year', operator: '=', value: 2024, timezone: 'UTC', conjunction: 'and', not: false },
+            { type: 'time', column: 'born', operator: '=', value: '09:30:00', timezone: 'UTC', conjunction: 'and', not: false },
             { type: 'json-contains', column: 'tags', value: '1', conjunction: 'and', not: false },
             { type: 'json-length', column: 'tags', operator: '=', value: 1, conjunction: 'and', not: false },
         ];
 
-        expect(Planner.prepare(constraints, types)).toEqual(constraints);
+        expect(Planner.prepare(constraints, types, 'UTC')).toEqual(constraints);
     });
 });

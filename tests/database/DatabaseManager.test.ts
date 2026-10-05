@@ -78,6 +78,21 @@ describe('DB.configure', (): void => {
         expect(DB.connection()).not.toBe(first);
     });
 
+    test('refuses a timezone Intl does not know, keeping the configuration before it', (): void => {
+        const first: Connection = DB.connection();
+
+        expect((): void => DB.configure({
+            default    : 'app',
+            connections: {
+                app    : { database: 'app' },
+                distant: { database: 'distant', timezone: 'Mars/Olympus' },
+            },
+        })).toThrow(new RangeError('Connection [distant] names the timezone [Mars/Olympus], which is not one this browser knows. Use \'UTC\', \'local\' or an IANA name such as \'America/New_York\'.'));
+
+        expect(DB.connection()).toBe(first);
+        expect(DB.connection('reporting').name).toEqual('reporting');
+    });
+
     test('fails to resolve a connection before anything is configured', (): void => {
         DB.configure({ default: 'app', connections: {} });
 

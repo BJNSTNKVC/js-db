@@ -48,16 +48,16 @@ export class Planner {
     }
 
     /**
-     * Convert the values the constraints compare with declared columns into those columns' types.
+     * Convert the values the constraints compare with declared columns into those columns' types, reading dates in the timezone.
      */
-    static prepare(constraints: readonly Constraint[], types: ReadonlyMap<string, ColumnType>): Constraint[] {
-        return constraints.map((constraint: Constraint): Constraint => this.#prepared(constraint, types));
+    static prepare(constraints: readonly Constraint[], types: ReadonlyMap<string, ColumnType>, timezone: string): Constraint[] {
+        return constraints.map((constraint: Constraint): Constraint => this.#prepared(constraint, types, timezone));
     }
 
     /**
-     * Convert a value into the given column type, or leave it as given when it does not convert cleanly.
+     * Convert a value into the given column type, reading a date in the timezone, or leave it as given when it does not convert cleanly.
      */
-    static convert(value: unknown, type: ColumnType): unknown {
+    static convert(value: unknown, type: ColumnType, timezone: string): unknown {
         if (value === null || value === undefined) {
             return value;
         }
@@ -75,7 +75,7 @@ export class Planner {
 
             case 'date':
             case 'datetime':
-                return this.#date(value) ?? value;
+                return this.#date(value, timezone) ?? value;
 
             default:
                 return value;
@@ -326,9 +326,9 @@ export class Planner {
     /**
      * Convert the values a single constraint compares, when its column is declared.
      */
-    static #prepared(constraint: Constraint, types: ReadonlyMap<string, ColumnType>): Constraint {
+    static #prepared(constraint: Constraint, types: ReadonlyMap<string, ColumnType>, timezone: string): Constraint {
         if (constraint.type === 'nested') {
-            return { ...constraint, constraints: this.prepare(constraint.constraints, types) };
+            return { ...constraint, constraints: this.prepare(constraint.constraints, types, timezone) };
         }
 
         if (constraint.type !== 'basic' && constraint.type !== 'in' && constraint.type !== 'between') {
@@ -342,14 +342,14 @@ export class Planner {
         }
 
         if (constraint.type === 'in') {
-            return { ...constraint, values: constraint.values.map((value: unknown): unknown => this.convert(value, type)) };
+            return { ...constraint, values: constraint.values.map((value: unknown): unknown => this.convert(value, type, timezone)) };
         }
 
         if (constraint.type === 'between') {
-            return { ...constraint, from: this.convert(constraint.from, type), to: this.convert(constraint.to, type) };
+            return { ...constraint, from: this.convert(constraint.from, type, timezone), to: this.convert(constraint.to, type, timezone) };
         }
 
-        return CONVERTED.has(constraint.operator) ? { ...constraint, value: this.convert(constraint.value, type) } : constraint;
+        return CONVERTED.has(constraint.operator) ? { ...constraint, value: this.convert(constraint.value, type, timezone) } : constraint;
     }
 
     /**
@@ -362,14 +362,14 @@ export class Planner {
     }
 
     /**
-     * Read a value as a valid date, a YYYY-MM-DD string as its local day, or null when it is not one.
+     * Read a value as a valid date, a YYYY-MM-DD string, alone or with a time but no offset, in the timezone, or null when it is not one.
      */
-    static #date(value: unknown): Date | null {
+    static #date(value: unknown, timezone: string): Date | null {
         if (!(value instanceof Date) && typeof value !== 'string' && typeof value !== 'number') {
             return null;
         }
 
-        const date: Date = value instanceof Date ? value : Calendar.read(value);
+        const date: Date = value instanceof Date ? value : Calendar.read(value, timezone);
 
         return Number.isNaN(date.getTime()) ? null : date;
     }

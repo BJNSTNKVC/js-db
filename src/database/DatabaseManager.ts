@@ -49,15 +49,19 @@ export class DatabaseManager {
     static #logger: ((event: Event) => void) | null = null;
 
     /**
-     * Register the database configuration, replacing anything registered before.
+     * Register the database configuration, building each connection before replacing anything registered before.
      */
     static configure(config: DatabaseConfig): void {
+        const connections: Map<string, Connection> = new Map<string, Connection>(
+            Object.entries(config.connections).map(([name, entry]: [string, ConnectionConfig]): [string, Connection] => [name, new Connection(name, entry)]),
+        );
+
         for (const connection of this.#connections.values()) {
             connection.disconnect();
         }
 
         this.#config = config;
-        this.#connections = new Map<string, Connection>();
+        this.#connections = connections;
     }
 
     /**

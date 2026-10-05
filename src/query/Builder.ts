@@ -5,6 +5,7 @@ import { Grouping } from './Grouping';
 import { Executor } from './Executor';
 import { Writer } from './Writer';
 import { Calendar } from '../schema/Calendar';
+import type { Parts } from '../schema/Calendar';
 import { Enforcer } from '../schema/Enforcer';
 import type { Connection } from '../database/Connection';
 import type { ColumnSchema, TableSchema } from '../schema/types';
@@ -256,12 +257,13 @@ export class Builder<T = Record<string, unknown>> {
     whereDate(column: Key<T>, operator: DateOperator, value: Date | string): this;
     whereDate(column: Key<T>, ...parameters: unknown[]): this {
         const resolved: { operator: DateOperator; value: unknown } = this.#dated(parameters);
-        const day: Date = Calendar.read(resolved.value as Date | string);
+        const timezone: string = this.#connection.timezone;
+        const day: Parts = Calendar.parts(Calendar.read(resolved.value as Date | string, timezone), timezone);
 
         // A day is expressed as the range it covers, so an indexed column can still drive the scan
         // and a stored time of day does not have to match.
-        const from: Date = Calendar.midnight(day.getFullYear(), day.getMonth(), day.getDate());
-        const to: Date = new Date(Calendar.midnight(day.getFullYear(), day.getMonth(), day.getDate() + 1).getTime() - 1);
+        const from: Date = Calendar.midnight(day.year, day.month, day.day, timezone);
+        const to: Date = new Date(Calendar.midnight(day.year, day.month, day.day + 1, timezone).getTime() - 1);
 
         if (resolved.operator === '=') {
             return this.#push({ type: 'between', column, from, to, conjunction: 'and', not: false });
@@ -320,7 +322,7 @@ export class Builder<T = Record<string, unknown>> {
         // Times compare as strings, so one given without seconds is padded to the stored shape.
         const time: string = /^\d{2}:\d{2}$/.test(given) ? `${given}:00` : given;
 
-        return this.#push({ type: 'time', column, operator: resolved.operator, value: time, conjunction: 'and', not: false });
+        return this.#push({ type: 'time', column, operator: resolved.operator, value: time, timezone: this.#connection.timezone, conjunction: 'and', not: false });
     }
 
     /**
@@ -996,12 +998,13 @@ export class Builder<T = Record<string, unknown>> {
 
         const schema: TableSchema = await this.#connection.schema(this.#table);
         const strict: boolean = this.#connection.strict;
+        const timezone: string = this.#connection.timezone;
         const prepared: Record<string, unknown> = await this.#changes(extra);
 
         return this.#executor().modify((record: Record<string, unknown>): Record<string, unknown> => ({
             ...record,
             ...prepared,
-            [own]: Enforcer.field(Number(record[own] ?? 0) + amount, own, schema, strict),
+            [own]: Enforcer.field(Number(record[own] ?? 0) + amount, own, schema, strict, timezone),
         }), [own, ...Object.keys(prepared)]);
     }
 
@@ -1016,7 +1019,7 @@ export class Builder<T = Record<string, unknown>> {
             changes[await this.#own(column)] = value;
         }
 
-        return Writer.changes(changes, schema, this.#connection.strict);
+        return Writer.changes(changes, schema, this.#connection.strict, this.#connection.timezone);
     }
 
     /**
@@ -1179,7 +1182,7 @@ export class Builder<T = Record<string, unknown>> {
 
         const value: number = typeof resolved.value === 'string' ? Number(resolved.value) : resolved.value as number;
 
-        return this.#push({ type: 'part', column, part, operator: resolved.operator, value, conjunction, not: false });
+        return this.#push({ type: 'part', column, part, operator: resolved.operator, value, timezone: this.#connection.timezone, conjunction, not: false });
     }
 
     /**

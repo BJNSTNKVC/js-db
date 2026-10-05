@@ -148,9 +148,10 @@ as given, leaving the string `'2'` in an integer column, where the index sorts i
 number. Rows written that way stay as they are.
 
 Likewise, `table.date('joined').default('2024-01-15')` gives each row the first moment of
-15 January in the local timezone of the device running the migration, as an insert relying on the
-default would store it. Before 7.0.0 the rows took midnight UTC, and they keep it. See
-[Dates stored before 7.0.0](querying.md#dates-stored-before-700).
+15 January in the migrating connection's [timezone](querying.md#dates-and-timezones), midnight UTC
+by default, as an insert relying on the default would store it. 7.0.0 used the timezone of the device
+running the migration, and earlier releases midnight UTC, and the rows keep what they took. See
+[Dates stored by earlier releases](querying.md#dates-stored-by-earlier-releases).
 
 Each `Schema.table` call is checked on its own, so a default given by a later call in the same
 migration comes too late. Declare the default with the column, or add it as nullable and make it

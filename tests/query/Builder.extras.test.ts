@@ -338,15 +338,17 @@ describe('Builder date parts', (): void => {
     });
 });
 
-describe('Builder.whereDate in the local timezone', (): void => {
+describe('Builder.whereDate in the connection\'s timezone', (): void => {
     const zone: string = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    let days: Connection;
+    const connections: Map<string, Connection> = new Map<string, Connection>();
+
+    const PROCESSES: string[] = ['America/New_York', 'Asia/Tokyo', 'America/Santiago'];
 
     /**
-     * Begin a query against the moments table.
+     * Begin a query against the moments table on the connection set to the given timezone.
      */
-    function moments(): Builder<Moment> {
-        return days.table<Moment>('moments');
+    function moments(timezone: string = 'local'): Builder<Moment> {
+        return (connections.get(timezone) as Connection).table<Moment>('moments');
     }
 
     /**
@@ -362,13 +364,13 @@ describe('Builder.whereDate in the local timezone', (): void => {
     }
 
     /**
-     * Run the rest of the test in the given timezone, and store the named moments in both columns.
+     * Run the rest of the test with the process in the given timezone, and store the named moments in both columns through the connection set to another.
      */
-    async function store(timezone: string, rows: Record<string, () => Date>): Promise<void> {
-        vi.stubEnv('TZ', timezone);
+    async function store(process: string, rows: Record<string, () => Date>, timezone: string = 'local'): Promise<void> {
+        vi.stubEnv('TZ', process);
 
-        await moments().truncate();
-        await moments().insert(Object.entries(rows).map(([name, at]: [string, () => Date]): Omit<Moment, 'id'> => ({ name, indexed: at(), plain: at() })));
+        await moments(timezone).truncate();
+        await moments(timezone).insert(Object.entries(rows).map(([name, at]: [string, () => Date]): Omit<Moment, 'id'> => ({ name, indexed: at(), plain: at() })));
     }
 
     /**
@@ -379,9 +381,13 @@ describe('Builder.whereDate in the local timezone', (): void => {
     }
 
     beforeAll(async (): Promise<void> => {
-        days = new Connection('app', { database: 'builder-extras-days', migrations: [CreateMomentsTable] });
+        for (const timezone of ['local', 'UTC', 'America/New_York', 'America/Santiago']) {
+            const connection: Connection = new Connection('app', { database: `builder-extras-days-${timezone.replace('/', '-')}`, migrations: [CreateMomentsTable], timezone });
 
-        await days.migrate();
+            await connection.migrate();
+
+            connections.set(timezone, connection);
+        }
     });
 
     afterEach((): void => {
@@ -390,72 +396,6 @@ describe('Builder.whereDate in the local timezone', (): void => {
         vi.stubEnv('TZ', zone);
         vi.unstubAllEnvs();
     });
-
-    const WEEK: Record<string, () => Date> = {
-        sunday   : (): Date => local(2024, 1, 14),
-        monday   : (): Date => local(2024, 1, 15),
-        tuesday  : (): Date => local(2024, 1, 16),
-        leap     : (): Date => local(2024, 2, 29),
-        march    : (): Date => local(2024, 3, 1),
-        antiquity: (): Date => local(50, 1, 15),
-        modern   : (): Date => local(1950, 1, 15),
-    };
-
-    describe.each([
-        ['America/New_York', 'indexed', 'index:moments_indexed_index'],
-        ['America/New_York', 'plain', 'scan'],
-        ['Asia/Tokyo', 'indexed', 'index:moments_indexed_index'],
-        ['Asia/Tokyo', 'plain', 'scan'],
-    ] as [string, 'indexed' | 'plain', string][])('in %s through the %s column', (timezone: string, column: 'indexed' | 'plain', plan: string): void => {
-        test('selects the day a date string names', async (): Promise<void> => {
-            await store(timezone, WEEK);
-
-            expect(await moments().whereDate(column, '2024-01-15').explain()).toEqual(plan);
-            expect(await named(moments().whereDate(column, '2024-01-15'))).toEqual(['monday']);
-        });
-
-        test('selects the same rows from a date string and the matching date', async (): Promise<void> => {
-            await store(timezone, WEEK);
-
-            expect(await named(moments().whereDate(column, '2024-01-15'))).toEqual(await named(moments().whereDate(column, local(2024, 1, 15, 18))));
-            expect(await named(moments().whereDate(column, local(2024, 1, 15, 18)))).toEqual(['monday']);
-        });
-
-        test('selects nothing for a day the calendar does not have', async (): Promise<void> => {
-            await store(timezone, WEEK);
-
-            expect(await named(moments().whereDate(column, '2024-02-30'))).toEqual([]);
-            expect(await named(moments().whereDate(column, '2024-13-01'))).toEqual([]);
-        });
-
-        test('reads a year below 100 as given', async (): Promise<void> => {
-            await store(timezone, WEEK);
-
-            expect(await named(moments().whereDate(column, '0050-01-15'))).toEqual(['antiquity']);
-            expect(await named(moments().whereDate(column, local(50, 1, 15)))).toEqual(['antiquity']);
-        });
-    });
-
-    test.each(['indexed', 'plain'] as const)('covers the whole of a day whose midnight is skipped, through the %s column', async (column: 'indexed' | 'plain'): Promise<void> => {
-        await store('America/Santiago', {
-            before: (): Date => new Date(new Date(2024, 8, 8).getTime() - 1),
-            first : (): Date => new Date(2024, 8, 8),
-            last  : (): Date => new Date(new Date(2024, 8, 9).getTime() - 1),
-            after : (): Date => new Date(2024, 8, 9),
-        });
-
-        expect(new Date(2024, 8, 8).getHours()).toEqual(1);
-        expect(await named(moments().whereDate(column, '2024-09-08'))).toEqual(['first', 'last']);
-        expect(await named(moments().whereDate(column, new Date(2024, 8, 8, 12)))).toEqual(['first', 'last']);
-    });
-
-    const EDGES: Record<string, () => Date> = {
-        before: (): Date => new Date(new Date(2024, 8, 8).getTime() - 1),
-        first : (): Date => new Date(2024, 8, 8),
-        noon  : (): Date => new Date(2024, 8, 8, 12),
-        last  : (): Date => new Date(new Date(2024, 8, 9).getTime() - 1),
-        after : (): Date => new Date(2024, 8, 9),
-    };
 
     const SPANS: [DateOperator, string[]][] = [
         ['=', ['first', 'last', 'noon']],
@@ -487,81 +427,270 @@ describe('Builder.whereDate in the local timezone', (): void => {
         return seen;
     }
 
-    describe.each([
-        ['America/New_York', 'indexed'],
-        ['America/New_York', 'plain'],
-        ['Asia/Tokyo', 'indexed'],
-        ['Asia/Tokyo', 'plain'],
-        ['America/Santiago', 'indexed'],
-        ['America/Santiago', 'plain'],
-    ] as [string, 'indexed' | 'plain'][])('with an operator in %s through the %s column', (timezone: string, column: 'indexed' | 'plain'): void => {
-        test.each(SPANS)('%s selects the moments on its side of the local day', async (operator: DateOperator, expected: string[]): Promise<void> => {
-            await store(timezone, EDGES);
-
-            expect(await named(moments().whereDate(column, operator, '2024-09-08'))).toEqual(expected);
-            expect(await named(moments().whereDate(column, operator, new Date(2024, 8, 8, 18)))).toEqual(expected);
-        });
-    });
-
-    test.each(SPANS)('%s plans through the index unless it excludes the day', async (operator: DateOperator): Promise<void> => {
-        await store('America/New_York', EDGES);
-
-        const plan: string = operator === '!=' || operator === '<>' ? 'scan' : 'index:moments_indexed_index';
-
-        expect(await moments().whereDate('indexed', operator, '2024-09-08').explain()).toEqual(plan);
-        expect(await plans((): Promise<Moment[]> => moments().whereDate('indexed', operator, '2024-09-08').get())).toEqual([plan]);
-        expect(await moments().whereDate('plain', operator, '2024-09-08').explain()).toEqual('scan');
-    });
-
-    test.each(['!=', '<>'] as DateOperator[])('%s leaves another constraint free to drive the query', async (operator: DateOperator): Promise<void> => {
-        await store('America/New_York', EDGES);
-
-        const id: number = (await moments().where('name', 'after').first() as Moment).id;
-
-        expect(await moments().whereDate('indexed', operator, '2024-09-08').where('id', id).explain()).toEqual('key');
-        expect(await named(moments().whereDate('indexed', operator, '2024-09-08').where('id', id))).toEqual(['after']);
-        expect(await moments().whereDate('indexed', operator, '2024-09-08').where('indexed', '>', new Date(2024, 8, 8, 18)).explain()).toEqual('index:moments_indexed_index');
-        expect(await named(moments().whereDate('indexed', operator, '2024-09-08').where('indexed', '>', new Date(2024, 8, 8, 18)))).toEqual(['after']);
-    });
-
-    describe('beside a date-only string stored before 7.0.0', (): void => {
-        const STORED: Record<string, () => Date> = {
-            before: (): Date => new Date('2024-01-15T00:00:00.000Z'),
-            since : (): Date => '2024-01-15' as unknown as Date,
-            next  : (): Date => '2024-01-16' as unknown as Date,
+    describe('on a local connection', (): void => {
+        const WEEK: Record<string, () => Date> = {
+            sunday   : (): Date => local(2024, 1, 14),
+            monday   : (): Date => local(2024, 1, 15),
+            tuesday  : (): Date => local(2024, 1, 16),
+            leap     : (): Date => local(2024, 2, 29),
+            march    : (): Date => local(2024, 3, 1),
+            antiquity: (): Date => local(50, 1, 15),
+            modern   : (): Date => local(1950, 1, 15),
         };
 
         describe.each([
-            ['America/New_York', 'indexed', false],
-            ['America/New_York', 'plain', false],
-            ['Asia/Tokyo', 'indexed', true],
-            ['Asia/Tokyo', 'plain', true],
-            ['America/Santiago', 'indexed', false],
-            ['America/Santiago', 'plain', false],
-        ] as [string, 'indexed' | 'plain', boolean][])('in %s through the %s column', (timezone: string, column: 'indexed' | 'plain', east: boolean): void => {
-            test('matches only the row written since by the same string under where, whereIn and whereBetween', async (): Promise<void> => {
-                await store(timezone, STORED);
+            ['America/New_York', 'indexed', 'index:moments_indexed_index'],
+            ['America/New_York', 'plain', 'scan'],
+            ['Asia/Tokyo', 'indexed', 'index:moments_indexed_index'],
+            ['Asia/Tokyo', 'plain', 'scan'],
+        ] as [string, 'indexed' | 'plain', string][])('in %s through the %s column', (timezone: string, column: 'indexed' | 'plain', plan: string): void => {
+            test('selects the day a date string names', async (): Promise<void> => {
+                await store(timezone, WEEK);
 
-                expect(await named(moments().where(column, '2024-01-15'))).toEqual(['since']);
-                expect(await named(moments().whereIn(column, ['2024-01-15']))).toEqual(['since']);
-                expect(await named(moments().whereBetween(column, ['2024-01-15', '2024-01-15']))).toEqual(['since']);
-                expect(await named(moments().whereBetween(column, ['2024-01-15', '2024-01-16']))).toEqual(east ? ['before', 'next', 'since'] : ['next', 'since']);
+                expect(await moments().whereDate(column, '2024-01-15').explain()).toEqual(plan);
+                expect(await named(moments().whereDate(column, '2024-01-15'))).toEqual(['monday']);
             });
 
-            test('reads the row stored before as the day before west of UTC', async (): Promise<void> => {
-                await store(timezone, STORED);
+            test('selects the same rows from a date string and the matching date', async (): Promise<void> => {
+                await store(timezone, WEEK);
 
-                const before: Moment = await moments().where('name', 'before').firstOrFail();
+                expect(await named(moments().whereDate(column, '2024-01-15'))).toEqual(await named(moments().whereDate(column, local(2024, 1, 15, 18))));
+                expect(await named(moments().whereDate(column, local(2024, 1, 15, 18)))).toEqual(['monday']);
+            });
 
-                expect(before[column].getDate()).toEqual(east ? 15 : 14);
-                expect(await named(moments().whereDate(column, '2024-01-15'))).toEqual(east ? ['before', 'since'] : ['since']);
-                expect(await named(moments().whereDay(column, 15))).toEqual(east ? ['before', 'since'] : ['since']);
+            test('selects nothing for a day the calendar does not have', async (): Promise<void> => {
+                await store(timezone, WEEK);
+
+                expect(await named(moments().whereDate(column, '2024-02-30'))).toEqual([]);
+                expect(await named(moments().whereDate(column, '2024-13-01'))).toEqual([]);
+            });
+
+            test('reads a year below 100 as given', async (): Promise<void> => {
+                await store(timezone, WEEK);
+
+                expect(await named(moments().whereDate(column, '0050-01-15'))).toEqual(['antiquity']);
+                expect(await named(moments().whereDate(column, local(50, 1, 15)))).toEqual(['antiquity']);
+            });
+        });
+
+        test.each(['indexed', 'plain'] as const)('covers the whole of a day whose midnight is skipped, through the %s column', async (column: 'indexed' | 'plain'): Promise<void> => {
+            await store('America/Santiago', {
+                before: (): Date => new Date(new Date(2024, 8, 8).getTime() - 1),
+                first : (): Date => new Date(2024, 8, 8),
+                last  : (): Date => new Date(new Date(2024, 8, 9).getTime() - 1),
+                after : (): Date => new Date(2024, 8, 9),
+            });
+
+            expect(new Date(2024, 8, 8).getHours()).toEqual(1);
+            expect(await named(moments().whereDate(column, '2024-09-08'))).toEqual(['first', 'last']);
+            expect(await named(moments().whereDate(column, new Date(2024, 8, 8, 12)))).toEqual(['first', 'last']);
+        });
+
+        const EDGES: Record<string, () => Date> = {
+            before: (): Date => new Date(new Date(2024, 8, 8).getTime() - 1),
+            first : (): Date => new Date(2024, 8, 8),
+            noon  : (): Date => new Date(2024, 8, 8, 12),
+            last  : (): Date => new Date(new Date(2024, 8, 9).getTime() - 1),
+            after : (): Date => new Date(2024, 8, 9),
+        };
+
+        describe.each([
+            ['America/New_York', 'indexed'],
+            ['America/New_York', 'plain'],
+            ['Asia/Tokyo', 'indexed'],
+            ['Asia/Tokyo', 'plain'],
+            ['America/Santiago', 'indexed'],
+            ['America/Santiago', 'plain'],
+        ] as [string, 'indexed' | 'plain'][])('with an operator in %s through the %s column', (timezone: string, column: 'indexed' | 'plain'): void => {
+            test.each(SPANS)('%s selects the moments on its side of the local day', async (operator: DateOperator, expected: string[]): Promise<void> => {
+                await store(timezone, EDGES);
+
+                expect(await named(moments().whereDate(column, operator, '2024-09-08'))).toEqual(expected);
+                expect(await named(moments().whereDate(column, operator, new Date(2024, 8, 8, 18)))).toEqual(expected);
+            });
+        });
+
+        test.each(SPANS)('%s plans through the index unless it excludes the day', async (operator: DateOperator): Promise<void> => {
+            await store('America/New_York', EDGES);
+
+            const plan: string = operator === '!=' || operator === '<>' ? 'scan' : 'index:moments_indexed_index';
+
+            expect(await moments().whereDate('indexed', operator, '2024-09-08').explain()).toEqual(plan);
+            expect(await plans((): Promise<Moment[]> => moments().whereDate('indexed', operator, '2024-09-08').get())).toEqual([plan]);
+            expect(await moments().whereDate('plain', operator, '2024-09-08').explain()).toEqual('scan');
+        });
+
+        test.each(['!=', '<>'] as DateOperator[])('%s leaves another constraint free to drive the query', async (operator: DateOperator): Promise<void> => {
+            await store('America/New_York', EDGES);
+
+            const id: number = (await moments().where('name', 'after').first() as Moment).id;
+
+            expect(await moments().whereDate('indexed', operator, '2024-09-08').where('id', id).explain()).toEqual('key');
+            expect(await named(moments().whereDate('indexed', operator, '2024-09-08').where('id', id))).toEqual(['after']);
+            expect(await moments().whereDate('indexed', operator, '2024-09-08').where('indexed', '>', new Date(2024, 8, 8, 18)).explain()).toEqual('index:moments_indexed_index');
+            expect(await named(moments().whereDate('indexed', operator, '2024-09-08').where('indexed', '>', new Date(2024, 8, 8, 18)))).toEqual(['after']);
+        });
+
+        describe('beside a date-only string stored before 7.0.0', (): void => {
+            const STORED: Record<string, () => Date> = {
+                before: (): Date => new Date('2024-01-15T00:00:00.000Z'),
+                since : (): Date => '2024-01-15' as unknown as Date,
+                next  : (): Date => '2024-01-16' as unknown as Date,
+            };
+
+            describe.each([
+                ['America/New_York', 'indexed', false],
+                ['America/New_York', 'plain', false],
+                ['Asia/Tokyo', 'indexed', true],
+                ['Asia/Tokyo', 'plain', true],
+                ['America/Santiago', 'indexed', false],
+                ['America/Santiago', 'plain', false],
+            ] as [string, 'indexed' | 'plain', boolean][])('in %s through the %s column', (timezone: string, column: 'indexed' | 'plain', east: boolean): void => {
+                test('matches only the row written since by the same string under where, whereIn and whereBetween', async (): Promise<void> => {
+                    await store(timezone, STORED);
+
+                    expect(await named(moments().where(column, '2024-01-15'))).toEqual(['since']);
+                    expect(await named(moments().whereIn(column, ['2024-01-15']))).toEqual(['since']);
+                    expect(await named(moments().whereBetween(column, ['2024-01-15', '2024-01-15']))).toEqual(['since']);
+                    expect(await named(moments().whereBetween(column, ['2024-01-15', '2024-01-16']))).toEqual(east ? ['before', 'next', 'since'] : ['next', 'since']);
+                });
+
+                test('reads the row stored before as the day before west of UTC', async (): Promise<void> => {
+                    await store(timezone, STORED);
+
+                    const before: Moment = await moments().where('name', 'before').firstOrFail();
+
+                    expect(before[column].getDate()).toEqual(east ? 15 : 14);
+                    expect(await named(moments().whereDate(column, '2024-01-15'))).toEqual(east ? ['before', 'since'] : ['since']);
+                    expect(await named(moments().whereDay(column, 15))).toEqual(east ? ['before', 'since'] : ['since']);
+                });
+            });
+        });
+    });
+
+    describe.each([
+        ['UTC', {
+            before: '2024-01-14T23:59:59.999Z',
+            first : '2024-01-15T00:00:00.000Z',
+            noon  : '2024-01-15T12:00:00.000Z',
+            last  : '2024-01-15T23:59:59.999Z',
+            after : '2024-01-16T00:00:00.000Z',
+        }, '2024-01-15', '2024-01-15T18:00:00.000Z'],
+        ['America/New_York', {
+            before: '2024-01-15T04:59:59.999Z',
+            first : '2024-01-15T05:00:00.000Z',
+            noon  : '2024-01-15T17:00:00.000Z',
+            last  : '2024-01-16T04:59:59.999Z',
+            after : '2024-01-16T05:00:00.000Z',
+        }, '2024-01-15', '2024-01-15T23:00:00.000Z'],
+        ['America/Santiago', {
+            before: '2024-09-08T03:59:59.999Z',
+            first : '2024-09-08T04:00:00.000Z',
+            noon  : '2024-09-08T15:00:00.000Z',
+            last  : '2024-09-09T02:59:59.999Z',
+            after : '2024-09-09T03:00:00.000Z',
+        }, '2024-09-08', '2024-09-08T21:00:00.000Z'],
+    ] as [string, Record<string, string>, string, string][])('on a connection set to %s', (timezone: string, instants: Record<string, string>, day: string, evening: string): void => {
+        const ROWS: Record<string, () => Date> = Object.fromEntries(Object.entries(instants).map(([name, at]: [string, string]): [string, () => Date] => [name, (): Date => new Date(at)]));
+
+        describe.each(PROCESSES.flatMap((process: string): [string, 'indexed' | 'plain'][] => [[process, 'indexed'], [process, 'plain']]))('with the process in %s through the %s column', (process: string, column: 'indexed' | 'plain'): void => {
+            test.each(SPANS)('%s selects the moments on its side of the day in that timezone', async (operator: DateOperator, expected: string[]): Promise<void> => {
+                await store(process, ROWS, timezone);
+
+                expect(await named(moments(timezone).whereDate(column, operator, day))).toEqual(expected);
+                expect(await named(moments(timezone).whereDate(column, operator, new Date(evening)))).toEqual(expected);
+            });
+
+            test('reads the day of the month in that timezone', async (): Promise<void> => {
+                await store(process, ROWS, timezone);
+
+                expect(await named(moments(timezone).whereDay(column, Number(day.slice(8))))).toEqual(['first', 'last', 'noon']);
+            });
+        });
+
+        test('plans through the index', async (): Promise<void> => {
+            await store('Asia/Tokyo', ROWS, timezone);
+
+            expect(await moments(timezone).whereDate('indexed', day).explain()).toEqual('index:moments_indexed_index');
+        });
+    });
+
+    describe.each(PROCESSES)('across the autumn change in Santiago with the process in %s', (process: string): void => {
+        const AUTUMN: Record<string, () => Date> = {
+            before: (): Date => new Date('2024-04-06T02:59:59.999Z'),
+            first : (): Date => new Date('2024-04-06T03:00:00.000Z'),
+            early : (): Date => new Date('2024-04-07T02:30:00.000Z'),
+            late  : (): Date => new Date('2024-04-07T03:30:00.000Z'),
+            last  : (): Date => new Date('2024-04-07T03:59:59.999Z'),
+            after : (): Date => new Date('2024-04-07T04:00:00.000Z'),
+        };
+
+        test.each(['indexed', 'plain'] as const)('covers the day of 25 hours, and both moments of the repeated hour, through the %s column', async (column: 'indexed' | 'plain'): Promise<void> => {
+            await store(process, AUTUMN, 'America/Santiago');
+
+            expect(await named(moments('America/Santiago').whereDate(column, '2024-04-06'))).toEqual(['early', 'first', 'last', 'late']);
+            expect(await named(moments('America/Santiago').whereDay(column, 6))).toEqual(['early', 'first', 'last', 'late']);
+            expect(await named(moments('America/Santiago').whereTime(column, '23:30'))).toEqual(['early', 'late']);
+        });
+    });
+
+    describe('on a datetime holding 21:00 on 14 January in New York', (): void => {
+        const EVENING: Record<string, () => Date> = {
+            evening: (): Date => new Date('2024-01-15T02:00:00.000Z'),
+        };
+
+        describe.each([
+            ['America/New_York', 'local', '2024-01-14', 14, '21:00'],
+            ['Asia/Tokyo', 'local', '2024-01-15', 15, '11:00'],
+            ['America/Santiago', 'local', '2024-01-14', 14, '23:00'],
+            ['America/New_York', 'UTC', '2024-01-15', 15, '02:00'],
+            ['Asia/Tokyo', 'UTC', '2024-01-15', 15, '02:00'],
+            ['America/Santiago', 'UTC', '2024-01-15', 15, '02:00'],
+            ['America/New_York', 'America/New_York', '2024-01-14', 14, '21:00'],
+            ['Asia/Tokyo', 'America/New_York', '2024-01-14', 14, '21:00'],
+            ['America/Santiago', 'America/New_York', '2024-01-14', 14, '21:00'],
+        ] as [string, string, string, number, string][])('with the process in %s on a connection set to %s', (process: string, timezone: string, day: string, date: number, time: string): void => {
+            test.each(['indexed', 'plain'] as const)('reads it as %s, through the %s column', async (column: 'indexed' | 'plain'): Promise<void> => {
+                await store(process, EVENING, timezone);
+
+                expect(await named(moments(timezone).whereDate(column, day))).toEqual(['evening']);
+                expect(await named(moments(timezone).whereDay(column, date))).toEqual(['evening']);
+                expect(await named(moments(timezone).whereTime(column, time))).toEqual(['evening']);
+                expect(await named(moments(timezone).whereDate(column, '!=', day))).toEqual([]);
+            });
+        });
+    });
+
+    describe('beside dates stored before 7.0.0 and by 7.0.0', (): void => {
+        const GENERATIONS: Record<string, () => Date> = {
+            before: (): Date => new Date('2024-01-15T00:00:00.000Z'),
+            seven : (): Date => new Date(2024, 0, 15),
+            since : (): Date => '2024-01-15' as unknown as Date,
+        };
+
+        describe.each([
+            ['local', 'America/New_York', ['seven', 'since'], ['seven', 'since']],
+            ['local', 'Asia/Tokyo', ['before', 'seven', 'since'], ['seven', 'since']],
+            ['local', 'America/Santiago', ['seven', 'since'], ['seven', 'since']],
+            ['UTC', 'America/New_York', ['before', 'seven', 'since'], ['before', 'since']],
+            ['UTC', 'Asia/Tokyo', ['before', 'since'], ['before', 'since']],
+            ['UTC', 'America/Santiago', ['before', 'seven', 'since'], ['before', 'since']],
+            ['America/New_York', 'America/New_York', ['seven', 'since'], ['seven', 'since']],
+            ['America/New_York', 'Asia/Tokyo', ['since'], ['since']],
+            ['America/New_York', 'America/Santiago', ['since'], ['since']],
+        ] as [string, string, string[], string[]][])('on a connection set to %s with the process in %s', (timezone: string, process: string, day: string[], equal: string[]): void => {
+            test.each(['indexed', 'plain'] as const)('answers whereDate, whereDay and where on the string through the %s column', async (column: 'indexed' | 'plain'): Promise<void> => {
+                await store(process, GENERATIONS, timezone);
+
+                expect(await named(moments(timezone).whereDate(column, '2024-01-15'))).toEqual(day);
+                expect(await named(moments(timezone).whereDay(column, 15))).toEqual(day);
+                expect(await named(moments(timezone).where(column, '2024-01-15'))).toEqual(equal);
             });
         });
     });
 });
 
-describe('Rewriting dates stored before 7.0.0 as local days', (): void => {
+describe('Rewriting dates stored before 7.0.0 as local days on a local connection', (): void => {
     const zone: string = Intl.DateTimeFormat().resolvedOptions().timeZone;
     let sequence: number = 0;
 
@@ -634,7 +763,7 @@ describe('Rewriting dates stored before 7.0.0 as local days', (): void => {
 
         const database: string = `builder-extras-rewritten-${++sequence}`;
 
-        DB.configure({ default: 'app', connections: { app: { database, migrations: [CreateBirthdaysTable] } } });
+        DB.configure({ default: 'app', connections: { app: { database, migrations: [CreateBirthdaysTable], timezone: 'local' } } });
 
         await DB.table('birthdays').insert([
             { name: 'before', born: new Date('2024-01-15T00:00:00.000Z') },
@@ -646,7 +775,7 @@ describe('Rewriting dates stored before 7.0.0 as local days', (): void => {
             { name: 'unknown', born: null },
         ]);
 
-        DB.configure({ default: 'app', connections: { app: { database, migrations: [CreateBirthdaysTable, StoreBirthdaysAsLocalDays, StoreBirthdaysAsLocalDaysAgain] } } });
+        DB.configure({ default: 'app', connections: { app: { database, migrations: [CreateBirthdaysTable, StoreBirthdaysAsLocalDays, StoreBirthdaysAsLocalDaysAgain], timezone: 'local' } } });
 
         expect(await DB.migrate('app')).toEqual(['store_birthdays_as_local_days', 'store_birthdays_as_local_days_again']);
         expect(await held()).toEqual([
@@ -660,6 +789,118 @@ describe('Rewriting dates stored before 7.0.0 as local days', (): void => {
         ]);
         expect((await DB.table('birthdays').where('born', '2024-01-15').pluck('name')).sort()).toEqual(['before', 'twin']);
         expect((await DB.table('birthdays').whereDate('born', '2024-01-15').pluck('name')).sort()).toEqual(['before', 'noon', 'twin']);
+    }, 2000);
+});
+
+describe('Moving dates written by 7.0.0 to UTC days', (): void => {
+    const zone: string = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    let sequence: number = 0;
+
+    /**
+     * Determine whether a value is a date at the first moment of its local calendar day, as 7.0.0 stored a date-only string.
+     */
+    function localMidnight(value: unknown): value is Date {
+        if (!(value instanceof Date)) {
+            return false;
+        }
+
+        const day: Date = new Date(2000, 0, 1);
+
+        day.setFullYear(value.getFullYear(), value.getMonth(), value.getDate());
+        day.setHours(0, 0, 0, 0);
+
+        return day.getTime() === value.getTime();
+    }
+
+    /**
+     * Get midnight UTC of the local calendar day a date falls on.
+     */
+    function utcDay(held: Date): Date {
+        const day: Date = new Date(0);
+
+        day.setUTCFullYear(held.getFullYear(), held.getMonth(), held.getDate());
+
+        return day;
+    }
+
+    class CreateBirthdaysTable extends Migration {
+        /**
+         * Run the migration.
+         */
+        override async up(): Promise<void> {
+            await Schema.create('birthdays', (table: Blueprint): void => {
+                table.id();
+                table.string('name');
+                table.date('born').nullable().index();
+            });
+        }
+    }
+
+    class StoreBirthdaysAsUtcDays extends Migration {
+        /**
+         * Run the migration.
+         */
+        override async up(): Promise<void> {
+            const held: unknown[] = await DB.table('birthdays').pluck('born');
+            const stale: Map<number, Date> = new Map(held.filter(localMidnight).map((date: Date): [number, Date] => [date.getTime(), date]));
+
+            for (const date of stale.values()) {
+                await DB.table('birthdays').where('born', date).update({ born: utcDay(date) });
+            }
+        }
+    }
+
+    class StoreBirthdaysAsUtcDaysAgain extends StoreBirthdaysAsUtcDays {}
+
+    /**
+     * Get each birthday's name with the moment it holds.
+     */
+    async function held(): Promise<[string, string | null][]> {
+        return (await DB.table<{ name: string; born: Date | null }>('birthdays').orderBy('id').get()).map(({ name, born }: { name: string; born: Date | null }): [string, string | null] => [
+            name,
+            born === null ? null : born.toISOString(),
+        ]);
+    }
+
+    afterEach((): void => {
+        DB.purge('app');
+        vi.stubEnv('TZ', zone);
+        vi.unstubAllEnvs();
+    });
+
+    test.each(['America/New_York', 'Asia/Tokyo', 'America/Santiago'])('moves each local midnight to midnight UTC of that day in %s, once however often it runs', async (timezone: string): Promise<void> => {
+        vi.stubEnv('TZ', timezone);
+
+        const database: string = `builder-extras-upgraded-${++sequence}`;
+        const noon: Date = new Date(2024, 0, 15, 12);
+
+        DB.configure({ default: 'app', connections: { app: { database, migrations: [CreateBirthdaysTable], timezone: 'local' } } });
+
+        await DB.table('birthdays').insert([
+            { name: 'seven', born: '2024-01-15' },
+            { name: 'twin', born: '2024-01-15' },
+            { name: 'skipped', born: '2024-09-08' },
+            { name: 'antiquity', born: '0050-01-15' },
+            { name: 'before', born: new Date('2024-01-15T00:00:00.000Z') },
+            { name: 'noon', born: noon },
+            { name: 'unknown', born: null },
+        ]);
+
+        DB.configure({ default: 'app', connections: { app: { database, migrations: [CreateBirthdaysTable, StoreBirthdaysAsUtcDays, StoreBirthdaysAsUtcDaysAgain] } } });
+
+        expect(await DB.migrate('app')).toEqual(['store_birthdays_as_utc_days', 'store_birthdays_as_utc_days_again']);
+        expect(await held()).toEqual([
+            ['seven', '2024-01-15T00:00:00.000Z'],
+            ['twin', '2024-01-15T00:00:00.000Z'],
+            ['skipped', '2024-09-08T00:00:00.000Z'],
+            ['antiquity', '0050-01-15T00:00:00.000Z'],
+            ['before', '2024-01-15T00:00:00.000Z'],
+            ['noon', noon.toISOString()],
+            ['unknown', null],
+        ]);
+        expect((await DB.table('birthdays').where('born', '2024-01-15').pluck('name')).sort()).toEqual(['before', 'seven', 'twin']);
+        expect((await DB.table('birthdays').whereDate('born', '2024-01-15').pluck('name')).sort()).toEqual(['before', 'noon', 'seven', 'twin']);
+        expect((await DB.table('birthdays').whereDay('born', 8).pluck('name')).sort()).toEqual(['skipped']);
     }, 2000);
 });
 
@@ -681,7 +922,7 @@ describe('Builder date parts with an operator', (): void => {
     }
 
     beforeAll(async (): Promise<void> => {
-        parts = new Connection('app', { database: 'builder-extras-parts', migrations: [CreateVisitsTables] });
+        parts = new Connection('app', { database: 'builder-extras-parts', migrations: [CreateVisitsTables], timezone: 'local' });
 
         await parts.migrate();
         await parts.table<Person>('people').insert([{ name: 'Alice' }, { name: 'Bob' }, { name: 'Carol' }]);

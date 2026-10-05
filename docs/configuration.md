@@ -39,6 +39,7 @@ DB.configure({
             migrations: [CreateUsersTable],
             seeders   : [UserSeeder],
             strict    : true,
+            timezone  : 'UTC',
         },
     },
 });
@@ -57,10 +58,24 @@ constraints, its return values and its aggregate keys.
 | `connections[name].migrations` | Ordered migration classes. Their order **is** the schema version.                                          |
 | `connections[name].seeders`    | Ordered seeder classes, run by `DB.seed(name)`. See [Seeding](seeding.md).                                 |
 | `connections[name].strict`     | Defaults to `true`. Missing required values and values a column cannot store throw. `false` writes `null`. |
+| `connections[name].timezone`   | Defaults to `'UTC'`. The timezone every calendar day and time of day is read and stored in.                |
 
 A strict connection stores a value only when its column can hold it faithfully, so an empty form
 field never becomes 0 and a fraction never loses its digits unseen. The rules for each column type
 are in [Coercion on the way in](querying.md#coercion-on-the-way-in).
+
+A `Date` is a moment and holds no timezone, so the calendar day it falls on and the time of day it
+shows depend on where it is read. `timezone` names that place for the connection, so every device
+gives the same answer: `'UTC'` by default, `'local'` for the timezone of the device running the
+code, or an IANA name such as `'America/New_York'`. It decides the moment a date-only string such as
+`'2024-01-15'`, or a date and time without an offset, is stored as, and the day and time
+`whereDate`, `whereYear`, `whereMonth`, `whereDay` and `whereTime` read. A `Date`, and a string
+with `Z` or an offset, keep naming their own moment under every setting. `DB.configure` throws
+`RangeError` for a name the browser does not know, naming the connection, and leaves the
+configuration before it in place. `DB.connection(name).timezone` gives the name the connection reads,
+as `Intl` spells it, so `'utc'` reads as `'UTC'`. [Dates and timezones](querying.md#dates-and-timezones)
+has the details. Before 8.0.0 the date parts, `whereTime` and `whereDate` read the device's timezone,
+as `'local'` still does.
 
 `DB.migrate(name)` is idempotent. It opens the database at the version your migrations ask for, and
 when that already matches, nothing runs. Calling it on every boot is the intended usage, and there
