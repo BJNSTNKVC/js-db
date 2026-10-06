@@ -332,7 +332,7 @@ await DB.table<User>('users').max('age');
 | `get()`                                       | `T[]`                                                                       |
 | `first()`                                     | `T` or `null`                                                               |
 | `firstOrFail()`                               | `T`, or throws `RecordsNotFoundException`                                   |
-| `find(key)`                                   | `T` or `null`, by point lookup on the key path                              |
+| `find(key)`                                   | `T` or `null`, the record with that key when the query matches it           |
 | `findOrFail(key)`                             | `T`, or throws `RecordsNotFoundException`                                   |
 | `value(column)`                               | The column of the first matching record, or `null`                          |
 | `pluck(column)`                               | `V[]` in result order                                                       |
@@ -348,6 +348,20 @@ await DB.table<User>('users').max('age');
 `find(route.params.id)` finds the record even though a route parameter is always a string. A key
 that is `null`, `undefined` or anything else IndexedDB cannot use as a key, such as a boolean,
 returns `null` without reading the store, and `findOrFail` throws `RecordsNotFoundException` for it.
+
+`find` answers the whole query, as Laravel's `where(key, id)->first()` does. It reads the record by
+key, returns it only when the query's constraints match it, and applies `select`, so checking that a
+record exists and belongs to a scope takes one call:
+
+```ts
+// null unless the user with key 2 is an admin.
+await DB.table<User>('users').where('role', 'admin').find(2);
+```
+
+`orderBy`, `inRandomOrder`, `limit` and `offset` play no part, since a key names one record, and the
+lookup stays a single read by key. To read a record whatever the query, call `find` on a fresh
+`DB.table(...)`. On a joined query `find` returns a joined row, as
+[Joins](joins.md#finding-through-a-join) describes.
 
 `count`, `sum`, `avg`, `min` and `max` aggregate every match, ignoring `limit`, `offset`, `orderBy`
 and `inRandomOrder` as Laravel's aggregates do, so whether an index serves them never changes the

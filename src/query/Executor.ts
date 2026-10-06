@@ -94,7 +94,7 @@ export class Executor<T> {
     }
 
     /**
-     * Get the record with the given key.
+     * Get the record with the given key when the query matches it, shaped as the query returns it.
      */
     async find(key: IDBValidKey | null | undefined): Promise<T | null> {
         const schema: TableSchema = await this.#connection.schema(this.#query.table);
@@ -105,13 +105,19 @@ export class Executor<T> {
             return null;
         }
 
+        if (this.#query.joins.length > 0) {
+            return this.#sought(prepared as IDBValidKey);
+        }
+
+        const matches: (record: Record<string, unknown>) => boolean = Predicate.compile(this.#prepared(schema));
         const store: IDBObjectStore = await this.#store('readonly');
         const started: number = performance.now();
         const record: T | undefined = await Request.settle(store.get(prepared as IDBValidKey) as IDBRequest<T | undefined>);
+        const found: T | null = record !== undefined && matches(record as Record<string, unknown>) ? this.#projected(record) : null;
 
-        this.#emit('key', started, record === undefined ? 0 : 1);
+        this.#emit('key', started, found === null ? 0 : 1);
 
-        return record ?? null;
+        return found;
     }
 
     /**
@@ -742,12 +748,7 @@ export class Executor<T> {
         const constraints: Constraint[] = await this.#qualified(tables);
         const stores: (table: string) => IDBObjectStore = await this.#stores([...tables.keys()], 'readonly');
         const started: number = performance.now();
-        const kept: Row[] = await this.#combined(tables, constraints, stores);
-        const orders: Order[] = this.#query.orders.map((order: Order): Order => ({ ...order, column: Columns.resolve(order.column, tables) }));
-
-        const sorted: Row[] = this.#query.random
-            ? this.#shuffled(kept)
-            : Comparator.sort(kept, orders, (row: Row, column: string): unknown => Columns.read(row, column));
+        const sorted: Row[] = this.#arranged(await this.#combined(tables, constraints, stores), tables);
         const rows: Record<string, unknown>[] = distinct
             ? this.#paged(Joiner.flatten(sorted, tables, this.#query.columns).filter(this.#fresh()))
             : Joiner.flatten(this.#paged(sorted), tables, this.#query.columns);
@@ -755,6 +756,37 @@ export class Executor<T> {
         this.#emit('join', started, rows.length);
 
         return rows;
+    }
+
+    /**
+     * Get the first joined row, in the query's order, that holds the base record with the given key.
+     */
+    async #sought(key: IDBValidKey): Promise<T | null> {
+        const tables: Map<string, string[]> = await this.#tables();
+        const constraints: Constraint[] = await this.#qualified(tables);
+        const stores: (table: string) => IDBObjectStore = await this.#stores([...tables.keys()], 'readonly');
+        const started: number = performance.now();
+
+        const held: Row[] = (await this.#combined(tables, constraints, stores)).filter((row: Row): boolean => {
+            return row[KEY] !== undefined && indexedDB.cmp(row[KEY], key) === 0;
+        });
+
+        const rows: Record<string, unknown>[] = Joiner.flatten(this.#arranged(held, tables).slice(0, 1), tables, this.#query.columns);
+
+        this.#emit('join', started, rows.length);
+
+        return (rows[0] as T | undefined) ?? null;
+    }
+
+    /**
+     * Sort the joined rows in the query's order, or shuffle them when it asks for a random one.
+     */
+    #arranged(rows: Row[], tables: Map<string, string[]>): Row[] {
+        const orders: Order[] = this.#query.orders.map((order: Order): Order => ({ ...order, column: Columns.resolve(order.column, tables) }));
+
+        return this.#query.random
+            ? this.#shuffled(rows)
+            : Comparator.sort(rows, orders, (row: Row, column: string): unknown => Columns.read(row, column));
     }
 
     /**

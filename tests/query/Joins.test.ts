@@ -427,6 +427,95 @@ describe('Terminals on a joined query', (): void => {
     });
 });
 
+describe('Finding through a join', (): void => {
+    /**
+     * Join the users to their posts.
+     */
+    function posted(): Builder<Row> {
+        return users().join<Row>('posts', 'users.id', '=', 'posts.user_id');
+    }
+
+    test('finds nothing for a base row the inner join drops', async (): Promise<void> => {
+        expect(await posted().find(3)).toBeNull();
+    });
+
+    test('fails for a base row the inner join drops', async (): Promise<void> => {
+        await expect(posted().findOrFail(3)).rejects.toThrow('No record with key [3] in table [users].');
+    });
+
+    test('finds the joined row by the key of this table, not a joined column of that name', async (): Promise<void> => {
+        expect(await posted().find(2)).toEqual({ id: 3, name: 'Bob', team_id: 1, user_id: 2, title: 'Third' });
+    });
+
+    test('finds nothing for a key whose joined rows the constraints exclude', async (): Promise<void> => {
+        expect(await posted().where('posts.title', 'Third').find(1)).toBeNull();
+    });
+
+    test('keeps a base row with no match through a left join, nulling the other side', async (): Promise<void> => {
+        const row: Row | null = await users().leftJoin<Row>('posts', 'users.id', '=', 'posts.user_id').find(3);
+
+        expect(row).toEqual({ id: null, name: 'Carol', team_id: null, user_id: null, title: null });
+    });
+
+    test('finds nothing for a row a right join keeps for the joined table alone', async (): Promise<void> => {
+        const kept: Builder<Row> = connection.table<Post>('posts')
+            .rightJoin<Row>('users', 'posts.user_id', '=', 'users.id')
+            .where('users.name', 'Carol');
+
+        expect(await kept.clone().count()).toEqual(1);
+        expect(await kept.find(3)).toBeNull();
+    });
+
+    test('finds the first of a key\'s joined rows in the query\'s order', async (): Promise<void> => {
+        expect((await posted().find(1))?.title).toEqual('First');
+        expect((await posted().orderBy('posts.title', 'desc').find(1))?.title).toEqual('Second');
+        expect(['First', 'Second']).toContain((await posted().inRandomOrder().find(1))?.title);
+    });
+
+    test.each([
+        ['limit(0)', (query: Builder<Row>): Builder<Row> => query.limit(0)],
+        ['an offset past one row', (query: Builder<Row>): Builder<Row> => query.offset(1)],
+    ] as [string, (query: Builder<Row>) => Builder<Row>][])('finds regardless of %s', async (_: string, shape: (query: Builder<Row>) => Builder<Row>): Promise<void> => {
+        expect((await shape(posted()).find(2))?.title).toEqual('Third');
+    });
+
+    test('applies the select to the joined row, under its aliases', async (): Promise<void> => {
+        expect(await posted().select('users.name', 'posts.title as post').find(2)).toEqual({ name: 'Bob', post: 'Third' });
+    });
+
+    test('finds the selected row on a distinct query', async (): Promise<void> => {
+        expect(await posted().select('users.name').distinct().find(1)).toEqual({ name: 'Alice' });
+    });
+
+    test('finds through a join inside a transaction', async (): Promise<void> => {
+        const found: (Row | null)[] = await connection.transaction(async (transaction: Transaction): Promise<(Row | null)[]> => {
+            const joined: () => Builder<Row> = (): Builder<Row> => transaction.table<User>('users').join<Row>('posts', 'users.id', '=', 'posts.user_id');
+
+            return [await joined().find(3), await joined().find(2)];
+        });
+
+        expect(found.map((row: Row | null): string | null => row?.title ?? null)).toEqual([null, 'Third']);
+    });
+
+    test('announces a joined find as a join, counting the row it returns', async (): Promise<void> => {
+        const seen: [string, number][] = [];
+        const listener: (event: Event) => void = ((event: QueryExecuted): void => {
+            seen.push([event.plan, event.records]);
+        }) as (event: Event) => void;
+
+        Dispatcher.listen('db:query', listener);
+
+        try {
+            await posted().find(3);
+            await posted().find(1);
+        } finally {
+            Dispatcher.forget('db:query', listener);
+        }
+
+        expect(seen).toEqual([['join', 0], ['join', 1]]);
+    });
+});
+
 describe('Distinct on a joined query', (): void => {
     /**
      * Begin a query for the distinct names of the users who wrote a post.
@@ -768,6 +857,15 @@ describe('Writing through a join', (): void => {
 
         expect(deleted).toEqual(1);
         expect(notes.map((note: Note): string => note.body)).toEqual(['From Bob']);
+    });
+
+    test('finds through a join from a table without a key path', async (): Promise<void> => {
+        const noted: () => Builder<Record<string, unknown>> = (): Builder<Record<string, unknown>> => writable.table('notes')
+            .join('users', 'notes.user_id', '=', 'users.id')
+            .where('users.name', 'Bob');
+
+        expect(await noted().find(1)).toBeNull();
+        expect(await noted().select('notes.body', 'users.name').find(2)).toEqual({ body: 'From Bob', name: 'Bob' });
     });
 
     test('updates a base column given qualified', async (): Promise<void> => {

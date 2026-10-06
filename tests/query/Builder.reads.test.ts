@@ -9,6 +9,7 @@ import { Dispatcher } from '../../src/events/Dispatcher';
 import { MultipleRecordsFoundException, RecordsNotFoundException, SchemaException, TableNotFoundException } from '../../src/exceptions';
 import { Executor } from '../../src/query/Executor';
 import type { Builder } from '../../src/query/Builder';
+import type { Transaction } from '../../src/database/Transaction';
 import type { MigrationContext } from '../../src/migrations/Migrator';
 import type { TableSchema } from '../../src/schema/types';
 import type { QueryExecuted } from '../../src/events';
@@ -55,6 +56,11 @@ class CreateUsersTable extends Migration {
 
         await Schema.create('tallies', (table: Blueprint): void => {
             table.integer('count');
+        });
+
+        await Schema.create('profiles', (table: Blueprint): void => {
+            table.id();
+            table.json('prefs').nullable();
         });
     }
 }
@@ -602,6 +608,87 @@ describe('Builder terminals', (): void => {
         expect(await connection.table('tallies').find(null)).toBeNull();
     });
 
+    test('finds nothing for a key whose record the query excludes', async (): Promise<void> => {
+        expect(await users().where('role', 'admin').find(2)).toBeNull();
+    });
+
+    test('finds a key whose record the query includes', async (): Promise<void> => {
+        expect((await users().where('role', 'member').find(2))?.name).toEqual('Bob');
+    });
+
+    test('fails for a key whose record the query excludes', async (): Promise<void> => {
+        const found: Promise<User> = users().where('role', 'admin').findOrFail(2);
+
+        await expect(found).rejects.toBeInstanceOf(RecordsNotFoundException);
+        await expect(found).rejects.toThrow('No record with key [2] in table [users].');
+    });
+
+    test.each([
+        ['orWhere', (query: Builder<User>): Builder<User> => query.where('role', 'admin').orWhere('role', 'owner'), 3, 2],
+        ['a nested group', (query: Builder<User>): Builder<User> => query.where('role', 'member').where((nested: Builder<User>): void => {
+            nested.where('age', 25).orWhere('name', 'Dave');
+        }), 4, 3],
+        ['whereIn', (query: Builder<User>): Builder<User> => query.whereIn('name', ['Alice', 'Bob']), 1, 3],
+        ['whereNull', (query: Builder<User>): Builder<User> => query.whereNull('age'), 4, 1],
+        ['a value converted to the column\'s type', (query: Builder<User>): Builder<User> => query.where('age', '30'), 1, 2],
+    ] as [string, (query: Builder<User>) => Builder<User>, number, number][])('finds through %s as get matches it', async (_: string, constrain: (query: Builder<User>) => Builder<User>, included: number, excluded: number): Promise<void> => {
+        expect((await constrain(users()).find(included))?.id).toEqual(included);
+        expect(await constrain(users()).find(excluded)).toBeNull();
+    });
+
+    test('finds through a date constraint read as where reads it', async (): Promise<void> => {
+        const recent: () => Builder<Log> = (): Builder<Log> => connection.table<Log>('logs').where('seen_at', '>', '2026-02-15');
+
+        expect((await recent().find(1))?.level).toEqual('info');
+        expect(await recent().find(2)).toBeNull();
+    });
+
+    test('finds through a constraint on a JSON path', async (): Promise<void> => {
+        await connection.table('profiles').insert([{ prefs: { theme: 'dark' } }, { prefs: { theme: 'light' } }]);
+
+        const dark: () => Builder<Record<string, unknown>> = (): Builder<Record<string, unknown>> => connection.table('profiles').where('prefs->theme', 'dark');
+
+        expect(await dark().find(1)).toEqual({ id: 1, prefs: { theme: 'dark' } });
+        expect(await dark().find(2)).toBeNull();
+    });
+
+    test('applies the select to the found record, under its aliases', async (): Promise<void> => {
+        expect(await users().select('name', 'email as address').find(1)).toEqual({ name: 'Alice', address: 'alice@example.com' });
+    });
+
+    test('finds the selected record on a distinct query, which one record cannot change', async (): Promise<void> => {
+        expect(await users().select('role').distinct().find(2)).toEqual({ role: 'member' });
+    });
+
+    test.each([
+        ['orderBy', (query: Builder<User>): Builder<User> => query.orderBy('name', 'desc')],
+        ['inRandomOrder', (query: Builder<User>): Builder<User> => query.inRandomOrder()],
+        ['limit(0)', (query: Builder<User>): Builder<User> => query.limit(0)],
+        ['an offset past one record', (query: Builder<User>): Builder<User> => query.offset(1)],
+        ['an offset past every record', (query: Builder<User>): Builder<User> => query.offset(10)],
+    ] as [string, (query: Builder<User>) => Builder<User>][])('finds regardless of %s', async (_: string, shape: (query: Builder<User>) => Builder<User>): Promise<void> => {
+        expect((await shape(users().where('role', 'member')).find(2))?.name).toEqual('Bob');
+    });
+
+    test('finds a key given as a string on a constrained query', async (): Promise<void> => {
+        expect((await users().where('role', 'member').find('2'))?.name).toEqual('Bob');
+    });
+
+    test('finds nothing for a null key on a constrained query without touching the store', async (): Promise<void> => {
+        const read: MockInstance = vi.spyOn(IDBObjectStore.prototype, 'get');
+
+        expect(await users().where('role', 'member').find(null)).toBeNull();
+        expect(read).not.toHaveBeenCalled();
+    });
+
+    test('finds nothing inside a transaction for a key whose record the query excludes', async (): Promise<void> => {
+        const found: User | null = await connection.transaction(async (transaction: Transaction): Promise<User | null> => {
+            return transaction.table<User>('users').where('role', 'admin').find(2);
+        });
+
+        expect(found).toBeNull();
+    });
+
     test('gets a single column value', async (): Promise<void> => {
         expect(await users().where('name', 'Alice').value('email')).toEqual('alice@example.com');
     });
@@ -875,6 +962,40 @@ describe('Builder plans', (): void => {
         await users().find(1);
 
         expect(seen).toEqual(['key']);
+    });
+
+    test('reads an unconstrained find with one get by key, counting the record', async (): Promise<void> => {
+        const seen: [string, number][] = [];
+        const read: MockInstance = vi.spyOn(IDBObjectStore.prototype, 'get');
+
+        Dispatcher.listen('db:query', ((event: QueryExecuted): void => {
+            seen.push([event.plan, event.records]);
+        }) as (event: Event) => void, true);
+
+        await users().find(1);
+
+        expect(read).toHaveBeenCalledTimes(1);
+        expect(seen).toEqual([['key', 1]]);
+    });
+
+    test('announces a constrained find as a key lookup, counting only a record the query includes', async (): Promise<void> => {
+        const seen: [string, number][] = [];
+        const read: MockInstance = vi.spyOn(IDBObjectStore.prototype, 'get');
+        const listener: (event: Event) => void = ((event: QueryExecuted): void => {
+            seen.push([event.plan, event.records]);
+        }) as (event: Event) => void;
+
+        Dispatcher.listen('db:query', listener);
+
+        try {
+            await users().where('role', 'admin').find(2);
+            await users().where('role', 'member').find(2);
+        } finally {
+            Dispatcher.forget('db:query', listener);
+        }
+
+        expect(read).toHaveBeenCalledTimes(2);
+        expect(seen).toEqual([['key', 0], ['key', 1]]);
     });
 });
 

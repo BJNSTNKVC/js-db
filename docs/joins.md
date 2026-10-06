@@ -176,6 +176,31 @@ await DB.table('users').join('posts', 'users.id', '=', 'posts.user_id').select('
 2
 ```
 
+## Finding through a join
+
+`find` and `findOrFail` on a joined query look for the record of this table with that key among the
+rows the join and its `where` clauses keep, and return its joined row, projected by `select`. A user
+the inner join drops is not found, a left join keeps one with no post with the post's columns `null`,
+and a row a right join keeps for the joined table alone has no record of this table, so no key finds
+it:
+
+```ts
+// Alice wrote two posts and Carol none.
+await DB.table('users').join('posts', 'users.id', '=', 'posts.user_id').find(3);
+await DB.table('users').leftJoin('posts', 'users.id', '=', 'posts.user_id').find(3);
+```
+
+```
+null
+{ id: null, name: 'Carol', user_id: null, title: null }
+```
+
+The key is matched against the record itself, never against a column of the joined row, so a joined
+table's own `id` cannot answer for it, and a table without a key column is found by its key too. When
+the record joins several rows, `find` returns the first in the query's order, which `orderBy` or
+`inRandomOrder` decide, and otherwise in the order the join produced them. `limit` and `offset` play
+no part. The query runs under the `'join'` plan.
+
 ## Writing through a join
 
 `update`, `delete`, `increment` and `decrement` on a joined query write to the rows of this table
