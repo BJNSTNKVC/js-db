@@ -423,7 +423,9 @@ value and key once, whatever the `select`, as `SELECT DISTINCT` over those colum
 reads the first distinct row, which is the first matching row.
 
 `min` and `max` read the answer straight off the index when the column has one and the query is
-unconstrained, whatever its order and paging, so they cost one cursor rather than a full scan.
+unconstrained, whatever its order and paging, so they cost one cursor rather than a full scan. They
+read the records instead when the index holds a value of another type than its column's, as
+[Query plans](query-plans.md) describes, and always for a boolean column, whose index holds nothing.
 
 `paginate` gives you the totals a pager needs, which `forPage` cannot, and counts what the query
 matches rather than what the page returns:

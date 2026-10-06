@@ -7,9 +7,12 @@ import { Schema } from '../../src/schema/Schema';
 import { Blueprint } from '../../src/schema/Blueprint';
 import { Request } from '../../src/database/Request';
 import { UniqueConstraintViolationException } from '../../src/exceptions';
+import { Dispatcher } from '../../src/events/Dispatcher';
 import type { Builder } from '../../src/query/Builder';
 import type { MigrationContext } from '../../src/migrations/Migrator';
 import type { TableSchema } from '../../src/schema/types';
+import type { Transaction } from '../../src/database/Transaction';
+import type { QueryExecuted } from '../../src/events';
 import type { DateOperator, DatePart, Operator, Paginated } from '../../src/query/types';
 
 interface Item {
@@ -319,6 +322,26 @@ const RETAGS: Retag[] = [
     ['an increment through where(\'tags\', \'>=\', \'x\')', (query: Builder<Tagged>): Promise<number> => query.where('tags', '>=', 'x').increment('visits'), (row: Tagged): Tagged | null => compare(row.tags, '>=', 'x') === true ? { ...row, visits: row.visits + 1 } : row],
     ['an update of the tags through whereIn(\'tags\', [\'x\', \'z\'])', (query: Builder<Tagged>): Promise<number> => query.whereIn('tags', ['x', 'z']).update({ tags: ['z'] }), (row: Tagged): Tagged | null => within(row.tags, ['x', 'z']) === true ? { ...row, tags: ['z'] } : row],
     ['a delete through orderBy(\'tags\').limit(2)', (query: Builder<Tagged>): Promise<number> => query.orderBy('tags').limit(2).delete(), (row: Tagged): Tagged | null => listed(TAGGED, 'asc').slice(0, 2).includes(row) ? null : row],
+];
+
+const MIXES: Record<number, unknown> = { 1: '2', 2: '', 3: 7, 4: 4, 5: 9 };
+
+const MIXED: Item[] = ROWS.map((row: Item): Item => ({ ...row, visits: MIXES[row.id] as number }));
+
+const MIXTURES: Condition[] = [
+    ...OPERATORS.map((operator: Operator): Condition => [
+        `where('visits', '${operator}', 2)`,
+        (query: Builder<Item>): Builder<Item> => query.where('visits', operator, 2),
+        (row: Item): Truth => compare(row.visits, operator, 2),
+    ]),
+    ['whereIn(\'visits\', [2, 0])', (query: Builder<Item>): Builder<Item> => query.whereIn('visits', [2, 0]), (row: Item): Truth => within(row.visits, [2, 0])],
+    ['whereBetween(\'visits\', [0, 5])', (query: Builder<Item>): Builder<Item> => query.whereBetween('visits', [0, 5]), (row: Item): Truth => between(row.visits, 0, 5)],
+];
+
+const REMIXES: Write[] = [
+    ['an increment', (query: Builder<Item>): Promise<number> => query.increment('visits'), (row: Item): Item => ({ ...row, visits: Number(row.visits) + 1 })],
+    ['an update of another column', (query: Builder<Item>): Promise<number> => query.update({ name: 'Zed' }), (row: Item): Item => ({ ...row, name: 'Zed' })],
+    ['a delete', (query: Builder<Item>): Promise<number> => query.delete(), (): null => null],
 ];
 
 /**
@@ -677,6 +700,15 @@ function ordered(rows: Ranked[], column: Ranking, direction: Direction): Ranked[
 
         return sign * ((left as number) - (right as number));
     });
+}
+
+/**
+ * Apply the documented order to rows by their visits, which compares values of different types as JavaScript does.
+ */
+function visited(rows: Item[], direction: Direction): Item[] {
+    const sign: number = direction === 'desc' ? -1 : 1;
+
+    return [...rows].sort((a: Item, b: Item): number => sign * (a.visits < b.visits ? -1 : 1));
 }
 
 /**
@@ -1108,4 +1140,228 @@ describe('distinct over a projection', (): void => {
         expect(await connection.table<Item>('indexed').orderBy('visits').explain()).toEqual('index:indexed_visits_index');
         expect(answers).toEqual({ indexed: deduplicated(['visits', [0, 4]], 'indexed'), plain: deduplicated(['visits', [0, 4]], 'plain') });
     });
+});
+
+describe('a column holding values of another type', (): void => {
+    /**
+     * Run a query, collecting the plans it announces.
+     */
+    async function plans(run: () => Promise<unknown>): Promise<string[]> {
+        const seen: string[] = [];
+        const listener: (event: Event) => void = ((event: QueryExecuted): void => {
+            seen.push(event.plan);
+        }) as (event: Event) => void;
+
+        Dispatcher.listen('db:query', listener);
+
+        try {
+            await run();
+        } finally {
+            Dispatcher.forget('db:query', listener);
+        }
+
+        return seen;
+    }
+
+    beforeEach(async (): Promise<void> => {
+        connection = new Connection('app', { database: `invariance-mixed-${++sequence}`, migrations: [CreateItemsTables] });
+
+        await connection.migrate();
+        await planted('indexed', MIXED);
+        await planted('plain', MIXED);
+    });
+
+    describe.each(MIXTURES)('%s', (_: string, constrain: (query: Builder<Item>) => Builder<Item>, holds: (row: Item) => Truth): void => {
+        const expected: number[] = ids(MIXED.filter((row: Item): boolean => holds(row) === true));
+
+        test('gives the same answer to every terminal through an index, through a scan and from the model', async (): Promise<void> => {
+            const answers: Record<Copy, unknown> = await both(async (query: Builder<Item>): Promise<unknown> => {
+                const chunked: number[] = [];
+                const walked: number[] = [];
+                const visited: number[] = [];
+
+                await constrain(query.clone()).chunk(2, (rows: Item[]): void => {
+                    chunked.push(...rows.map((row: Item): number => row.id));
+                });
+
+                for await (const row of constrain(query.clone()).lazy(2)) {
+                    walked.push(row.id);
+                }
+
+                await constrain(query.clone()).each((row: Item): void => {
+                    visited.push(row.id);
+                });
+
+                return {
+                    rows     : ids(await constrain(query.clone()).get()),
+                    count    : await constrain(query.clone()).count(),
+                    plucked  : (await constrain(query.clone()).pluck('id') as number[]).sort((a: number, b: number): number => a - b),
+                    paginated: await constrain(query.clone()).orderBy('id').paginate(1, 2).then((page: Paginated<Item>): unknown => ({ rows: ids(page.data), total: page.total })),
+                    chunked  : chunked.sort((a: number, b: number): number => a - b),
+                    walked   : walked.sort((a: number, b: number): number => a - b),
+                    visited  : visited.sort((a: number, b: number): number => a - b),
+                };
+            });
+
+            const modeled: unknown = { rows: expected, count: expected.length, plucked: expected, paginated: { rows: expected.slice(0, 2), total: expected.length }, chunked: expected, walked: expected, visited: expected };
+
+            expect(answers).toEqual({ indexed: modeled, plain: modeled });
+        });
+
+        test.each(REMIXES)('%s writes the same rows through an index, through a scan and in the model', async (_: string, write: (query: Builder<Item>) => Promise<number>, change: (row: Item) => Item | null): Promise<void> => {
+            const left: Item[] = MIXED
+                .map((row: Item): Item | null => holds(row) === true ? change(row) : row)
+                .filter((row: Item | null): row is Item => row !== null);
+
+            const affected: Record<Copy, number> = await both((query: Builder<Item>): Promise<number> => write(constrain(query)));
+
+            expect(affected).toEqual({ indexed: expected.length, plain: expected.length });
+            expect({ indexed: await raw('indexed'), plain: await raw('plain') }).toEqual({ indexed: sorted(left), plain: sorted(left) });
+        }, 2000);
+    });
+
+    test.each(['asc', 'desc'] as Direction[])('orderBy(\'visits\', %s) gives the same rows, alone and with a limit, through an index, through a scan and from the model', async (direction: Direction): Promise<void> => {
+        const expected: number[] = visited(MIXED, direction).map((row: Item): number => row.id);
+
+        const answers: Record<Copy, unknown> = await both(async (query: Builder<Item>): Promise<unknown> => ({
+            rows   : (await query.clone().orderBy('visits', direction).get()).map((row: Item): number => row.id),
+            limited: await query.clone().orderBy('visits', direction).limit(2).pluck('id'),
+            first  : (await query.clone().orderBy('visits', direction).first())?.id,
+        }));
+
+        const modeled: unknown = { rows: expected, limited: expected.slice(0, 2), first: expected[0] };
+
+        expect(answers).toEqual({ indexed: modeled, plain: modeled });
+    });
+
+    test.each(['asc', 'desc'] as Direction[])('a delete ordered by visits %s and limited writes the same rows through an index, through a scan and in the model', async (direction: Direction): Promise<void> => {
+        const chosen: Item[] = visited(MIXED, direction).slice(0, 2);
+        const left: Item[] = MIXED.filter((row: Item): boolean => !chosen.includes(row));
+
+        const affected: Record<Copy, number> = await both((query: Builder<Item>): Promise<number> => query.orderBy('visits', direction).limit(2).delete());
+
+        expect(affected).toEqual({ indexed: 2, plain: 2 });
+        expect({ indexed: await raw('indexed'), plain: await raw('plain') }).toEqual({ indexed: sorted(left), plain: sorted(left) });
+    }, 2000);
+
+    test('aggregates the column the same way through an index, through a scan and in the model', async (): Promise<void> => {
+        const expected: Totals = modeled(MIXED, (row: Item): unknown => Number(row.visits));
+
+        const answers: Record<Copy, Totals> = await both((query: Builder<Item>): Promise<Totals> => totals(query, 'visits'));
+
+        expect(answers).toEqual({ indexed: expected, plain: expected });
+    });
+
+    test('reads the records rather than the index, and says so in explain and the query log', async (): Promise<void> => {
+        const indexed: () => Builder<Item> = (): Builder<Item> => connection.table<Item>('indexed');
+
+        expect(await indexed().where('visits', '>=', 2).explain()).toEqual('scan');
+        expect(await indexed().orderBy('visits').explain()).toEqual('scan');
+
+        expect(await plans(async (): Promise<void> => {
+            await indexed().where('visits', '>=', 2).get();
+            await indexed().where('visits', '>=', 2).count();
+            await indexed().min('visits');
+            await indexed().max('visits');
+            await indexed().whereIn('visits', [2, 0]).increment('visits');
+        })).toEqual(['scan', 'scan', 'scan', 'scan', 'scan']);
+    });
+
+    test('serves the query through the index again once the builder rewrites the values', async (): Promise<void> => {
+        await connection.table<Item>('indexed').whereIn('visits', [2, 0]).increment('visits', 0);
+
+        expect(await connection.table<Item>('indexed').where('visits', '>=', 2).explain()).toEqual('index:indexed_visits_index');
+        expect(ids(await connection.table<Item>('indexed').where('visits', '>=', 2).get())).toEqual([1, 3, 4, 5]);
+    });
+
+    test('drives the query through another index a constraint can use', async (): Promise<void> => {
+        const expected: number[] = ids(MIXED.filter((row: Item): boolean => compare(row.visits, '>=', 2) === true && row.role === 'a'));
+
+        const answers: Record<Copy, number[]> = await both(async (query: Builder<Item>): Promise<number[]> => ids(await query.where('visits', '>=', 2).where('role', 'a').get()));
+
+        expect(await connection.table<Item>('indexed').where('visits', '>=', 2).where('role', 'a').explain()).toEqual('index:indexed_role_index');
+        expect(answers).toEqual({ indexed: expected, plain: expected });
+    });
+
+    test('keeps using the indexes that hold only their column\'s type', async (): Promise<void> => {
+        const indexed: () => Builder<Item> = (): Builder<Item> => connection.table<Item>('indexed');
+
+        expect(await indexed().where('role', 'a').explain()).toEqual('index:indexed_role_index');
+        expect(await indexed().where('score', '>', 0).explain()).toEqual('index:indexed_score_index');
+        expect(await indexed().where('seen', '>', day('2024-01-01')).explain()).toEqual('index:indexed_seen_index');
+        expect(await indexed().where('id', '>', 1).explain()).toEqual('key');
+        expect(await plans(async (): Promise<void> => {
+            await indexed().min('score');
+        })).toEqual(['index:indexed_score_index']);
+    });
+
+    test('reads the records rather than a key path holding a key of another type', async (): Promise<void> => {
+        const zed: Item = { ...(ROWS[0] as Item), id: '0' as unknown as number, name: 'Zed', visits: 3 };
+
+        await planted('indexed', [zed]);
+        await planted('plain', [zed]);
+
+        const answers: Record<Copy, unknown> = await both(async (query: Builder<Item>): Promise<unknown> => ({
+            above : (await query.clone().where('id', '>=', 1).pluck('name') as string[]).sort(),
+            looked: await query.clone().whereIn('id', [0]).pluck('name'),
+            count : await query.clone().where('id', '>=', 1).count(),
+        }));
+
+        expect(await connection.table<Item>('indexed').where('id', '>=', 1).explain()).toEqual('scan');
+        expect(answers.indexed).toEqual(answers.plain);
+    });
+
+    test('sees rows of another type planted after the table was last queried', async (): Promise<void> => {
+        connection = new Connection('app', { database: `invariance-mixed-${++sequence}`, migrations: [CreateItemsTables] });
+
+        await connection.migrate();
+        await connection.table<Item>('indexed').insert(ROWS);
+
+        expect(await connection.table<Item>('indexed').where('visits', '>=', 2).explain()).toEqual('index:indexed_visits_index');
+
+        await planted('indexed', [{ ...(ROWS[0] as Item), id: 6, visits: '' as unknown as number }]);
+
+        expect(await connection.table<Item>('indexed').where('visits', '>=', 2).explain()).toEqual('scan');
+        expect(ids(await connection.table<Item>('indexed').where('visits', '>=', 2).get())).toEqual([1, 2]);
+    });
+
+    test('reads the records inside a transaction narrowed to the table', async (): Promise<void> => {
+        const expected: number[] = ids(MIXED.filter((row: Item): boolean => compare(row.visits, '>=', 2) === true));
+        const answers: unknown[] = [];
+
+        await connection.transaction(async (transaction: Transaction): Promise<void> => {
+            answers.push(ids(await transaction.table<Item>('indexed').where('visits', '>=', 2).get()));
+            answers.push(await transaction.table<Item>('indexed').where('visits', '>=', 2).count());
+            answers.push(await transaction.table<Item>('indexed').min('visits'));
+            answers.push(await transaction.table<Item>('indexed').where('visits', '>=', 2).explain());
+        }, { tables: ['indexed'] });
+
+        expect(answers).toEqual([expected, expected.length, 0, 'scan']);
+    }, 2000);
+
+    test('reads the records inside a migration', async (): Promise<void> => {
+        const expected: number[] = ids(MIXED.filter((row: Item): boolean => compare(row.visits, '>=', 2) === true));
+        const database: string = `invariance-mixed-${sequence}`;
+        const answers: unknown[] = [];
+
+        class ReadItems extends Migration {
+            /**
+             * Run the migration.
+             */
+            override async up(): Promise<void> {
+                answers.push(ids(await connection.table<Item>('indexed').where('visits', '>=', 2).get()));
+                answers.push(await connection.table<Item>('indexed').where('visits', '>=', 2).count());
+                answers.push(await connection.table<Item>('indexed').max('visits'));
+                answers.push(await connection.table<Item>('indexed').orderBy('visits').pluck('id'));
+            }
+        }
+
+        connection.disconnect();
+
+        connection = new Connection('app', { database, migrations: [CreateItemsTables, ReadItems] });
+
+        await connection.migrate();
+
+        expect(answers).toEqual([expected, expected.length, 9, visited(MIXED, 'asc').map((row: Item): number => row.id)]);
+    }, 2000);
 });

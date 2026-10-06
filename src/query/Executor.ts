@@ -129,13 +129,13 @@ export class Executor<T> {
         }
 
         const schema: TableSchema = await this.#connection.schema(this.#query.table);
-        const plan: Plan = Planner.plan(this.#prepared(schema), [], schema);
+        const store: IDBObjectStore = await this.#store('readonly');
+        const plan: Plan = await this.#planned(schema, store);
 
         if (plan.residual.length > 0 || plan.values !== null || this.#deduplicates(schema, this.#query.distinct)) {
             return (await this.records()).length;
         }
 
-        const store: IDBObjectStore = await this.#store('readonly');
         const started: number = performance.now();
         const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index);
         const count: number = await Request.settle(source.count(plan.range ?? undefined));
@@ -166,18 +166,22 @@ export class Executor<T> {
      * Get the value at one end of a column's range.
      */
     async extreme(column: string, direction: IDBCursorDirection): Promise<number | null> {
-        const index: IndexSchema | null = await this.#sole(column);
+        const schema: TableSchema = await this.#connection.schema(this.#query.table);
+        const index: IndexSchema | null = this.#sole(schema, column);
 
-        // An index is already sorted, and IndexedDB omits records with no value for its key path,
-        // which is exactly what SQL does with nulls. So the answer is its first entry.
         if (index !== null) {
             const store: IDBObjectStore = await this.#store('readonly');
-            const started: number = performance.now();
-            const cursor: IDBCursorWithValue | null = await Request.settle(store.index(index.name).openCursor(null, direction));
 
-            this.#emit(`index:${index.name}`, started, cursor === null ? 0 : 1);
+            // An index is already sorted, and IndexedDB omits records with no value for its key path,
+            // which is exactly what SQL does with nulls. So the answer is its first entry.
+            if (await this.#typed(store, schema, index.name)) {
+                const started: number = performance.now();
+                const cursor: IDBCursorWithValue | null = await Request.settle(store.index(index.name).openCursor(null, direction));
 
-            return cursor === null ? null : Number(cursor.key);
+                this.#emit(`index:${index.name}`, started, cursor === null ? 0 : 1);
+
+                return cursor === null ? null : Number(cursor.key);
+            }
         }
 
         const values: number[] = await this.numbers(column);
@@ -481,33 +485,105 @@ export class Executor<T> {
     }
 
     /**
-     * Plan the query, setting the orders aside when the index they would walk leaves records out.
+     * Plan the query, passing over a source that holds a value of another type than its column's, and setting the orders aside when the index they would walk leaves records out.
      */
     async #planned(schema: TableSchema, store: IDBObjectStore): Promise<Plan> {
         const constraints: Constraint[] = this.#prepared(schema);
-        const plan: Plan = Planner.plan(constraints, this.#orders(), schema);
+        const excluded: Set<string | null> = new Set<string | null>();
 
-        if (!plan.ordered || plan.index === null || plan.range !== null) {
-            return plan;
+        let orders: readonly Order[] = this.#orders();
+
+        for (;;) {
+            const plan: Plan = Planner.plan(constraints, orders, schema, excluded);
+
+            if (plan.source === 'scan') {
+                return plan;
+            }
+
+            const counted: boolean = plan.ordered && plan.index !== null && plan.range === null;
+
+            const [typed, complete]: [boolean, boolean] = await Promise.all([
+                this.#typed(store, schema, plan.index),
+                counted ? this.#complete(store, plan.index as string) : Promise.resolve(true),
+            ]);
+
+            if (!typed) {
+                excluded.add(plan.index);
+            } else if (!complete) {
+                orders = [];
+            } else {
+                return plan;
+            }
         }
-
-        const [held, total]: [number, number] = await Promise.all([
-            Request.settle(store.index(plan.index).count()),
-            Request.settle(store.count()),
-        ]);
-
-        return held === total ? plan : Planner.plan(constraints, [], schema);
     }
 
     /**
-     * Get the single column index that can answer an unconstrained extreme, if there is one.
+     * Determine whether an index holds an entry for every record in the store.
      */
-    async #sole(column: string): Promise<IndexSchema | null> {
+    async #complete(store: IDBObjectStore, index: string): Promise<boolean> {
+        const [held, total]: [number, number] = await Promise.all([
+            Request.settle(store.index(index).count()),
+            Request.settle(store.count()),
+        ]);
+
+        return held === total;
+    }
+
+    /**
+     * Determine whether every entry of an index, or of the key path when given null, is of its column's type, which its first and last keys tell since IndexedDB orders keys by type first.
+     */
+    async #typed(store: IDBObjectStore, schema: TableSchema, index: string | null): Promise<boolean> {
+        const column: string | null | undefined = index === null
+            ? schema.key
+            : schema.indexes.find((candidate: IndexSchema): boolean => candidate.name === index)?.columns[0];
+
+        const type: ColumnType | undefined = schema.columns.find((candidate: ColumnSchema): boolean => candidate.name === column)?.type;
+
+        if (type === undefined || type === 'json') {
+            return true;
+        }
+
+        const source: IDBObjectStore | IDBIndex = index === null ? store : store.index(index);
+
+        const [first, last]: [IDBCursor | null, IDBCursor | null] = await Promise.all([
+            Request.settle(source.openKeyCursor(null, 'next')),
+            Request.settle(source.openKeyCursor(null, 'prev')),
+        ]);
+
+        if (first === null || last === null) {
+            return true;
+        }
+
+        switch (type) {
+            case 'integer':
+            case 'float':
+            case 'decimal':
+                return typeof last.key === 'number';
+
+            case 'date':
+            case 'datetime':
+                return first.key instanceof Date && last.key instanceof Date;
+
+            case 'string':
+            case 'enum':
+                return typeof first.key === 'string' && typeof last.key === 'string';
+
+            default:
+                return false;
+        }
+    }
+
+    /**
+     * Get the single column index that can answer an unconstrained extreme, if there is one, which is never one over a boolean column.
+     */
+    #sole(schema: TableSchema, column: string): IndexSchema | null {
         if (this.#query.joins.length > 0 || this.#query.constraints.length > 0) {
             return null;
         }
 
-        const schema: TableSchema = await this.#connection.schema(this.#query.table);
+        if (schema.columns.some((candidate: ColumnSchema): boolean => candidate.name === column && candidate.type === 'boolean')) {
+            return null;
+        }
 
         return schema.indexes.find((index: IndexSchema): boolean => index.columns.length === 1
             && index.columns[0] === column

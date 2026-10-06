@@ -21,11 +21,11 @@ interface Candidate {
 
 export class Planner {
     /**
-     * Compile the constraints and orders into an execution plan.
+     * Compile the constraints and orders into an execution plan, walking none of the excluded sources, each named by its index or null for the key path.
      */
-    static plan(constraints: readonly Constraint[], orders: readonly Order[], schema: TableSchema): Plan {
-        const candidate: Candidate | null = this.#disjunctive(constraints) ? null : this.#candidate(constraints, schema);
-        const ordering: Candidate | null = this.#disjunctive(constraints) ? null : this.#ordering(orders, schema);
+    static plan(constraints: readonly Constraint[], orders: readonly Order[], schema: TableSchema, excluded: ReadonlySet<string | null> = new Set<string | null>()): Plan {
+        const candidate: Candidate | null = this.#disjunctive(constraints) ? null : this.#candidate(constraints, schema, excluded);
+        const ordering: Candidate | null = this.#disjunctive(constraints) ? null : this.#ordering(orders, schema, excluded);
 
         if (candidate === null) {
             return this.#ordered(constraints, orders, ordering);
@@ -137,11 +137,11 @@ export class Planner {
     /**
      * Get the most selective constraint able to drive the scan.
      */
-    static #candidate(constraints: readonly Constraint[], schema: TableSchema): Candidate | null {
+    static #candidate(constraints: readonly Constraint[], schema: TableSchema, excluded: ReadonlySet<string | null>): Candidate | null {
         let best: Candidate | null = null;
 
         for (const constraint of constraints) {
-            const candidate: Candidate | null = this.#candidacy(constraint, schema);
+            const candidate: Candidate | null = this.#candidacy(constraint, schema, excluded);
 
             if (candidate !== null && (best === null || candidate.rank < best.rank)) {
                 best = candidate;
@@ -154,7 +154,7 @@ export class Planner {
     /**
      * Assess whether a single constraint can drive the scan.
      */
-    static #candidacy(constraint: Constraint, schema: TableSchema): Candidate | null {
+    static #candidacy(constraint: Constraint, schema: TableSchema, excluded: ReadonlySet<string | null>): Candidate | null {
         if (constraint.type === 'nested' || constraint.type === 'null' || constraint.type === 'column' || constraint.type === 'part' || constraint.type === 'time' || constraint.not) {
             return null;
         }
@@ -165,10 +165,10 @@ export class Planner {
         }
 
         if (constraint.type === 'json-contains') {
-            return this.#contained(constraint, schema);
+            return this.#contained(constraint, schema, excluded);
         }
 
-        const target: { source: 'key' | 'index'; index: string | null; rank: number } | null = this.#target(constraint.column, schema);
+        const target: { source: 'key' | 'index'; index: string | null; rank: number } | null = this.#target(constraint.column, schema, excluded);
 
         if (target === null) {
             return null;
@@ -206,9 +206,9 @@ export class Planner {
     /**
      * Assess whether a JSON contains can drive the scan through the multi entry index over its column.
      */
-    static #contained(constraint: Extract<Constraint, { type: 'json-contains' }>, schema: TableSchema): Candidate | null {
+    static #contained(constraint: Extract<Constraint, { type: 'json-contains' }>, schema: TableSchema, excluded: ReadonlySet<string | null>): Candidate | null {
         const index: IndexSchema | undefined = schema.indexes.find(
-            (candidate: IndexSchema): boolean => candidate.multiEntry && candidate.columns.length === 1 && candidate.columns[0] === constraint.column,
+            (candidate: IndexSchema): boolean => candidate.multiEntry && candidate.columns.length === 1 && candidate.columns[0] === constraint.column && !excluded.has(candidate.name),
         );
 
         if (index === undefined || !this.#element(constraint.value)) {
@@ -236,15 +236,15 @@ export class Planner {
     }
 
     /**
-     * Resolve the column to the key path or a single column index that holds one entry per record.
+     * Resolve the column to the key path or a single column index that holds one entry per record, unless that source is excluded.
      */
-    static #target(column: string, schema: TableSchema): { source: 'key' | 'index'; index: string | null; rank: number } | null {
-        if (schema.key === column) {
+    static #target(column: string, schema: TableSchema, excluded: ReadonlySet<string | null>): { source: 'key' | 'index'; index: string | null; rank: number } | null {
+        if (schema.key === column && !excluded.has(null)) {
             return { source: 'key', index: null, rank: 0 };
         }
 
         const index: IndexSchema | undefined = schema.indexes.find(
-            (candidate: IndexSchema): boolean => candidate.columns.length === 1 && candidate.columns[0] === column && !candidate.multiEntry,
+            (candidate: IndexSchema): boolean => candidate.columns.length === 1 && candidate.columns[0] === column && !candidate.multiEntry && !excluded.has(candidate.name),
         );
 
         if (index === undefined) {
@@ -257,14 +257,14 @@ export class Planner {
     /**
      * Get the index able to satisfy the requested order without dropping records.
      */
-    static #ordering(orders: readonly Order[], schema: TableSchema): Candidate | null {
+    static #ordering(orders: readonly Order[], schema: TableSchema, excluded: ReadonlySet<string | null>): Candidate | null {
         const order: Order | undefined = orders[0];
 
         if (orders.length !== 1 || order === undefined) {
             return null;
         }
 
-        const target: { source: 'key' | 'index'; index: string | null; rank: number } | null = this.#target(order.column, schema);
+        const target: { source: 'key' | 'index'; index: string | null; rank: number } | null = this.#target(order.column, schema, excluded);
 
         if (target === null) {
             return null;

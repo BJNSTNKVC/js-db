@@ -714,4 +714,32 @@ describe('Grouping constructed without a way to place columns', (): void => {
         expect(await grouping().orderBy('team', 'desc').get()).toEqual([{ team: 'ops' }, { team: 'core' }]);
         expect(await grouping().orderBy('users.team', 'desc').get()).toEqual([{ team: 'core' }, { team: 'ops' }]);
     });
+
+    test('takes the extremes of a group holding 200,000 members', async (): Promise<void> => {
+        const grouping: Grouping<Record<string, unknown>, ['kind']> = new Grouping<Record<string, unknown>, ['kind']>(
+            async (): Promise<Record<string, unknown>[]> => Array.from({ length: 200000 }, (_: unknown, index: number): Record<string, unknown> => ({ kind: 'a', value: index })),
+            ['kind'],
+            new Map<string, string>([['kind', 'kind']]),
+        );
+
+        expect(await grouping.aggregate({ least: { min: 'value' }, most: { max: 'value' } }).get()).toEqual([{ kind: 'a', least: 0, most: 199999 }]);
+    });
+
+    test('takes the extremes of strings and dates as numbers', async (): Promise<void> => {
+        const grouping: Grouping<Record<string, unknown>, ['kind']> = new Grouping<Record<string, unknown>, ['kind']>(
+            async (): Promise<Record<string, unknown>[]> => [
+                { kind: 'name', value: 'Bob' },
+                { kind: 'name', value: 'Alice' },
+                { kind: 'day', value: new Date('2024-03-01T00:00:00Z') },
+                { kind: 'day', value: new Date('2024-01-15T00:00:00Z') },
+            ],
+            ['kind'],
+            new Map<string, string>([['kind', 'kind']]),
+        );
+
+        expect(await grouping.aggregate({ least: { min: 'value' }, most: { max: 'value' } }).orderBy('kind').get()).toEqual([
+            { kind: 'day', least: Date.parse('2024-01-15T00:00:00Z'), most: Date.parse('2024-03-01T00:00:00Z') },
+            { kind: 'name', least: NaN, most: NaN },
+        ]);
+    });
 });

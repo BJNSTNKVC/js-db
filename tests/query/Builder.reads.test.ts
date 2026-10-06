@@ -1079,6 +1079,31 @@ describe('Builder ordering through an index that leaves records out', (): void =
         expect(await table(name).orderBy(column).count()).toEqual(3);
     });
 
+    test('orders by the records rather than a grandfathered boolean index holding numbers', async (): Promise<void> => {
+        const legacy: Connection = new Connection('app', { database: 'builder-reads-legacy', migrations: [CreateRanksTables], strict: false });
+        const database: IDBDatabase = await legacy.open();
+        const transaction: IDBTransaction = database.transaction('flags', 'readwrite');
+
+        for (const [name, active] of [['Alice', 1], ['Bob', 0], ['Carol', 1]] as [string, number][]) {
+            transaction.objectStore('flags').add({ name, active });
+        }
+
+        await new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
+            transaction.oncomplete = (): void => resolve();
+            transaction.onerror = (): void => reject(transaction.error);
+        });
+
+        expect(await legacy.table<Named>('flags').orderBy('active').explain()).toEqual('scan');
+        expect(await legacy.table<Named>('flags').orderBy('active').pluck('name')).toEqual(['Bob', 'Alice', 'Carol']);
+        expect([await legacy.table('flags').min('active'), await legacy.table('flags').max('active')]).toEqual([0, 1]);
+    });
+
+    test('takes min and max over a grandfathered boolean index from the records', async (): Promise<void> => {
+        expect(await planned(async (): Promise<void> => {
+            expect([await table('flags').min('active'), await table('flags').max('active')]).toEqual([0, 1]);
+        })).toEqual(['scan', 'scan']);
+    });
+
     test('sorts in memory once the index proves incomplete', async (): Promise<void> => {
         expect(await planned((): Promise<unknown> => table('ranks').orderBy('rank').get())).toEqual(['scan']);
         expect(await table('ranks').orderBy('rank').explain()).toEqual('scan');

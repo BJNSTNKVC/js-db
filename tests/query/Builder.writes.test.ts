@@ -514,7 +514,8 @@ describe('Builder writes that move records along the index they walk', (): void 
         ];
 
         expect(await entries().where('position', '>=', 2).update({ label: 'moved' })).toEqual(3);
-        expect(walks.map((walk: MockInstance): number => walk.mock.calls.length)).toEqual([1, 0, 0]);
+        expect(walks.map((walk: MockInstance): number => walk.mock.calls.length)).toEqual([1, 2, 0]);
+        expect(walks[1]?.mock.calls).toEqual([[null, 'next'], [null, 'prev']]);
         expect(await entries().orderBy('id').pluck('label')).toEqual(['a', 'b', 'moved', 'moved', 'moved']);
     });
 });

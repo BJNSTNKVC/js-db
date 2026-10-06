@@ -245,7 +245,9 @@ export class Grouping<T, G extends (keyof T & string)[], A extends Aggregations 
             return values.reduce((carry: number, value: number): number => carry + value, 0) / values.length;
         }
 
-        return 'min' in aggregation ? Math.min(...values) : Math.max(...values);
+        return values.reduce((carry: number, value: number): number => 'min' in aggregation
+            ? Math.min(carry, value)
+            : Math.max(carry, value));
     }
 
     /**

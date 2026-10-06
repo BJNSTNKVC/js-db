@@ -48,6 +48,22 @@ Each resolves to a description of the plan chosen:
   string or enum, and any valid key for a JSON column. Anything else, including every boolean, an
   object, an invalid date or a value that did not convert, is checked against every record the
   query reads instead, so an index never changes which rows come back.
+- An index, and the key path, serves a query only while every entry it holds is of its column's
+  type. IndexedDB orders keys by type first, numbers before dates before strings, while a scan
+  compares values as JavaScript does, so an integer index holding `'2'` would miss it in
+  `where('visits', 2)` and place it above every number in a range or an order. A column can hold
+  another type when a default was stored unconverted before 6.0.0, a row was written before 5.0.0,
+  or a row was written past the package. Before walking an index or the key path, the query reads
+  its first and last keys, two key-cursor requests run alongside the count check above, and when
+  either is of another type it plans again without that source: through another index a constraint
+  can use, the key path, or a scan, which `explain` and the `QueryExecuted` event then report. No
+  verdict is kept, so the next query sees a row written past the package. A JSON column takes any
+  key and is never checked. Writing the value again through the builder stores it in the column's
+  type, after which the index serves again.
+- A value IndexedDB cannot use as a key, such as `true` in an integer column, is in no index, so
+  this check cannot see it. A scan compares it as JavaScript does, finding `true` for
+  `where('visits', 1)`, while a lookup through the index never does. Writing the value again through
+  the builder repairs it in the same way.
 - A multi-entry index holds one entry per distinct element of the array a record stores, so it
   never drives an equality, a `whereIn`, a range, a `whereBetween` or an order, which compare the
   whole value. It drives `whereJsonContains(column, value)` alone, as a point lookup of the value,
@@ -68,7 +84,7 @@ Each resolves to a description of the plan chosen:
   an index on its column can serve. `whereYear`, `whereMonth`, `whereDay` and `whereTime` never
   drive the query.
 - `count()` with no residual constraints uses `count()` on the store or index, reading no records,
-  unless the query joins, or is `distinct` and either selects columns or reads a table without a key
+  once the index passes the type check above, unless the query joins, or is `distinct` and either selects columns or reads a table without a key
   column, when it reads the records to count the distinct rows.
 - A joined query reads every table it joins in full and runs the join in memory, so no index takes
   part. `explain()` on one returns `'join'`, the plan the `QueryExecuted` event reports for it, and
