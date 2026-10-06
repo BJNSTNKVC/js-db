@@ -81,9 +81,24 @@ flat row, so `pluck('id')` returns `posts.id`. Once one column of a `pluck` is q
 is resolved the way `select` resolves it, so a bare column two tables share throws
 `SchemaException` there.
 
-`groupBy`, the columns an aggregate names and `having` take qualified columns too. A grouped column
-is named after its last part, the way `select('users.name')` is named `name`, and `having` accepts
-either name:
+`sum`, `avg`, `min` and `max` read a column as `pluck` does: a qualified column or a path from one
+off the table it names, a bare column off the flat row. They set the query's `select` aside, as
+they do on a query without a join, so `select('users.name').sum('user_id')` sums the `user_id` of
+every joined row. On a `distinct` query they still take each value once.
+
+```ts
+// The posts have 3, 5 and 1 likes.
+await query.sum('posts.likes');
+```
+
+```
+9
+```
+
+`groupBy`, the columns an aggregate names, `having`, `orHaving` and a grouping's `orderBy` take
+qualified columns and paths too. A grouped column is named after its last part, the way
+`select('users.name')` is named `name`, and `having`, `orHaving` and `orderBy` accept it by that
+name, qualified or bare, whichever form it was grouped by:
 
 ```ts
 // Alice's posts have 3 and 5 likes, Bob's has 1.
@@ -100,6 +115,9 @@ await DB.table('users')
     { name: 'Alice', total: 2, likes: 8 }
 ]
 ```
+
+A name that is none of the grouped columns, such as an aggregate alias, is read off the group row as
+given, and a column qualified with a table the query does not join throws `SchemaException`.
 
 Two grouped columns that share a last part, as in `groupBy('users.id', 'posts.id')`, still group by
 both, but the row keeps the later one under `id`, as `select('users.id', 'posts.id')` does.

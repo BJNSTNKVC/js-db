@@ -54,10 +54,19 @@ A JSON column groups by content, comparing values the way `distinct()` does, as 
 whatever order their keys were written, at every depth, and an array shares a group only with arrays
 holding the same elements in the same order. The group carries the value its first record holds.
 
+A JSON path groups by the value it reads, and the row carries it under the path's last step, the way
+`select` names a path, so `groupBy('settings->theme')` gives rows such as `{ theme: 'dark' }`. An
+aggregate can read a path too, as in `{ sum: 'stats->points' }`, leaving out a record the path
+finds nothing in.
+
 ## having, ordering and paging apply to groups
 
 `having` and `orHaving` filter the grouped rows, and take the same operators as `where`. They can
 name either a grouped column or an aggregate alias, since by then both are just columns on the row.
+A grouped column can be named as it was grouped, by the name it takes on the row, or qualified with
+its table, so after `groupBy('role')`, `having('users.role', 'admin')` and `orderBy('users.role')`
+both read `role`. A column qualified with a table the query does not read throws `SchemaException`,
+as it does in `where`.
 
 `orderBy`, `limit` and `offset` on a grouping apply to **groups**, not records. Any ordering or
 paging set before `groupBy` is dropped, because paging records before grouping them is almost never

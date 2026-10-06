@@ -5,7 +5,7 @@ import { Migration } from '../../src/migrations/Migration';
 import { Schema } from '../../src/schema/Schema';
 import { Blueprint } from '../../src/schema/Blueprint';
 import type { Builder } from '../../src/query/Builder';
-import type { Grouping } from '../../src/query/Grouping';
+import { Grouping } from '../../src/query/Grouping';
 import { Predicate } from '../../src/query/Predicate';
 
 interface User {
@@ -627,5 +627,91 @@ describe('Grouping by JSON values', (): void => {
             { meta: { a: { x: 1, y: 2 }, list: [{ p: 1, q: 2 }] }, total: 2 },
             { meta: [{ x: 1, y: [{ m: 1, n: 2 }] }], total: 2 },
         ]);
+    });
+});
+
+describe('Grouping over a JSON path', (): void => {
+    class CreateScoresTable extends Migration {
+        /**
+         * Run the migration.
+         */
+        override async up(): Promise<void> {
+            await Schema.create('scores', (table: Blueprint): void => {
+                table.id();
+                table.string('team');
+                table.json('stats').nullable();
+            });
+        }
+    }
+
+    let scores: () => Builder;
+
+    beforeAll(async (): Promise<void> => {
+        const isolated: Connection = new Connection('app', { database: 'grouping-paths', migrations: [CreateScoresTable] });
+
+        scores = (): Builder => isolated.table('scores');
+
+        await isolated.migrate();
+        await scores().insert([
+            { team: 'core', stats: { points: 10, tier: 'gold' } },
+            { team: 'core', stats: { points: 4, tier: 'silver' } },
+            { team: 'ops', stats: { points: 6, tier: 'gold' } },
+            { team: 'ops', stats: null },
+            { team: 'ops', stats: { tier: 'silver' } },
+        ]);
+    });
+
+    test('aggregates a path in each group', async (): Promise<void> => {
+        const rows: Record<string, unknown>[] = await scores()
+            .groupBy('team')
+            .aggregate({
+                total  : { sum: 'stats->points' },
+                average: { avg: 'stats->points' },
+                least  : { min: 'stats->points' },
+                most   : { max: 'stats->points' },
+                counted: { count: 'stats->points' },
+            })
+            .orderBy('team')
+            .get();
+
+        expect(rows).toEqual([
+            { team: 'core', total: 14, average: 7, least: 4, most: 10, counted: 2 },
+            { team: 'ops', total: 6, average: 6, least: 6, most: 6, counted: 1 },
+        ]);
+    });
+
+    test('groups by a path, named after its last step', async (): Promise<void> => {
+        const rows: Record<string, unknown>[] = await scores()
+            .whereNotNull('stats')
+            .groupBy('stats->tier')
+            .aggregate({ total: { sum: 'stats->points' } })
+            .orderBy('stats->tier')
+            .get();
+
+        expect(rows).toEqual([
+            { tier: 'gold', total: 16 },
+            { tier: 'silver', total: 4 },
+        ]);
+    });
+
+    test('constrains and sorts the groups by a grouped path', async (): Promise<void> => {
+        const grouped: () => Grouping<Record<string, unknown>, ['stats->tier']> = (): Grouping<Record<string, unknown>, ['stats->tier']> => scores().whereNotNull('stats').groupBy('stats->tier');
+
+        expect(await grouped().having('stats->tier', 'gold').get()).toEqual([{ tier: 'gold' }]);
+        expect(await grouped().orderBy('stats->tier', 'desc').get()).toEqual([{ tier: 'silver' }, { tier: 'gold' }]);
+    });
+});
+
+describe('Grouping constructed without a way to place columns', (): void => {
+    test('reads having and orderBy columns by the names the groups take, leaving any other as given', async (): Promise<void> => {
+        const grouping: () => Grouping<Record<string, unknown>, ['team']> = (): Grouping<Record<string, unknown>, ['team']> => new Grouping<Record<string, unknown>, ['team']>(
+            async (): Promise<Record<string, unknown>[]> => [{ team: 'core' }, { team: 'ops' }],
+            ['team'],
+            new Map<string, string>([['team', 'team']]),
+        );
+
+        expect(await grouping().having('team', 'ops').get()).toEqual([{ team: 'ops' }]);
+        expect(await grouping().orderBy('team', 'desc').get()).toEqual([{ team: 'ops' }, { team: 'core' }]);
+        expect(await grouping().orderBy('users.team', 'desc').get()).toEqual([{ team: 'core' }, { team: 'ops' }]);
     });
 });

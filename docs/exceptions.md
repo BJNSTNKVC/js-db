@@ -43,7 +43,8 @@ true. All of them are exported from the package root.
   boolean column, or over a column whose name is not a JavaScript identifier
 - `upsert` whose conflict target is neither the key path nor a unique index
 - `update`, `upsert`, `increment` or `decrement` touching the key path
-- a qualified column naming a table the query does not join
+- a qualified column naming a table the query does not read: on a query without a join any table
+  but its own, on a joined query any table it does not join
 - an unqualified column that is ambiguous across the tables a join reads
 - a column that exists on none of the tables the query reads
 - reading a table inside `DB.transaction` that the transaction did not declare

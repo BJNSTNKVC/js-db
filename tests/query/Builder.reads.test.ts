@@ -1756,3 +1756,242 @@ describe('Builder distinct', (): void => {
         expect(counted.map((event: QueryExecuted): number => event.records)).toEqual([3]);
     });
 });
+
+describe('Builder columns qualified with the query\'s own table', (): void => {
+    interface Player {
+        id: number;
+        name: string;
+        role: string;
+        email: string;
+        age: number;
+        visits: number | null;
+        born: Date | null;
+        stats: { points: number } | null;
+    }
+
+    class CreatePlayersTables extends Migration {
+        /**
+         * Run the migration.
+         */
+        override async up(): Promise<void> {
+            await Schema.create('players', (table: Blueprint): void => {
+                table.id();
+                table.string('name');
+                table.string('role');
+                table.string('email').unique();
+                table.integer('age').index();
+                table.integer('visits').nullable();
+                table.date('born').nullable();
+                table.json('stats').nullable();
+            });
+
+            await Schema.create('teams', (table: Blueprint): void => {
+                table.id();
+                table.string('label');
+            });
+
+            await Schema.create('app.players', (table: Blueprint): void => {
+                table.id();
+                table.string('name');
+            });
+        }
+    }
+
+    let own: Connection;
+
+    /**
+     * Begin a query against the players table.
+     */
+    function players(): Builder<Player> {
+        return own.table<Player>('players');
+    }
+
+    /**
+     * Get the names of the players a query returns.
+     */
+    async function called(query: Builder<Player>): Promise<string[]> {
+        return (await query.get()).map((player: Player): string => player.name);
+    }
+
+    /**
+     * Run a query, collecting the events it announces.
+     */
+    async function announced(run: () => Promise<unknown>): Promise<QueryExecuted[]> {
+        const seen: QueryExecuted[] = [];
+        const listener: (event: Event) => void = ((event: QueryExecuted): void => {
+            seen.push(event);
+        }) as (event: Event) => void;
+
+        Dispatcher.listen('db:query', listener);
+
+        try {
+            await run();
+        } finally {
+            Dispatcher.forget('db:query', listener);
+        }
+
+        return seen;
+    }
+
+    beforeAll(async (): Promise<void> => {
+        own = new Connection('app', { database: 'builder-reads-own', migrations: [CreatePlayersTables] });
+
+        await own.migrate();
+        await players().insert([
+            { name: 'Alice', role: 'admin', email: 'alice@example.com', age: 30, visits: 2, born: '1990-05-01', stats: { points: 10 } },
+            { name: 'Bob', role: 'member', email: 'bob@example.com', age: 25, visits: 5, born: '1995-01-15', stats: { points: 20 } },
+            { name: 'Carol', role: 'member', email: 'carol@example.com', age: 35, visits: null, born: null, stats: null },
+        ] as Partial<Player>[]);
+        await own.table('app.players').insert({ name: 'Dot' });
+    });
+
+    test.each([
+        ['where', (query: Builder<Player>): Builder<Player> => query.where('players.visits', 2), ['Alice']],
+        ['orWhere', (query: Builder<Player>): Builder<Player> => query.where('name', 'Carol').orWhere('players.visits', 5), ['Bob', 'Carol']],
+        ['a nested group', (query: Builder<Player>): Builder<Player> => query.where((nested: Builder<Player>): void => {
+            nested.where('players.visits', 2).orWhere('players.visits', 5);
+        }), ['Alice', 'Bob']],
+        ['an object of columns', (query: Builder<Player>): Builder<Player> => query.where({ 'players.role': 'admin' } as Partial<Player>), ['Alice']],
+        ['whereNot', (query: Builder<Player>): Builder<Player> => query.whereNot('players.role', 'member'), ['Alice']],
+        ['whereIn', (query: Builder<Player>): Builder<Player> => query.whereIn('players.visits', [2, 5]), ['Alice', 'Bob']],
+        ['whereNull', (query: Builder<Player>): Builder<Player> => query.whereNull('players.visits'), ['Carol']],
+        ['whereNotNull', (query: Builder<Player>): Builder<Player> => query.whereNotNull('players.visits'), ['Alice', 'Bob']],
+        ['whereBetween', (query: Builder<Player>): Builder<Player> => query.whereBetween('players.age', [26, 40]), ['Alice', 'Carol']],
+        ['whereLike', (query: Builder<Player>): Builder<Player> => query.whereLike('players.name', 'b%'), ['Bob']],
+        ['whereColumn on both sides', (query: Builder<Player>): Builder<Player> => query.whereColumn('players.visits', '<', 'players.age'), ['Alice', 'Bob']],
+        ['whereColumn on one side', (query: Builder<Player>): Builder<Player> => query.whereColumn('visits', '>', 'players.age').orWhereColumn('players.visits', '=', 'visits'), ['Alice', 'Bob']],
+        ['whereDate', (query: Builder<Player>): Builder<Player> => query.whereDate('players.born', '1995-01-15'), ['Bob']],
+        ['whereYear', (query: Builder<Player>): Builder<Player> => query.whereYear('players.born', 1990), ['Alice']],
+        ['whereAny', (query: Builder<Player>): Builder<Player> => query.whereAny(['players.name', 'players.role'], 'admin'), ['Alice']],
+        ['a JSON path', (query: Builder<Player>): Builder<Player> => query.where('players.stats->points', '>', 10), ['Bob']],
+    ] as [string, (query: Builder<Player>) => Builder<Player>, string[]][])('reads the column through %s', async (_: string, constrain: (query: Builder<Player>) => Builder<Player>, expected: string[]): Promise<void> => {
+        expect(await called(constrain(players()))).toEqual(expected);
+    });
+
+    test('orders by the column', async (): Promise<void> => {
+        expect(await called(players().orderBy('players.age', 'desc'))).toEqual(['Carol', 'Alice', 'Bob']);
+        expect(await called(players().orderBy('players.stats->points', 'desc'))).toEqual(['Bob', 'Alice', 'Carol']);
+    });
+
+    test('selects the column, with and without an alias', async (): Promise<void> => {
+        expect(await players().select('players.name').get()).toEqual([{ name: 'Alice' }, { name: 'Bob' }, { name: 'Carol' }]);
+        expect(await players().select('players.name as label', 'players.stats->points').limit(1).get()).toEqual([{ label: 'Alice', points: 10 }]);
+        expect(await players().select('players.role').distinct().get()).toEqual([{ role: 'admin' }, { role: 'member' }]);
+    });
+
+    test('plucks the column, with and without a key, and gets its value', async (): Promise<void> => {
+        expect(await players().pluck('players.name')).toEqual(['Alice', 'Bob', 'Carol']);
+        expect(await players().pluck('players.name', 'players.id')).toEqual({ 1: 'Alice', 2: 'Bob', 3: 'Carol' });
+        expect(await players().orderBy('age').value('players.name')).toEqual('Bob');
+        expect(await players().value('players.stats->points')).toEqual(10);
+    });
+
+    test('groups, aggregates, constrains and sorts the groups by the column', async (): Promise<void> => {
+        const rows: Record<string, unknown>[] = await own.table('players')
+            .groupBy('players.role')
+            .aggregate({ total: { count: '*' }, visits: { sum: 'players.visits' } })
+            .orderBy('players.role', 'desc')
+            .get();
+
+        expect(rows).toEqual([{ role: 'member', total: 2, visits: 5 }, { role: 'admin', total: 1, visits: 2 }]);
+        expect(await players().groupBy('role').having('players.role', 'admin').get()).toEqual([{ role: 'admin' }]);
+        expect(await own.table('players').groupBy('players.role').having('role', 'member').orHaving('players.role', 'admin').get()).toEqual([{ role: 'admin' }, { role: 'member' }]);
+    });
+
+    test('sums, averages and takes the extremes of the column', async (): Promise<void> => {
+        expect(await players().sum('players.visits')).toEqual(7);
+        expect(await players().avg('players.visits')).toEqual(3.5);
+        expect(await players().min('players.visits')).toEqual(2);
+        expect(await players().max('players.stats->points')).toEqual(20);
+        expect(await players().where('name', 'Nobody').min('players.visits')).toBeNull();
+    });
+
+    test('finds a record only when the constraints on the column match it', async (): Promise<void> => {
+        expect((await players().where('players.role', 'admin').find(1))?.name).toEqual('Alice');
+        expect(await players().where('players.role', 'admin').find(2)).toBeNull();
+    });
+
+    test('counts, pages and walks the records the column matches', async (): Promise<void> => {
+        const members: () => Builder<Player> = (): Builder<Player> => players().where('players.role', 'member');
+        const chunked: string[][] = [];
+        const lazy: string[] = [];
+        const each: string[] = [];
+
+        await members().chunk(1, (records: Player[]): void => {
+            chunked.push(records.map((player: Player): string => player.name));
+        });
+
+        for await (const player of members().lazy()) {
+            lazy.push(player.name);
+        }
+
+        await members().each((player: Player): void => {
+            each.push(player.name);
+        });
+
+        expect(await members().count()).toEqual(2);
+        expect(await members().exists()).toEqual(true);
+        expect((await members().paginate(1, 1)).total).toEqual(2);
+        expect(chunked).toEqual([['Bob'], ['Carol']]);
+        expect(lazy).toEqual(['Bob', 'Carol']);
+        expect(each).toEqual(['Bob', 'Carol']);
+    });
+
+    test('plans the column as its bare form', async (): Promise<void> => {
+        const plans: (run: () => Promise<unknown>) => Promise<string[]> = async (run: () => Promise<unknown>): Promise<string[]> => {
+            return (await announced(run)).map((event: QueryExecuted): string => event.plan);
+        };
+
+        expect(await players().where('players.email', 'bob@example.com').explain()).toEqual('index:players_email_unique');
+        expect(await plans((): Promise<unknown> => players().orderBy('players.age').get())).toEqual(['index:players_age_index']);
+        expect(await plans(async (): Promise<void> => {
+            expect(await players().min('players.age')).toEqual(25);
+            expect(await players().max('players.age')).toEqual(35);
+        })).toEqual(['index:players_age_index', 'index:players_age_index']);
+    });
+
+    test('announces the column as the query resolved it', async (): Promise<void> => {
+        const seen: QueryExecuted[] = await announced((): Promise<unknown> => players().where('players.visits', 2).orderBy('players.name').get());
+
+        expect(seen[0]?.constraints).toEqual([{ type: 'basic', column: 'visits', operator: '=', value: 2, conjunction: 'and', not: false }]);
+        expect(seen[0]?.orders).toEqual([{ column: 'name', direction: 'asc' }]);
+    });
+
+    test('resolves the column on a table whose name holds a dot', async (): Promise<void> => {
+        expect(await own.table('app.players').where('app.players.name', 'Dot').pluck('app.players.name')).toEqual(['Dot']);
+        await expect(own.table('app.players').where('app.name', 'Dot').get()).rejects.toThrow('Column [app.name] names table [app], which this query does not read.');
+    });
+
+    test.each([
+        ['where', (query: Builder): Promise<unknown> => query.where('teams.label', 'core').get()],
+        ['whereNull', (query: Builder): Promise<unknown> => query.whereNull('teams.label').get()],
+        ['a nested group', (query: Builder): Promise<unknown> => query.where((nested: Builder): void => {
+            nested.where('teams.label', 'core');
+        }).count()],
+        ['whereColumn', (query: Builder): Promise<unknown> => query.whereColumn('name', 'teams.label').get()],
+        ['orderBy', (query: Builder): Promise<unknown> => query.orderBy('teams.label').get()],
+        ['select', (query: Builder): Promise<unknown> => query.select('teams.label').get()],
+        ['pluck', (query: Builder): Promise<unknown> => query.pluck('teams.label')],
+        ['pluck by key', (query: Builder): Promise<unknown> => query.pluck('name', 'teams.label')],
+        ['value', (query: Builder): Promise<unknown> => query.value('teams.label')],
+        ['groupBy', (query: Builder): Promise<unknown> => query.groupBy('teams.label').get()],
+        ['having', (query: Builder): Promise<unknown> => query.groupBy('role').having('teams.label', 'core').get()],
+        ['a grouped orderBy', (query: Builder): Promise<unknown> => query.groupBy('role').orderBy('teams.label').get()],
+        ['a grouped aggregate', (query: Builder): Promise<unknown> => query.groupBy('role').aggregate({ total: { sum: 'teams.id' } }).get()],
+        ['sum', (query: Builder): Promise<unknown> => query.sum('teams.id')],
+        ['min', (query: Builder): Promise<unknown> => query.min('teams.id')],
+        ['find', (query: Builder): Promise<unknown> => query.where('teams.label', 'core').find(1)],
+        ['a table it does not hold', (query: Builder): Promise<unknown> => query.where('ghosts.label', 'boo').get()],
+    ] as [string, (query: Builder) => Promise<unknown>][])('refuses another table\'s column in %s', async (_: string, run: (query: Builder) => Promise<unknown>): Promise<void> => {
+        await expect(run(own.table('players'))).rejects.toThrow(SchemaException);
+    });
+
+    test('names the table it refuses', async (): Promise<void> => {
+        await expect(players().where('teams.label', 'core').get()).rejects.toThrow('Column [teams.label] names table [teams], which this query does not read.');
+        await expect(players().sum('teams.id')).rejects.toThrow('Column [teams.id] names table [teams], which this query does not read.');
+    });
+
+    test('reads another table\'s column once the query joins it', async (): Promise<void> => {
+        expect(await players().where('teams.label', 'core').crossJoin('teams').count()).toEqual(0);
+    });
+});

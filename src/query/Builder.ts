@@ -21,6 +21,7 @@ import type {
     Operator,
     Order,
     Paginated,
+    Projection,
     Query
 } from './types';
 
@@ -489,14 +490,20 @@ export class Builder<T = Record<string, unknown>> {
 
         return new Grouping<T, G>(
             async (read: string[]): Promise<Record<string, unknown>[]> => {
-                const query: Builder<T> = records.#qualifies(read)
-                    ? records.clone().select(read.map((column: string): string => `${column} as ${column}`))
-                    : records;
+                if (records.#qualifies(read)) {
+                    return await records.clone().select(read.map((column: string): string => `${column} as ${column}`)).#executor().records() as Record<string, unknown>[];
+                }
 
-                return await query.#executor().records() as Record<string, unknown>[];
+                const named: string[] = read.map((column: string): string => records.#column(column));
+                const fetched: Record<string, unknown>[] = await records.#executor().records() as Record<string, unknown>[];
+
+                return fetched.map((record: Record<string, unknown>): Record<string, unknown> => Object.fromEntries(
+                    read.map((column: string, index: number): [string, unknown] => [column, Columns.read(record, named[index] as string)]),
+                ));
             },
             columns,
-            new Map<string, string>(columns.map((column: string): [string, string] => [column, this.#qualifies([column]) ? Columns.named(column) : column])),
+            new Map<string, string>(columns.map((column: string): [string, string] => [column, Columns.named(column)])),
+            (): Promise<(column: string) => string | null> => records.#placing(columns),
         );
     }
 
@@ -632,7 +639,7 @@ export class Builder<T = Record<string, unknown>> {
      * Dump the state of the query.
      */
     dump(): this {
-        console.log(this.#query());
+        console.log(this.#state());
 
         return this;
     }
@@ -720,13 +727,14 @@ export class Builder<T = Record<string, unknown>> {
             return this.clone().select(`${column} as value`).value<V>('value');
         }
 
+        const named: string = this.#column(column);
         const record: T | null = await this.clone().first();
 
         if (record === null) {
             return null;
         }
 
-        return Columns.read(record as Record<string, unknown>, column) as V ?? null;
+        return Columns.read(record as Record<string, unknown>, named) as V ?? null;
     }
 
     /**
@@ -747,13 +755,14 @@ export class Builder<T = Record<string, unknown>> {
             return Object.fromEntries(rows.map((row: Record<string, unknown>): [string, V] => [String(row.key), row.value as V]));
         }
 
+        const [value, keyed]: string[] = columns.map((named: string): string => this.#column(named));
         const records: Record<string, unknown>[] = await this.#executor().records() as Record<string, unknown>[];
 
-        if (key === undefined) {
-            return records.map((record: Record<string, unknown>): V => Columns.read(record, column) as V);
+        if (keyed === undefined) {
+            return records.map((record: Record<string, unknown>): V => Columns.read(record, value as string) as V);
         }
 
-        return Object.fromEntries(records.map((record: Record<string, unknown>): [string, V] => [String(Columns.read(record, key)), Columns.read(record, column) as V]));
+        return Object.fromEntries(records.map((record: Record<string, unknown>): [string, V] => [String(Columns.read(record, keyed)), Columns.read(record, value as string) as V]));
     }
 
     /**
@@ -781,14 +790,17 @@ export class Builder<T = Record<string, unknown>> {
      * Sum a column across the records matching the query.
      */
     async sum(column: Key<T>): Promise<number> {
-        return (await this.#aggregated().#executor().numbers(column)).reduce((carry: number, value: number): number => carry + value, 0);
+        const [query, read]: [Builder<T>, string] = this.#over(column);
+
+        return (await query.#executor().numbers(read)).reduce((carry: number, value: number): number => carry + value, 0);
     }
 
     /**
      * Average a column across the records matching the query.
      */
     async avg(column: Key<T>): Promise<number | null> {
-        const values: number[] = await this.#aggregated().#executor().numbers(column);
+        const [query, read]: [Builder<T>, string] = this.#over(column);
+        const values: number[] = await query.#executor().numbers(read);
 
         if (values.length === 0) {
             return null;
@@ -801,14 +813,18 @@ export class Builder<T = Record<string, unknown>> {
      * Get the smallest value of a column across the records matching the query.
      */
     async min(column: Key<T>): Promise<number | null> {
-        return this.#aggregated().#executor().extreme(column, 'next');
+        const [query, read]: [Builder<T>, string] = this.#over(column);
+
+        return query.#executor().extreme(read, 'next');
     }
 
     /**
      * Get the largest value of a column across the records matching the query.
      */
     async max(column: Key<T>): Promise<number | null> {
-        return this.#aggregated().#executor().extreme(column, 'prev');
+        const [query, read]: [Builder<T>, string] = this.#over(column);
+
+        return query.#executor().extreme(read, 'prev');
     }
 
     /**
@@ -962,7 +978,9 @@ export class Builder<T = Record<string, unknown>> {
      * Insert records, updating those that already exist.
      */
     async upsert(values: Partial<T>[], uniqueBy: Key<T> | Key<T>[], update?: Key<T>[]): Promise<number> {
-        return this.#executor().upsert(values, (Array.isArray(uniqueBy) ? uniqueBy : [uniqueBy]) as string[], update);
+        const columns: string[] = (Array.isArray(uniqueBy) ? uniqueBy : [uniqueBy]).map((column: string): string => this.#column(column));
+
+        return this.#executor().upsert(values, columns, update?.map((column: string): string => this.#column(column)));
     }
 
     /**
@@ -1038,7 +1056,7 @@ export class Builder<T = Record<string, unknown>> {
      */
     async #own(column: string): Promise<string> {
         if (this.#joins.length === 0) {
-            return column;
+            return this.#column(column);
         }
 
         const { table, name }: { table: string | null; name: string } = Columns.split(column);
@@ -1095,9 +1113,99 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Get the state of the query as a snapshot the executor can read.
+     * Get a copy of the query an aggregate over a column can run on, and the column it reads there.
      */
-    #query(): Query {
+    #over(column: string): [Builder<T>, string] {
+        const query: Builder<T> = this.#aggregated();
+
+        if (this.#joins.length === 0) {
+            return [query, this.#column(column)];
+        }
+
+        if (Columns.qualified(column)) {
+            return [query.select(`${column} as value`), 'value'];
+        }
+
+        query.#columns = null;
+
+        return [query, column];
+    }
+
+    /**
+     * Name a column of a plain query as its table stores it, refusing one qualified with another table.
+     */
+    #column(column: string): string {
+        if (this.#joins.length > 0 || !Columns.qualified(column)) {
+            return column;
+        }
+
+        if (column.startsWith(`${this.#table}.`)) {
+            return column.slice(this.#table.length + 1);
+        }
+
+        throw new SchemaException(`Column [${column}] names table [${Columns.split(column).table}], which this query does not read.`);
+    }
+
+    /**
+     * Name every column of a constraint as the plain query's table stores it.
+     */
+    #named(constraint: Constraint): Constraint {
+        if (constraint.type === 'nested') {
+            return { ...constraint, constraints: constraint.constraints.map((nested: Constraint): Constraint => this.#named(nested)) };
+        }
+
+        if (constraint.type === 'column') {
+            return { ...constraint, column: this.#column(constraint.column), other: this.#column(constraint.other) };
+        }
+
+        return { ...constraint, column: this.#column(constraint.column) };
+    }
+
+    /**
+     * Name the column a projection selects as the plain query's table stores it, keeping the name it comes back under.
+     */
+    #projected(expression: string): string {
+        const projection: Projection = Columns.parse(expression);
+        const column: string = this.#column(projection.column);
+
+        return column === projection.column ? expression : `${column} as ${projection.alias}`;
+    }
+
+    /**
+     * Get the name a grouping by the given columns gives a column written other than as it was grouped by, or null for a column that is none of them.
+     */
+    async #placing(grouped: string[]): Promise<(column: string) => string | null> {
+        if (this.#joins.length === 0) {
+            const owned: Map<string, string> = new Map<string, string>(grouped.map((column: string): [string, string] => [this.#column(column), Columns.named(column)]));
+
+            return (column: string): string | null => owned.get(this.#column(column)) ?? null;
+        }
+
+        const tables: Map<string, string[]> = await this.#executor().tables();
+        const resolved: (column: string) => string | null = (column: string): string | null => {
+            try {
+                return Columns.resolve(column, tables);
+            } catch (error: unknown) {
+                if (Columns.qualified(column)) {
+                    throw error;
+                }
+
+                return null;
+            }
+        };
+        const qualified: Map<string | null, string> = new Map<string | null, string>(grouped.map((column: string): [string | null, string] => [resolved(column), Columns.named(column)]));
+
+        return (column: string): string | null => {
+            const name: string | null = resolved(column);
+
+            return name === null ? null : qualified.get(name) ?? null;
+        };
+    }
+
+    /**
+     * Get the state of the query as it was built.
+     */
+    #state(): Query {
         return {
             table      : this.#table,
             transaction: this.#transaction,
@@ -1109,6 +1217,24 @@ export class Builder<T = Record<string, unknown>> {
             columns    : this.#columns,
             distinct   : this.#distinct,
             joins      : this.#joins,
+        };
+    }
+
+    /**
+     * Get the state of the query as a snapshot the executor can read, every column of a plain query named as its table stores it.
+     */
+    #query(): Query {
+        const state: Query = this.#state();
+
+        if (this.#joins.length > 0) {
+            return state;
+        }
+
+        return {
+            ...state,
+            constraints: this.#constraints.map((constraint: Constraint): Constraint => this.#named(constraint)),
+            orders     : this.#orders.map((order: Order): Order => ({ ...order, column: this.#column(order.column) })),
+            columns    : this.#columns?.map((expression: string): string => this.#projected(expression)) ?? null,
         };
     }
 

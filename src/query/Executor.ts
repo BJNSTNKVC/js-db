@@ -152,7 +152,7 @@ export class Executor<T> {
         const records: Record<string, unknown>[] = (await this.#matched(false)).records as Record<string, unknown>[];
 
         const held: unknown[] = records
-            .map((record: Record<string, unknown>): unknown => record[column])
+            .map((record: Record<string, unknown>): unknown => Columns.read(record, column))
             .filter((value: unknown): boolean => value !== null && value !== undefined);
 
         const values: unknown[] = this.#query.distinct
@@ -391,6 +391,19 @@ export class Executor<T> {
         const fresh: (row: Record<string, unknown>) => boolean = this.#fresh();
 
         return (rows: T[]): T[] => rows.filter((row: T): boolean => fresh(row as Record<string, unknown>));
+    }
+
+    /**
+     * Get the columns of every table the query reads, keyed by table.
+     */
+    async tables(): Promise<Map<string, string[]>> {
+        const tables: Map<string, string[]> = new Map<string, string[]>();
+
+        for (const [name, schema] of await this.#schemas()) {
+            tables.set(name, schema.columns.map((column: ColumnSchema): string => column.name));
+        }
+
+        return tables;
     }
 
     /**
@@ -655,19 +668,6 @@ export class Executor<T> {
     }
 
     /**
-     * Get the columns of every table the query reads, keyed by table.
-     */
-    async #tables(): Promise<Map<string, string[]>> {
-        const tables: Map<string, string[]> = new Map<string, string[]>();
-
-        for (const [name, schema] of await this.#schemas()) {
-            tables.set(name, schema.columns.map((column: ColumnSchema): string => column.name));
-        }
-
-        return tables;
-    }
-
-    /**
      * Get the schema of every table the query reads, keyed by table.
      */
     async #schemas(): Promise<Map<string, TableSchema>> {
@@ -744,7 +744,7 @@ export class Executor<T> {
      * Run the joins, returning flat rows, only the first of each distinct row when told to.
      */
     async #joined(distinct: boolean): Promise<Record<string, unknown>[]> {
-        const tables: Map<string, string[]> = await this.#tables();
+        const tables: Map<string, string[]> = await this.tables();
         const constraints: Constraint[] = await this.#qualified(tables);
         const stores: (table: string) => IDBObjectStore = await this.#stores([...tables.keys()], 'readonly');
         const started: number = performance.now();
@@ -762,7 +762,7 @@ export class Executor<T> {
      * Get the first joined row, in the query's order, that holds the base record with the given key.
      */
     async #sought(key: IDBValidKey): Promise<T | null> {
-        const tables: Map<string, string[]> = await this.#tables();
+        const tables: Map<string, string[]> = await this.tables();
         const constraints: Constraint[] = await this.#qualified(tables);
         const stores: (table: string) => IDBObjectStore = await this.#stores([...tables.keys()], 'readonly');
         const started: number = performance.now();
@@ -797,7 +797,7 @@ export class Executor<T> {
             return (await this.#joined(true)).length;
         }
 
-        const tables: Map<string, string[]> = await this.#tables();
+        const tables: Map<string, string[]> = await this.tables();
         const constraints: Constraint[] = await this.#qualified(tables);
         const stores: (table: string) => IDBObjectStore = await this.#stores([...tables.keys()], 'readonly');
         const started: number = performance.now();
@@ -816,7 +816,7 @@ export class Executor<T> {
             throw new SchemaException(`Table [${this.#query.table}] does not support ordering, a limit or an offset on a write through a join.`);
         }
 
-        const tables: Map<string, string[]> = await this.#tables();
+        const tables: Map<string, string[]> = await this.tables();
         const constraints: Constraint[] = await this.#qualified(tables);
         const stores: (table: string) => IDBObjectStore = await this.#stores([...tables.keys()], 'readwrite');
         const store: IDBObjectStore = stores(this.#query.table);

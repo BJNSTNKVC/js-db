@@ -9,6 +9,7 @@ import { Dispatcher } from '../../src/events/Dispatcher';
 import { SchemaException } from '../../src/exceptions';
 import { Predicate } from '../../src/query/Predicate';
 import type { Builder } from '../../src/query/Builder';
+import type { Grouping } from '../../src/query/Grouping';
 import type { Transaction } from '../../src/database/Transaction';
 import type { Join } from '../../src/query/Join';
 import type { QueryExecuted } from '../../src/events';
@@ -1415,6 +1416,7 @@ interface Reader {
     id: number;
     name: string;
     settings: { theme: string } | null;
+    stats: { points: number } | null;
 }
 
 interface Story {
@@ -1422,6 +1424,7 @@ interface Story {
     user_id: number;
     title: string;
     likes: number;
+    meta: { score: unknown };
 }
 
 type Read = (query: Builder<Record<string, unknown>>) => Promise<unknown>;
@@ -1435,6 +1438,7 @@ class CreateReadTables extends Migration {
             table.id();
             table.string('name');
             table.json('settings').nullable();
+            table.json('stats').nullable();
         });
 
         await Schema.create('posts', (table: Blueprint): void => {
@@ -1442,6 +1446,7 @@ class CreateReadTables extends Migration {
             table.integer('user_id');
             table.string('title');
             table.integer('likes');
+            table.json('meta');
         });
     }
 }
@@ -1467,15 +1472,15 @@ describe('Qualified columns on a joined query', (): void => {
         await read.migrate();
 
         await read.table<Reader>('users').insert([
-            { name: 'Alice', settings: { theme: 'dark' } },
-            { name: 'Bob', settings: { theme: 'light' } },
-            { name: 'Carol', settings: null },
+            { name: 'Alice', settings: { theme: 'dark' }, stats: { points: 10 } },
+            { name: 'Bob', settings: { theme: 'light' }, stats: { points: 20 } },
+            { name: 'Carol', settings: null, stats: null },
         ]);
 
         await read.table<Story>('posts').insert([
-            { user_id: 1, title: 'First', likes: 3 },
-            { user_id: 1, title: 'Second', likes: 5 },
-            { user_id: 2, title: 'Hello', likes: 1 },
+            { user_id: 1, title: 'First', likes: 3, meta: { score: 5 } },
+            { user_id: 1, title: 'Second', likes: 5, meta: { score: '5' } },
+            { user_id: 2, title: 'Hello', likes: 1, meta: { score: 5 } },
         ]);
     });
 
@@ -1600,5 +1605,111 @@ describe('Qualified columns on a joined query', (): void => {
             { name: 'Alice', likes: 8 },
             { name: 'Bob', likes: 1 },
         ]);
+    });
+
+    test('sums, averages and takes the extremes of a qualified column as pluck reads it', async (): Promise<void> => {
+        expect(await posted().pluck('posts.likes')).toEqual([3, 5, 1]);
+        expect(await posted().sum('posts.likes')).toEqual(9);
+        expect(await posted().avg('posts.likes')).toEqual(3);
+        expect(await posted().min('posts.likes')).toEqual(1);
+        expect(await posted().max('posts.likes')).toEqual(5);
+    });
+
+    test('aggregates an unqualified column off the flat row, as pluck reads it', async (): Promise<void> => {
+        expect(await posted().sum('likes')).toEqual(9);
+        expect(await posted().pluck('id')).toEqual([1, 2, 3]);
+        expect(await posted().sum('id')).toEqual(6);
+    });
+
+    test('follows a JSON path in an aggregate, qualified or not', async (): Promise<void> => {
+        expect(await posted().pluck('users.stats->points')).toEqual([10, 10, 20]);
+        expect(await posted().sum('users.stats->points')).toEqual(40);
+        expect(await posted().min('users.stats->points')).toEqual(10);
+        expect(await posted().max('users.stats->points')).toEqual(20);
+        expect(await posted().sum('stats->points')).toEqual(40);
+        expect(await posted().avg('posts.meta->score')).toEqual(5);
+    });
+
+    test('takes each distinct value of a qualified column or a path once on a distinct query, telling 5 and \'5\' apart', async (): Promise<void> => {
+        expect(await posted().sum('posts.meta->score')).toEqual(15);
+        expect(await posted().distinct().sum('posts.meta->score')).toEqual(10);
+        expect(await posted().distinct().sum('users.stats->points')).toEqual(30);
+        expect(await posted().distinct().sum('posts.likes')).toEqual(9);
+    });
+
+    test('leaves out the nulls a left join gives and gets null for the extremes of nothing', async (): Promise<void> => {
+        expect(await posted('left').min('posts.likes')).toEqual(1);
+        expect(await posted('left').avg('posts.likes')).toEqual(3);
+        expect(await posted('left').where('users.name', 'Carol').max('posts.likes')).toBeNull();
+        expect(await posted('left').where('users.name', 'Carol').sum('posts.likes')).toEqual(0);
+        expect(await posted().where('posts.title', 'Missing').min('users.stats->points')).toBeNull();
+        expect(await posted().max('users.stats->missing')).toBeNull();
+    });
+
+    test('aggregates a column the select leaves out, distinct or not', async (): Promise<void> => {
+        expect(await posted().select('users.name').sum('user_id')).toEqual(4);
+        expect(await posted().select('users.name').sum('posts.user_id')).toEqual(4);
+        expect(await posted().select('users.name').max('user_id')).toEqual(2);
+        expect(await posted().select('users.name').distinct().sum('user_id')).toEqual(3);
+        expect(await posted().select('users.name').distinct().sum('posts.user_id')).toEqual(3);
+    });
+
+    test('rejects an aggregate over a table the query does not join', async (): Promise<void> => {
+        await expect(posted().sum('teams.label')).rejects.toThrow('Column [teams.label] names table [teams], which this query does not join.');
+        await expect(posted().max('teams.label')).rejects.toThrow(SchemaException);
+    });
+
+    test('sorts the groups by a grouped column however it is qualified', async (): Promise<void> => {
+        const totals: Record<string, unknown>[] = await posted()
+            .groupBy('users.name')
+            .aggregate({ total: { sum: 'posts.likes' } })
+            .orderBy('users.name', 'desc')
+            .get();
+
+        expect(totals).toEqual([{ name: 'Bob', total: 1 }, { name: 'Alice', total: 8 }]);
+        expect(await posted().groupBy('name').orderBy('users.name', 'desc').get()).toEqual([{ name: 'Bob' }, { name: 'Alice' }]);
+        expect(await posted().groupBy('users.name').orderBy('name', 'desc').get()).toEqual([{ name: 'Bob' }, { name: 'Alice' }]);
+    });
+
+    test('constrains the groups by an unqualified grouped column given qualified', async (): Promise<void> => {
+        expect(await posted().groupBy('name').having('users.name', 'Alice').get()).toEqual([{ name: 'Alice' }]);
+        expect(await posted().groupBy('name').having('name', 'Bob').orHaving('users.name', 'Alice').get()).toEqual([{ name: 'Alice' }, { name: 'Bob' }]);
+        expect(await posted().groupBy('users.stats->points').having('stats->points', 10).get()).toEqual([{ points: 10 }]);
+    });
+
+    test('constrains and sorts the groups by an aggregate alias', async (): Promise<void> => {
+        const grouped: () => Grouping<Record<string, unknown>, ['users.name'], { total: { sum: 'posts.likes' } }> = () => posted()
+            .groupBy('users.name')
+            .aggregate({ total: { sum: 'posts.likes' } });
+
+        expect(await grouped().having('total', '>', 5).get()).toEqual([{ name: 'Alice', total: 8 }]);
+        expect(await grouped().orderBy('total').get()).toEqual([{ name: 'Bob', total: 1 }, { name: 'Alice', total: 8 }]);
+    });
+
+    test('aggregates a JSON path in each group, qualified or not', async (): Promise<void> => {
+        expect(await posted().groupBy('name').aggregate({ points: { sum: 'stats->points' } }).get()).toEqual([
+            { name: 'Alice', points: 20 },
+            { name: 'Bob', points: 20 },
+        ]);
+
+        const rows: Record<string, unknown>[] = await posted()
+            .groupBy('name')
+            .aggregate({ points: { sum: 'stats->points' }, score: { sum: 'posts.meta->score' } })
+            .get();
+
+        expect(rows).toEqual([
+            { name: 'Alice', points: 20, score: 10 },
+            { name: 'Bob', points: 20, score: 5 },
+        ]);
+    });
+
+    test('leaves a column of a joined table that no group holds as given, matching no group', async (): Promise<void> => {
+        expect(await posted().groupBy('users.name').having('posts.likes', 3).get()).toEqual([]);
+        expect(await posted().groupBy('users.name').orderBy('posts.likes', 'desc').get()).toEqual([{ name: 'Alice' }, { name: 'Bob' }]);
+    });
+
+    test('rejects having and sorting groups by a table the query does not join', async (): Promise<void> => {
+        await expect(posted().groupBy('users.name').having('teams.label', 'core').get()).rejects.toThrow('Column [teams.label] names table [teams], which this query does not join.');
+        await expect(posted().groupBy('users.name').orderBy('teams.label').get()).rejects.toThrow(SchemaException);
     });
 });

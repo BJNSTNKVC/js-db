@@ -1618,3 +1618,49 @@ describe('Builder writes of values a loose connection cannot store faithfully', 
         ]);
     });
 });
+
+describe('Builder writes naming a column with the query\'s own table', (): void => {
+    beforeEach(async (): Promise<void> => {
+        await users().insert([
+            { name: 'Alice', email: 'alice@example.com', visits: 5 },
+            { name: 'Bob', email: 'bob@example.com', visits: 10 },
+        ]);
+    });
+
+    test('updates the column, writing no key named after the table', async (): Promise<void> => {
+        expect(await users().where('users.name', 'Alice').update({ 'users.visits': 9, 'users.nickname': 'Al' } as Partial<User>)).toEqual(1);
+
+        const alice: Record<string, unknown> = await users().where('name', 'Alice').firstOrFail() as unknown as Record<string, unknown>;
+
+        expect([alice.visits, alice.nickname]).toEqual([9, 'Al']);
+        expect(Object.keys(alice).filter((key: string): boolean => key.includes('.'))).toEqual([]);
+    });
+
+    test('increments and decrements the column, with extras named the same way', async (): Promise<void> => {
+        expect(await users().where('name', 'Alice').increment('users.visits', 2, { 'users.nickname': 'Al' } as Partial<User>)).toEqual(1);
+        expect(await users().where('name', 'Bob').decrement('users.visits')).toEqual(1);
+
+        expect(await users().orderBy('id').pluck('visits')).toEqual([7, 9]);
+        expect(await users().where('name', 'Alice').value('nickname')).toEqual('Al');
+    });
+
+    test('upserts through the column as the conflict target and as a column to update', async (): Promise<void> => {
+        expect(await users().upsert([{ name: 'Alicia', email: 'alice@example.com', visits: 1 }], 'users.email', ['users.visits'])).toEqual(1);
+
+        expect(await users().where('email', 'alice@example.com').first()).toMatchObject({ name: 'Alice', visits: 1 });
+        expect(await users().count()).toEqual(2);
+    });
+
+    test.each([
+        ['update', (): Promise<unknown> => users().update({ 'codes.label': 'x' } as Partial<User>)],
+        ['increment', (): Promise<unknown> => users().increment('codes.code')],
+        ['decrement', (): Promise<unknown> => users().decrement('visits', 1, { 'codes.label': 'x' } as Partial<User>)],
+        ['an upsert conflict target', (): Promise<unknown> => users().upsert([{ name: 'Alice', email: 'alice@example.com' }], 'codes.code')],
+        ['an upsert column to update', (): Promise<unknown> => users().upsert([{ name: 'Alice', email: 'alice@example.com' }], 'email', ['codes.label'])],
+    ] as [string, () => Promise<unknown>][])('refuses another table\'s column in %s, writing nothing', async (_: string, write: () => Promise<unknown>): Promise<void> => {
+        const before: User[] = await users().get();
+
+        await expect(write()).rejects.toThrow('names table [codes], which this query does not read.');
+        expect(await users().get()).toEqual(before);
+    });
+});

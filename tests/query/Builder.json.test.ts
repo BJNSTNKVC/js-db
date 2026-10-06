@@ -42,6 +42,12 @@ interface Score {
     stats: Record<string, unknown>;
 }
 
+interface Reading {
+    id: number;
+    label: string;
+    data: Record<string, unknown> | null;
+}
+
 class CreateTables extends Migration {
     /**
      * Run the migration.
@@ -78,6 +84,12 @@ class CreateTables extends Migration {
             table.id();
             table.integer('owner_id').nullable();
             table.json('meta').nullable();
+        });
+
+        await Schema.create('readings', (table: Blueprint): void => {
+            table.id();
+            table.string('label');
+            table.json('data').nullable();
         });
     }
 }
@@ -572,5 +584,60 @@ describe('Builder.distinct over JSON values', (): void => {
         await seeded(metas);
 
         expect(await layouts().select('meta').distinct().get()).toHaveLength(metas.length);
+    });
+});
+
+describe('Builder aggregates over a JSON path', (): void => {
+    /**
+     * Begin a query against the readings table.
+     */
+    function readings(): Builder<Reading> {
+        return connection.table<Reading>('readings');
+    }
+
+    beforeAll(async (): Promise<void> => {
+        await readings().insert([
+            { label: 'a', data: { value: 5 } },
+            { label: 'b', data: { value: '5' } },
+            { label: 'c', data: { value: 5 } },
+            { label: 'd', data: { value: 2 } },
+            { label: 'e', data: { value: null } },
+            { label: 'f', data: {} },
+            { label: 'g', data: null },
+        ]);
+    });
+
+    test('sums, averages and takes the extremes of the values pluck reads', async (): Promise<void> => {
+        expect(await profiles().pluck('settings->rank')).toEqual([2, 1, undefined, undefined, 3]);
+        expect(await profiles().sum('settings->rank')).toEqual(6);
+        expect(await profiles().avg('settings->rank')).toEqual(2);
+        expect(await profiles().min('settings->rank')).toEqual(1);
+        expect(await profiles().max('settings->rank')).toEqual(3);
+    });
+
+    test('follows a path several levels deep', async (): Promise<void> => {
+        expect(await connection.table<Team>('teams').sum('meta->owner')).toEqual(1);
+        expect(await profiles().where('settings->notifications->email', true).max('settings->rank')).toEqual(2);
+    });
+
+    test('leaves out a null value, a missing step and a null column', async (): Promise<void> => {
+        expect(await readings().sum('data->value')).toEqual(17);
+        expect(await readings().avg('data->value')).toEqual(4.25);
+        expect(await readings().whereIn('label', ['e', 'f', 'g']).min('data->value')).toBeNull();
+        expect(await readings().whereIn('label', ['e', 'f', 'g']).max('data->value')).toBeNull();
+        expect(await readings().whereIn('label', ['e', 'f', 'g']).avg('data->value')).toBeNull();
+        expect(await readings().whereIn('label', ['e', 'f', 'g']).sum('data->value')).toEqual(0);
+    });
+
+    test('gets null for the extremes and 0 for the sum of a query that matches nothing', async (): Promise<void> => {
+        expect(await readings().where('label', 'none').min('data->value')).toBeNull();
+        expect(await readings().where('label', 'none').max('data->value')).toBeNull();
+        expect(await readings().where('label', 'none').sum('data->value')).toEqual(0);
+    });
+
+    test('takes each distinct value once on a distinct query, telling 5 and \'5\' apart', async (): Promise<void> => {
+        expect(await readings().distinct().sum('data->value')).toEqual(12);
+        expect(await readings().distinct().avg('data->value')).toEqual(4);
+        expect(await readings().select('label').distinct().sum('data->value')).toEqual(12);
     });
 });

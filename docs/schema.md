@@ -41,17 +41,17 @@ await Schema.table('users', (table: Blueprint): void => {
 A definition IndexedDB would leave unenforced, or that would fail every insert relying on it, is
 refused with `SchemaException` when its migration runs, and the migration rolls back:
 
-| Definition                                                                                         | Why                                                                        |
-|----------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------|
-| An index over a column the table lacks: `table.index('missing')`, `table.unique(['a', 'missing'])` | It covers nothing, so a unique rule is never enforced                      |
-| An index over a boolean column: `.index()`, `.unique()` or `.multiEntry()`, alone or compound      | A boolean is not a valid key, so the index holds nothing                   |
-| A key path that is nullable or a boolean: `string('code').primary().nullable()`                    | IndexedDB stores no record without a valid key                             |
-| A `.primary()` column added by `Schema.table`                                                      | IndexedDB fixes the key path when the store is created                     |
-| A default the column cannot store: `integer('i').default('abc')`, `decimal('d', 2).default(19.99)` | Every insert relying on it would throw                                     |
-| An enum default outside its values, or a `null` or blank default on a column that is not nullable  | Every insert relying on it would throw                                     |
-| A scale that is not a whole number of at least 0: `decimal('d', -2)`, `decimal('d', 1.5)`          | A scale counts decimal places                                              |
-| A column name that is blank or holds a dot or an arrow: `''`, `' '`, `'a.b'`, `'a->b'`             | A dot separates key path steps and qualifies joins, an arrow starts a path |
-| An index or key path over a name that is not a JavaScript identifier: `'first name'`, `'e-mail'`   | IndexedDB cannot read the name as a key path                               |
+| Definition                                                                                         | Why                                                                          |
+|----------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------|
+| An index over a column the table lacks: `table.index('missing')`, `table.unique(['a', 'missing'])` | It covers nothing, so a unique rule is never enforced                        |
+| An index over a boolean column: `.index()`, `.unique()` or `.multiEntry()`, alone or compound      | A boolean is not a valid key, so the index holds nothing                     |
+| A key path that is nullable or a boolean: `string('code').primary().nullable()`                    | IndexedDB stores no record without a valid key                               |
+| A `.primary()` column added by `Schema.table`                                                      | IndexedDB fixes the key path when the store is created                       |
+| A default the column cannot store: `integer('i').default('abc')`, `decimal('d', 2).default(19.99)` | Every insert relying on it would throw                                       |
+| An enum default outside its values, or a `null` or blank default on a column that is not nullable  | Every insert relying on it would throw                                       |
+| A scale that is not a whole number of at least 0: `decimal('d', -2)`, `decimal('d', 1.5)`          | A scale counts decimal places                                                |
+| A column name that is blank or holds a dot or an arrow: `''`, `' '`, `'a.b'`, `'a->b'`             | A dot separates key path steps and qualifies columns, an arrow starts a path |
+| An index or key path over a name that is not a JavaScript identifier: `'first name'`, `'e-mail'`   | IndexedDB cannot read the name as a key path                                 |
 
 ```
 SchemaException: Index [users_admin_unique] of table [users] covers boolean column [admin], which

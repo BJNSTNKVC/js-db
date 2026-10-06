@@ -169,6 +169,33 @@ way of splitting the value between the wildcards, and that is exponential in the
 walks the value once per wildcard instead, so a hostile or careless pattern costs time in proportion
 to its length rather than freezing the tab.
 
+## Columns qualified with the query's table
+
+A column may name the table the query reads, as Laravel allows, so `'users.visits'` on
+`DB.table('users')` reads `visits`. Every method that takes a column accepts it: the constraints,
+nested ones included, `orderBy`, `select`, `pluck`, `value`, `groupBy`, a grouping's aggregates,
+`having` and `orderBy`, `sum`, `avg`, `min` and `max`, and `update`, `increment`, `decrement` and
+`upsert`. A query written for a join keeps working once the join is taken away.
+
+```ts
+await DB.table<User>('users').where('users.role', 'admin').orderBy('users.age').pluck('users.name');
+```
+
+The column reaches the planner in its bare form, so `where('users.email', ...)` reads through the
+email index as `where('email', ...)` does, and `QueryExecuted` reports it as `email`.
+
+A column qualified with any other table throws `SchemaException`, as the database behind Laravel
+refuses it, since a query without a join reads no other table:
+
+```ts
+// SchemaException: Column [posts.likes] names table [posts], which this query does not read.
+await DB.table<User>('users').where('posts.likes', '>', 3).get();
+```
+
+The check runs when the query does, so a constraint on another table's column may come before the
+`join` that adds the table. A declared column cannot hold a dot, so a key that does, such as an
+undeclared `'a.b'`, is read as qualified too and throws.
+
 ## JSON columns
 
 The values inside a `json()` column can be queried with `->`, the path syntax Laravel uses. A path
@@ -222,8 +249,8 @@ an `or` form are checked against every record instead. A multi-entry index serve
 `where`, `whereIn`, `whereBetween` or `orderBy` on the column compares the whole value, as it would
 with no index.
 
-`select`, `pluck` and `value` read a path too. Left unaliased, a selected path is named after its
-last step, the way `select('users.name')` is named `name`:
+`select`, `pluck`, `value` and the aggregates read a path too. Left unaliased, a selected path is
+named after its last step, the way `select('users.name')` is named `name`:
 
 ```ts
 await DB.table<User>('users').select('name', 'settings->theme').get();
@@ -232,10 +259,11 @@ await DB.table<User>('users').select('name', 'settings->theme').get();
 await DB.table<User>('users').select('settings->notifications->email as email').get();
 await DB.table<User>('users').pluck('settings->theme');
 await DB.table<User>('users').where('id', 1).value('settings->rank');
+await DB.table<User>('users').max('settings->rank');
 ```
 
-A missing path selects as `undefined`, and `value` returns `null` for it. `update` cannot write
-through a path yet.
+A missing path selects as `undefined`, `value` returns `null` for it, and `sum`, `avg`, `min` and
+`max` leave it out as they leave out `null`. `update` cannot write through a path yet.
 
 > Modeled on Laravel's [JSON Where Clauses](https://laravel.com/docs/12.x/queries#json-where-clauses).
 

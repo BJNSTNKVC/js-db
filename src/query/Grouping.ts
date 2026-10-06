@@ -3,11 +3,15 @@ import { Predicate } from './Predicate';
 import { Signature } from './Signature';
 import type { Aggregation, Aggregations, Conjunction, Constraint, Direction, Grouped, Key, Operator, Order } from './types';
 
+type Basic = Extract<Constraint, { type: 'basic' }>;
+
 type Records = (columns: string[]) => Promise<Record<string, unknown>[]>;
+
+type Placing = () => Promise<(column: string) => string | null>;
 
 export class Grouping<T, G extends (keyof T & string)[], A extends Aggregations = Record<string, never>> {
     /**
-     * Fetch the records matching the query the grouping was opened from, able to read the given columns.
+     * Fetch the records matching the query the grouping was opened from, each holding the given columns keyed as they were given.
      */
     readonly #records: Records;
 
@@ -22,6 +26,11 @@ export class Grouping<T, G extends (keyof T & string)[], A extends Aggregations 
     readonly #names: Map<string, string>;
 
     /**
+     * Get the name each group gives a column written other than as it was grouped by, or null for a column that is none of the grouped ones.
+     */
+    readonly #placing: Placing;
+
+    /**
      * The aggregations computed for each group.
      */
     #aggregations: Aggregations = {};
@@ -29,7 +38,7 @@ export class Grouping<T, G extends (keyof T & string)[], A extends Aggregations 
     /**
      * The constraints the groups are filtered by.
      */
-    #constraints: Constraint[] = [];
+    #constraints: Basic[] = [];
 
     /**
      * The orders the groups are sorted by.
@@ -49,17 +58,18 @@ export class Grouping<T, G extends (keyof T & string)[], A extends Aggregations 
     /**
      * Create a new grouping.
      */
-    constructor(records: Records, columns: G, names: Map<string, string>) {
+    constructor(records: Records, columns: G, names: Map<string, string>, placing: Placing = async (): Promise<(column: string) => string | null> => (): null => null) {
         this.#records = records;
         this.#columns = columns;
         this.#names = names;
+        this.#placing = placing;
     }
 
     /**
      * Compute the given aggregations for each group.
      */
     aggregate<N extends Aggregations>(aggregations: N): Grouping<T, G, N> {
-        const grouping: Grouping<T, G, N> = new Grouping<T, G, N>(this.#records, this.#columns, this.#names);
+        const grouping: Grouping<T, G, N> = new Grouping<T, G, N>(this.#records, this.#columns, this.#names, this.#placing);
 
         grouping.#aggregations = aggregations;
         grouping.#constraints = this.#constraints;
@@ -122,15 +132,17 @@ export class Grouping<T, G extends (keyof T & string)[], A extends Aggregations 
      */
     async get(): Promise<Grouped<T, G, A>[]> {
         const grouped: Map<string, Record<string, unknown>[]> = this.#grouped(await this.#records(this.#read()));
+        const placed: (column: string) => string | null = await this.#placing();
+        const named: (column: string) => string = (column: string): string => this.#names.get(column) ?? placed(column) ?? column;
         const rows: Record<string, unknown>[] = [];
 
         for (const members of grouped.values()) {
             rows.push(this.#row(members));
         }
 
-        const matches: (row: Record<string, unknown>) => boolean = Predicate.compile(this.#constraints);
+        const matches: (row: Record<string, unknown>) => boolean = Predicate.compile(this.#constraints.map((constraint: Basic): Basic => ({ ...constraint, column: named(constraint.column) })));
         const kept: Record<string, unknown>[] = rows.filter(matches);
-        const sorted: Record<string, unknown>[] = this.#sorted(kept);
+        const sorted: Record<string, unknown>[] = this.#sorted(kept, this.#orders.map((order: Order): Order => ({ ...order, column: named(order.column) })));
         const from: number = this.#offset;
 
         const paged: Record<string, unknown>[] = this.#limit === null
@@ -256,17 +268,15 @@ export class Grouping<T, G extends (keyof T & string)[], A extends Aggregations 
             ? { operator: '=', value: parameters[0] }
             : { operator: parameters[0] as Operator, value: parameters[1] };
 
-        const named: string = this.#names.get(column) ?? column;
-
-        this.#constraints.push({ type: 'basic', column: named, operator: resolved.operator, value: resolved.value, conjunction, not: false });
+        this.#constraints.push({ type: 'basic', column, operator: resolved.operator, value: resolved.value, conjunction, not: false });
 
         return this;
     }
 
     /**
-     * Sort the group rows by the requested orders.
+     * Sort the group rows by the given orders.
      */
-    #sorted(rows: Record<string, unknown>[]): Record<string, unknown>[] {
-        return Comparator.sort(rows, this.#orders, (row: Record<string, unknown>, column: string): unknown => row[column]);
+    #sorted(rows: Record<string, unknown>[], orders: Order[]): Record<string, unknown>[] {
+        return Comparator.sort(rows, orders, (row: Record<string, unknown>, column: string): unknown => row[column]);
     }
 }
