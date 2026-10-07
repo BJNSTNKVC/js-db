@@ -41,7 +41,8 @@ Each resolves to a description of the plan chosen:
   that moves ahead of the walk is never reached again, so moving an item in an ordered list with
   `where('position', '>=', n).increment('position')` shifts each position once. A write that leaves
   the column alone keeps the single walk. A record holding `null` in that column is in no index over
-  it, and `increment` leaves the `null` as it is, so the record never moves.
+  it, and `increment` leaves the `null` as it is, so the record never moves. An extra naming the
+  column writes its value over the `null` too, after the keys are collected.
 - A constraint drives the key path or an index only when its value is a key of the type the column
   stores, after the conversion described in [Querying](querying.md): a whole number for an integer
   or decimal column, a number for a float, a valid date for a date or datetime, a string for a

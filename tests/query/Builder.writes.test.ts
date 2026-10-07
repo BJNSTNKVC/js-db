@@ -1455,6 +1455,91 @@ describe('Builder increment on a null column', (): void => {
         expect(await connection.table('seats').increment('seat', 5)).toEqual(2);
         expect(await connection.table('seats').orderBy('id').pluck('seat')).toEqual([null, 10]);
     });
+
+    describe('with an extra naming the stepped column', (): void => {
+        beforeEach(async (): Promise<void> => {
+            await users().insert([
+                { name: 'Alice', email: 'alice@example.com' },
+                { name: 'Bob', email: 'bob@example.com', score: 4 },
+            ]);
+        });
+
+        test('writes the extra over a null and a number, beside the other extras', async (): Promise<void> => {
+            expect(await users().increment('score', 1, { score: 10, role: 'owner' })).toEqual(2);
+            expect(await users().orderBy('id').get()).toMatchObject([
+                { score: 10, role: 'owner' },
+                { score: 10, role: 'owner' },
+            ]);
+        });
+
+        test('writes the extra on a decrement', async (): Promise<void> => {
+            expect(await users().decrement('score', 1, { score: 10 })).toEqual(2);
+            expect(await users().orderBy('id').pluck('score')).toEqual([10, 10]);
+        });
+
+        test('writes the extra when it names the column with its table', async (): Promise<void> => {
+            expect(await users().increment('score', 1, { 'users.score': 10 } as Partial<User>)).toEqual(2);
+            expect(await users().orderBy('id').pluck('score')).toEqual([10, 10]);
+        });
+
+        test('coerces the extra as an update does', async (): Promise<void> => {
+            expect(await users().increment('score', 1, { score: '10' as unknown as number })).toEqual(2);
+            expect(await users().orderBy('id').pluck('score')).toEqual([10, 10]);
+        });
+
+        test('writes the extra where the step cannot be taken', async (): Promise<void> => {
+            expect(await users().increment('visits', 0.5, { visits: 10 })).toEqual(2);
+            expect(await users().orderBy('id').pluck('visits')).toEqual([10, 10]);
+        });
+
+        test('still refuses an amount that is not a finite number', async (): Promise<void> => {
+            await expect(users().increment('score', Number.NaN, { score: 10 })).rejects.toThrow(TypeError);
+
+            expect(await users().orderBy('id').pluck('score')).toEqual([null, 4]);
+        });
+
+        test('refuses an extra the column cannot hold and writes none of the records', async (): Promise<void> => {
+            await expect(users().increment('score', 1, { score: 'abc' as unknown as number })).rejects.toThrow(TypeError);
+            await expect(users().increment('visits', 1, { visits: null as unknown as number })).rejects.toBeInstanceOf(NotNullConstraintViolationException);
+
+            expect(await users().orderBy('id').get()).toMatchObject([
+                { score: null, visits: 0 },
+                { score: 4, visits: 0 },
+            ]);
+        });
+
+        test('writes the extra on a joined query', async (): Promise<void> => {
+            await connection.table('pairs').insert([{ left: 'Alice', right: 'a' }, { left: 'Bob', right: 'b' }]);
+
+            expect(await users().join('pairs', 'pairs.left', '=', 'users.name').increment('score', 1, { 'users.score': 10 } as Partial<User>)).toEqual(2);
+            expect(await users().orderBy('id').pluck('score')).toEqual([10, 10]);
+        });
+
+        test('writes the extra inside a transaction', async (): Promise<void> => {
+            await connection.transaction(async (transaction: Transaction): Promise<void> => {
+                expect(await transaction.table<User>('users').increment('score', 1, { score: 10 })).toEqual(2);
+            });
+
+            expect(await users().orderBy('id').pluck('score')).toEqual([10, 10]);
+        });
+    });
+
+    test('writes an extra naming the stepped column into a record the column is absent from', async (): Promise<void> => {
+        await planted([{ id: 1, name: 'Alice', email: 'alice@example.com', role: 'member', visits: 0, nickname: null }]);
+
+        expect(await users().increment('score', 1, { score: 10 })).toEqual(1);
+        expect(await users().value('score')).toEqual(10);
+    });
+
+    test('writes an extra naming the stepped column over held values Number cannot read', async (): Promise<void> => {
+        await planted([
+            { id: 1, name: 'Alice', email: 'alice@example.com', role: 'member', visits: 0, nickname: null, score: 'abc' },
+            { id: 2, name: 'Bob', email: 'bob@example.com', role: 'member', visits: 0, nickname: null, score: '4' },
+        ]);
+
+        expect(await users().increment('score', 1, { score: 10 })).toEqual(2);
+        expect(await users().orderBy('id').pluck('score')).toEqual([10, 10]);
+    });
 });
 
 describe('Builder writes of values a strict connection cannot store faithfully', (): void => {
@@ -1893,6 +1978,16 @@ describe('Builder writes of values a loose connection cannot store faithfully', 
             { visits: null, score: null, role: 'owner' },
             { visits: 5, score: 2, role: 'owner' },
         ]);
+    });
+
+    test('writes null for an extra naming the stepped column that it cannot store', async (): Promise<void> => {
+        await people().insert([
+            { name: 'Alice', email: 'alice@example.com' },
+            { name: 'Bob', email: 'bob@example.com', score: 4 },
+        ]);
+
+        expect(await people().increment('score', 1, { score: 'abc' as unknown as number })).toEqual(2);
+        expect(await people().orderBy('id').pluck('score')).toEqual([null, null]);
     });
 });
 

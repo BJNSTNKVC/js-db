@@ -984,14 +984,14 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Add the given amount to a column of every record matching the query, leaving a column that holds null as it is.
+     * Add the given amount to a column of every record matching the query, leaving a column that holds null as it is unless an extra names it.
      */
     async increment(column: Key<T>, amount: number = 1, extra: Partial<T> = {} as Partial<T>): Promise<number> {
         return this.#step(column, amount, extra);
     }
 
     /**
-     * Subtract the given amount from a column of every record matching the query, leaving a column that holds null as it is.
+     * Subtract the given amount from a column of every record matching the query, leaving a column that holds null as it is unless an extra names it.
      */
     async decrement(column: Key<T>, amount: number = 1, extra: Partial<T> = {} as Partial<T>): Promise<number> {
         return this.#step(column, -amount, extra);
@@ -1012,7 +1012,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Add the given amount to a column of every record matching the query, leaving a column that holds null or nothing as it is.
+     * Add the given amount to a column of every record matching the query, leaving a column that holds null or nothing as it is unless an extra names it.
      */
     async #step(column: Key<T>, amount: number, extra: Partial<T>): Promise<number> {
         const own: string = await this.#own(column);
@@ -1025,6 +1025,10 @@ export class Builder<T = Record<string, unknown>> {
         const strict: boolean = this.#connection.strict;
         const timezone: string = this.#connection.timezone;
         const prepared: Record<string, unknown> = await this.#changes(extra);
+
+        if (Object.hasOwn(prepared, own)) {
+            return this.#executor().modify((record: Record<string, unknown>): Record<string, unknown> => ({ ...record, ...prepared }), Object.keys(prepared));
+        }
 
         return this.#executor().modify((record: Record<string, unknown>): Record<string, unknown> => {
             const held: unknown = record[own];

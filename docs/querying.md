@@ -518,6 +518,11 @@ Declaring the column required with `.default(0).change()` fills those rows in th
 instead, as [Changing columns](schema.md#changing-columns) describes. Before 9.0.0 `increment`
 turned a `null` into the amount.
 
+An extra column naming the column being stepped, by its bare name or with its table, takes the
+place of the step, as it does in Laravel. `increment('visits', 1, { visits: 10 })` writes `10` on
+every record it matches, whether `visits` holds a number, `null` or nothing. Before 9.0.8 the
+extra was written only over a `null`, and a number was stepped.
+
 A violated unique index surfaces as `UniqueConstraintViolationException` naming the table and the
 index, rather than a bare `DOMException`, whether the write is an `insert`, an `insertGetId`, an
 `update`, an `updateOrInsert`, an `upsert`, an `increment` or a `decrement`, and `insertOrIgnore`
@@ -611,7 +616,9 @@ column takes the same values as a `datetime` column, time of day included.
 finite number. The number they leave behind is coerced as an update coerces it, so
 `increment('visits', 0.5)` on an integer column throws when strict, writing none of the records,
 and rounds when loose. A column holding `null` is left as it is, so nothing is coerced there, and
-`increment('visits', 0.5)` leaves a `null` alone on either connection.
+`increment('visits', 0.5)` leaves a `null` alone on either connection. An extra naming the stepped
+column is coerced as an update coerces it and no step is taken, so
+`increment('visits', 0.5, { visits: 10 })` writes `10`, while the amount must still be finite.
 
 A form handler can pass an empty optional field through as it is, since a blank string in a nullable
 number or date column is stored as `null`, or send `null` itself. It should check required fields
