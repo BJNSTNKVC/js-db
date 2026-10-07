@@ -519,8 +519,12 @@ instead, as [Changing columns](schema.md#changing-columns) describes. Before 9.0
 turned a `null` into the amount.
 
 A violated unique index surfaces as `UniqueConstraintViolationException` naming the table and the
-index, rather than a bare `DOMException`, whether the write is an `insert`, an `update`, an `upsert`,
-an `increment` or a `decrement`. An `update`, `increment` or `decrement` that collides on any of the
+index, rather than a bare `DOMException`, whether the write is an `insert`, an `insertGetId`, an
+`update`, an `updateOrInsert`, an `upsert`, an `increment` or a `decrement`, and `insertOrIgnore`
+skips the record. A unique multi-entry index is violated when another record holds any element of
+the array, while one array may repeat its own elements. A value IndexedDB cannot use as a key, such
+as an object, is in no index and collides with nothing, so a collision beside it still names the
+index that collided. An `update`, `increment` or `decrement` that collides on any of the
 records it matches writes none of them. Inside `DB.transaction`, the exception aborts the whole
 transaction as it leaves the callback. IndexedDB cannot undo one write alone, so a callback that
 catches it keeps whatever the failed write changed before the collision.
@@ -530,7 +534,20 @@ enforce anything else. Any other column throws `SchemaException`. The conflict k
 an insert coerces it before it is looked up, so `upsert([{ code: '5' }], 'code')` on an integer
 column merges into the record holding 5 rather than inserting a second one. A conflict key holding
 `null`, or left out, matches no record, as SQL's `ON CONFLICT` treats null, so the record is
-inserted. A blank string in a nullable number column is such a key.
+inserted. A blank string in a nullable number column is such a key, and so is a value IndexedDB
+cannot use as a key, such as an object or a boolean.
+
+On a unique multi-entry index, `upsert` looks the record up by the elements of its array, a value
+that is not an array counting as a single element. When no record holds any of them, it inserts,
+as it does for an empty array. When one record does, it merges into that record. When several
+do, it throws `UniqueConstraintViolationException` naming the index and writes nothing, since the
+merged record would collide with the rest.
+
+```ts
+// posts: #1 holds tags ['news', 'tech'], #2 holds ['sport'].
+await DB.table<Post>('posts').upsert([{ title: 'Updated', tags: ['news'] }], 'tags'); // merges into #1
+await DB.table<Post>('posts').upsert([{ title: 'Both', tags: ['news', 'sport'] }], 'tags'); // throws
+```
 
 The key path may not be updated, so `update`, `upsert` and `increment` all refuse it.
 

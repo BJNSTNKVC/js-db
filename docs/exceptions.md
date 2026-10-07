@@ -18,7 +18,7 @@ true. All of them are exported from the package root.
 | `SchemaException`                     | A schema or query call the shape of the database cannot support                                             |
 | `TableNotFoundException`              | A query or schema read names a table the database does not have                                             |
 | `TransactionClosedException`          | A `DB.transaction` callback awaited something outside this package, letting the transaction commit early    |
-| `UniqueConstraintViolationException`  | A write collides with a unique index, named in the message                                                  |
+| `UniqueConstraintViolationException`  | A write collides with a unique index, named in the message, multi-entry indexes included                    |
 
 `SchemaException` is the broad one, so here is every case that raises it:
 

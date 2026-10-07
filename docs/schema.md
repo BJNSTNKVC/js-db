@@ -108,6 +108,10 @@ whole value, and `orderBy` sorts by it, which an index of single elements cannot
 the table as they would with no index. `min` and `max` read the records too.
 [Query plans](query-plans.md) lists the `whereJsonContains` values the index serves.
 
+`.unique().multiEntry()` lets no two records share an element, while one array may repeat its own.
+A write that breaks it throws `UniqueConstraintViolationException`, and `upsert` with the column as
+its conflict target merges by element, as [Writes](querying.md#writes) describes.
+
 ## Adding columns
 
 A column declared inside `Schema.table` without `.change()` is added to the table, and the rows it
@@ -233,7 +237,7 @@ checked in the same migration:
 | Becoming required       | A row with no value takes the default. Without a default, any such row fails the migration      |
 | Adding a default        | A row without the column takes the default. A row holding `null` keeps it                       |
 | An enum dropping values | Any row still holding a dropped value fails the migration, since a replacement would be a guess |
-| Adding `.unique()`      | Values repeated across rows fail the migration                                                  |
+| Adding `.unique()`      | Values repeated across rows fail the migration, or elements for a multi-entry index             |
 
 A failure throws `SchemaException` naming the table, the column and how many rows are in the way:
 

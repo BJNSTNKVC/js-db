@@ -107,14 +107,19 @@ export class Writer {
             new Date(),
         );
 
-        if (columns.some((column: string): boolean => prepared[column] === null || prepared[column] === undefined)) {
+        const entries: IDBValidKey[] = target.multiEntry
+            ? this.#entries(prepared[columns[0] as string])
+            : [this.#keyOf(columns, prepared)].filter((key: IDBValidKey): boolean => this.#keyable(key));
+
+        if (entries.length === 0) {
             await this.add(store, schema, strict, timezone, value);
 
             return;
         }
 
-        const key: IDBValidKey = this.#keyOf(columns, prepared);
-        const existing: Record<string, unknown> | undefined = await Request.settle(store.index(target.name).get(IDBKeyRange.only(key)) as IDBRequest<Record<string, unknown> | undefined>);
+        const existing: Record<string, unknown> | undefined = target.multiEntry
+            ? await this.#holder(store, schema, target, entries, rollback)
+            : await Request.settle(store.index(target.name).get(IDBKeyRange.only(entries[0] as IDBValidKey)) as IDBRequest<Record<string, unknown> | undefined>);
 
         if (existing === undefined) {
             await this.add(store, schema, strict, timezone, value);
@@ -136,6 +141,31 @@ export class Writer {
     }
 
     /**
+     * Get the one record holding any of the entries in a multi-entry index, failing when several do.
+     */
+    static async #holder(store: IDBObjectStore, schema: TableSchema, index: IndexSchema, entries: IDBValidKey[], rollback: boolean): Promise<Record<string, unknown> | undefined> {
+        const keys: IDBValidKey[] = [];
+
+        for (const entry of entries) {
+            const key: IDBValidKey | undefined = await Request.settle(store.index(index.name).getKey(IDBKeyRange.only(entry)));
+
+            if (key !== undefined && !keys.some((held: IDBValidKey): boolean => indexedDB.cmp(held, key) === 0)) {
+                keys.push(key);
+            }
+        }
+
+        if (keys.length > 1) {
+            if (rollback) {
+                store.transaction.abort();
+            }
+
+            throw new UniqueConstraintViolationException(schema.table, index.name);
+        }
+
+        return keys.length === 0 ? undefined : Request.settle(store.get(keys[0] as IDBValidKey) as IDBRequest<Record<string, unknown> | undefined>);
+    }
+
+    /**
      * Find the unique index the record collides with, or null when it cannot be attributed.
      */
     static async #violated(store: IDBObjectStore, schema: TableSchema, record: Record<string, unknown>, previous: Record<string, unknown> | null): Promise<string | null> {
@@ -147,6 +177,14 @@ export class Writer {
         }
 
         for (const index of schema.indexes.filter((candidate: IndexSchema): boolean => candidate.unique)) {
+            if (index.multiEntry) {
+                if (await this.#collides(store, index, record, previous)) {
+                    return index.name;
+                }
+
+                continue;
+            }
+
             if (!index.columns.every((column: string): boolean => this.#keyable(record[column]))) {
                 continue;
             }
@@ -167,6 +205,41 @@ export class Writer {
     }
 
     /**
+     * Determine whether another record holds any entry the record adds to a multi-entry index.
+     */
+    static async #collides(store: IDBObjectStore, index: IndexSchema, record: Record<string, unknown>, previous: Record<string, unknown> | null): Promise<boolean> {
+        const column: string = index.columns[0] as string;
+        const held: IDBValidKey[] = previous === null ? [] : this.#entries(previous[column]);
+
+        for (const entry of this.#entries(record[column])) {
+            if (held.some((own: IDBValidKey): boolean => indexedDB.cmp(own, entry) === 0)) {
+                continue;
+            }
+
+            if (await Request.settle(store.index(index.name).count(IDBKeyRange.only(entry))) > 0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Get the distinct entries a value adds to a multi-entry index, an array by its elements and any other value as itself.
+     */
+    static #entries(value: unknown): IDBValidKey[] {
+        const entries: IDBValidKey[] = [];
+
+        for (const candidate of Array.isArray(value) ? value : [value]) {
+            if (this.#keyable(candidate) && !entries.some((entry: IDBValidKey): boolean => indexedDB.cmp(entry, candidate) === 0)) {
+                entries.push(candidate as IDBValidKey);
+            }
+        }
+
+        return entries;
+    }
+
+    /**
      * Determine whether the record holds the same values as the previous one in the given columns.
      */
     static #unchanged(columns: string[], record: Record<string, unknown>, previous: Record<string, unknown>): boolean {
@@ -178,7 +251,13 @@ export class Writer {
      * Determine whether the value may be used as an IndexedDB key.
      */
     static #keyable(value: unknown): boolean {
-        return value !== null && value !== undefined;
+        try {
+            indexedDB.cmp(value, value);
+
+            return true;
+        } catch {
+            return false;
+        }
     }
 
     /**

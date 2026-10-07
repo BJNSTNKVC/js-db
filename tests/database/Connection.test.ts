@@ -885,6 +885,31 @@ describe('Querying inside a migration', (): void => {
         expect(await restored.table('users').orderBy('name').pluck('age')).toEqual([30, 40]);
     }, 2000);
 
+    test.each([
+        ['an insert', (): Promise<unknown> => upgraded.table('tagged').insert({ tags: ['y', 'x'] })],
+        ['an upsert whose elements two records hold', (): Promise<unknown> => upgraded.table('tagged').upsert([{ tags: ['x', 'z'] }], 'tags')],
+    ])('rolls the whole upgrade back when %s collides on a unique multi-entry index', async (_: string, write: () => Promise<unknown>): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+
+        await expect(upgrade(async (): Promise<void> => {
+            await Schema.create('tagged', (table: Blueprint): void => {
+                table.id();
+                table.json('tags').unique().multiEntry();
+            });
+
+            await upgraded.table('users').where('name', 'Alice').update({ age: 31 });
+            await upgraded.table('tagged').insert([{ tags: ['x'] }, { tags: ['z'] }]);
+            await write();
+        }, database)).rejects.toThrow(new UniqueConstraintViolationException('tagged', 'tagged_tags_unique'));
+
+        connections.splice(0).forEach((connection: Connection): void => connection.disconnect());
+
+        const restored: Connection = connect([CreateUsersTable], database);
+
+        expect(await restored.tables()).toEqual(['users']);
+        expect(await restored.table('users').orderBy('name').pluck('age')).toEqual([30, 40]);
+    }, 2000);
+
     test('reports a query made after the migration awaited work outside the transaction', async (): Promise<void> => {
         await expect(upgrade(async (): Promise<void> => {
             const context: MigrationContext = Migrator.alive();
@@ -1037,6 +1062,40 @@ describe('Querying inside a migration', (): void => {
                 { name: 'Alice', email: 'a@x', age: 31 },
                 { name: 'Bob', email: 'b@x', age: 41 },
             ]);
+        }, 2000);
+
+        test('carries on when the callback catches a collision on a unique multi-entry index', async (): Promise<void> => {
+            const caught: unknown[] = [];
+
+            await upgrade(async (): Promise<void> => {
+                await Schema.create('tagged', (table: Blueprint): void => {
+                    table.id();
+                    table.json('tags').unique().multiEntry();
+                });
+
+                await upgraded.transaction(async (transaction: Transaction): Promise<void> => {
+                    await transaction.table('tagged').insert([{ tags: ['x'] }, { tags: ['z'] }]);
+
+                    for (const write of [
+                        (): Promise<unknown> => transaction.table('tagged').insert({ tags: ['y', 'x'] }),
+                        (): Promise<unknown> => transaction.table('tagged').upsert([{ tags: ['x', 'z'] }], 'tags'),
+                    ]) {
+                        try {
+                            await write();
+                        } catch (error: unknown) {
+                            caught.push(error);
+                        }
+                    }
+
+                    await transaction.table('tagged').upsert([{ tags: ['x', 'w'] }], 'tags');
+                }, { tables: ['tagged'] });
+            });
+
+            expect(caught).toEqual([
+                new UniqueConstraintViolationException('tagged', 'tagged_tags_unique'),
+                new UniqueConstraintViolationException('tagged', 'tagged_tags_unique'),
+            ]);
+            expect(await upgraded.table('tagged').orderBy('id').get()).toEqual([{ id: 1, tags: ['x', 'w'] }, { id: 2, tags: ['z'] }]);
         }, 2000);
 
         test('announces the migration and no transaction', async (): Promise<void> => {

@@ -100,6 +100,26 @@ class CreateUsersTable extends Migration {
             table.json('slots').unique();
         });
 
+        await Schema.create('tagged', (table: Blueprint): void => {
+            table.id();
+            table.string('title');
+            table.json('tags').nullable().unique().multiEntry();
+            table.string('slug').nullable().unique();
+            table.integer('visits').default(0);
+        });
+
+        await Schema.create('profiles', (table: Blueprint): void => {
+            table.id();
+            table.json('meta').unique();
+            table.string('email').unique();
+        });
+
+        await Schema.create('contacts', (table: Blueprint): void => {
+            table.id();
+            table.string('email').unique();
+            table.json('meta').unique();
+        });
+
         await Schema.create('seats', (table: Blueprint): void => {
             table.id();
             table.string('label');
@@ -971,13 +991,164 @@ describe('Builder unique violations on every write', (): void => {
             'users',
             'users_email_unique',
         ],
+        [
+            'an insert under a key the table holds',
+            (table: Table): Promise<unknown> => table('users').insert({ id: 1, name: 'Eve', email: 'eve@example.com' }),
+            'users',
+            'id',
+        ],
+        [
+            'an insert colliding on a compound unique index',
+            (table: Table): Promise<unknown> => table('pairs').insert({ left: 'a', right: 'b' }),
+            'pairs',
+            'pairs_left_right_unique',
+        ],
+        [
+            'a multi-entry insert sharing an element',
+            (table: Table): Promise<unknown> => table('tagged').insert({ title: 'C', tags: ['y', 'w'] }),
+            'tagged',
+            'tagged_tags_unique',
+        ],
+        [
+            'a multi-entry insert sharing an element beside elements that cannot be keys',
+            (table: Table): Promise<unknown> => table('tagged').insert({ title: 'C', tags: [{}, Number.NaN, true, new Date('nope'), 'y'] }),
+            'tagged',
+            'tagged_tags_unique',
+        ],
+        [
+            'a multi-entry insert of a single value another record holds as an element',
+            (table: Table): Promise<unknown> => table('tagged').insert({ title: 'C', tags: 7 }),
+            'tagged',
+            'tagged_tags_unique',
+        ],
+        [
+            'a multi-entry insertGetId',
+            (table: Table): Promise<unknown> => table('tagged').insertGetId({ title: 'C', tags: ['x'] }),
+            'tagged',
+            'tagged_tags_unique',
+        ],
+        [
+            'a multi-entry update onto an element another record holds',
+            (table: Table): Promise<unknown> => table('tagged').where('title', 'B').update({ tags: ['x'] }),
+            'tagged',
+            'tagged_tags_unique',
+        ],
+        [
+            'a multi-entry update keeping its own elements and adding one another record holds',
+            (table: Table): Promise<unknown> => table('tagged').where('title', 'A').update({ tags: ['x', 'y', 'z'] }),
+            'tagged',
+            'tagged_tags_unique',
+        ],
+        [
+            'a multi-entry increment with an extra',
+            (table: Table): Promise<unknown> => table('tagged').where('title', 'B').increment('visits', 1, { tags: ['y'] }),
+            'tagged',
+            'tagged_tags_unique',
+        ],
+        [
+            'a multi-entry decrement with an extra',
+            (table: Table): Promise<unknown> => table('tagged').where('title', 'B').decrement('visits', 1, { tags: ['y'] }),
+            'tagged',
+            'tagged_tags_unique',
+        ],
+        [
+            'a multi-entry upsert inserting by another unique column',
+            (table: Table): Promise<unknown> => table('tagged').upsert([{ slug: 'c', title: 'C', tags: ['x'] }], 'slug'),
+            'tagged',
+            'tagged_tags_unique',
+        ],
+        [
+            'a multi-entry upsert merging by another unique column',
+            (table: Table): Promise<unknown> => table('tagged').upsert([{ slug: 'b', title: 'B', tags: ['x'] }], 'slug'),
+            'tagged',
+            'tagged_tags_unique',
+        ],
+        [
+            'an upsert whose elements two records hold',
+            (table: Table): Promise<unknown> => table('tagged').upsert([{ title: 'N', tags: ['x', 'z'] }], 'tags'),
+            'tagged',
+            'tagged_tags_unique',
+        ],
+        [
+            'an upsert naming its update columns whose elements two records hold',
+            (table: Table): Promise<unknown> => table('tagged').upsert([{ title: 'N', tags: ['x', 'z'] }], 'tags', ['title']),
+            'tagged',
+            'tagged_tags_unique',
+        ],
+        [
+            'an upsert whose second value has elements two records hold',
+            (table: Table): Promise<unknown> => table('tagged').upsert([{ title: 'N', tags: ['w'] }, { title: 'M', tags: ['y', 7] }], 'tags'),
+            'tagged',
+            'tagged_tags_unique',
+        ],
+        [
+            'an upsert merging by an element into a record its other unique column then collides on',
+            (table: Table): Promise<unknown> => table('tagged').upsert([{ title: 'N', slug: 'b', tags: ['x'] }], 'tags'),
+            'tagged',
+            'tagged_slug_unique',
+        ],
+        [
+            'a multi-entry updateOrInsert that inserts',
+            (table: Table): Promise<unknown> => table('tagged').updateOrInsert({ title: 'C' }, { tags: ['x'] }),
+            'tagged',
+            'tagged_tags_unique',
+        ],
+        [
+            'a multi-entry updateOrInsert that updates',
+            (table: Table): Promise<unknown> => table('tagged').updateOrInsert({ title: 'B' }, { tags: ['y'] }),
+            'tagged',
+            'tagged_tags_unique',
+        ],
+        [
+            'an insert colliding beside an object in a unique column checked before it',
+            (table: Table): Promise<unknown> => table('profiles').insert({ meta: { b: 2 }, email: 'a@x' }),
+            'profiles',
+            'profiles_email_unique',
+        ],
+        [
+            'an insert colliding beside an array holding an object in a unique column checked before it',
+            (table: Table): Promise<unknown> => table('profiles').insert({ meta: ['q', {}], email: 'a@x' }),
+            'profiles',
+            'profiles_email_unique',
+        ],
+        [
+            'an insert colliding beside a boolean in a unique column checked before it',
+            (table: Table): Promise<unknown> => table('profiles').insert({ meta: true, email: 'a@x' }),
+            'profiles',
+            'profiles_email_unique',
+        ],
+        [
+            'an update colliding beside an object it writes to a unique column checked before it',
+            (table: Table): Promise<unknown> => table('profiles').where('email', 'bin@x').update({ meta: { d: 4 }, email: 'a@x' }),
+            'profiles',
+            'profiles_email_unique',
+        ],
+        [
+            'an insert colliding beside an object in a unique column checked after it',
+            (table: Table): Promise<unknown> => table('contacts').insert({ email: 'a@x', meta: { b: 2 } }),
+            'contacts',
+            'contacts_email_unique',
+        ],
+        [
+            'an insert colliding on a binary value',
+            (table: Table): Promise<unknown> => table('profiles').insert({ meta: new Uint8Array([1, 2]), email: 'new@x' }),
+            'profiles',
+            'profiles_meta_unique',
+        ],
     ];
 
     /**
      * Get every record of the tables the writes touch, in key order.
      */
     async function snapshot(): Promise<Record<string, unknown>[][]> {
-        return Promise.all(['users', 'nullables', 'codes'].map((name: string): Promise<Record<string, unknown>[]> => connection.table(name).orderBy('id').get()));
+        return Promise.all(['users', 'nullables', 'codes', 'pairs', 'tagged', 'profiles', 'contacts'].map((name: string): Promise<Record<string, unknown>[]> => connection.table(name).orderBy('id').get()));
+    }
+
+    /**
+     * Get every record of the tagged table, in key order.
+     */
+    async function tagged(): Promise<Record<string, unknown>[]> {
+        return connection.table('tagged').orderBy('id').get();
     }
 
     beforeEach(async (): Promise<void> => {
@@ -997,6 +1168,20 @@ describe('Builder unique violations on every write', (): void => {
             { code: 3, label: 'B' },
             { code: 4, label: 'C' },
         ]);
+
+        await connection.table('pairs').insert({ left: 'a', right: 'b' });
+
+        await connection.table('tagged').insert([
+            { title: 'A', slug: 'a', tags: ['x', 'y'] },
+            { title: 'B', slug: 'b', tags: ['z', 7] },
+        ]);
+
+        await connection.table('profiles').insert([
+            { meta: { a: 1 }, email: 'a@x' },
+            { meta: new Uint8Array([1, 2]), email: 'bin@x' },
+        ]);
+
+        await connection.table('contacts').insert({ email: 'a@x', meta: { a: 1 } });
     });
 
     test.each(COLLISIONS)('%s throws naming the index and leaves every row as it was', async (_: string, write: (table: Table) => Promise<unknown>, table: string, index: string): Promise<void> => {
@@ -1033,6 +1218,97 @@ describe('Builder unique violations on every write', (): void => {
         });
 
         expect(await users().orderBy('id').pluck('name')).toEqual(['Alice', 'Bob', 'Carol', 'Dave']);
+    });
+
+    test.each(COLLISIONS.filter((collision: Collision): boolean => collision[2] === 'tagged'))('%s inside a transaction scoped to its table rejects and rolls the whole transaction back', async (_: string, write: (table: Table) => Promise<unknown>, table: string, index: string): Promise<void> => {
+        const before: Record<string, unknown>[][] = await snapshot();
+
+        const failure: Promise<void> = connection.transaction(async (transaction: Transaction): Promise<void> => {
+            await transaction.table('tagged').insert({ title: 'D', tags: ['d'] });
+
+            await write((name: string): Builder<Record<string, unknown>> => transaction.table(name));
+        }, { tables: ['tagged'] });
+
+        await expect(failure).rejects.toThrow(new UniqueConstraintViolationException(table, index));
+
+        expect(await snapshot()).toEqual(before);
+    });
+
+    test('ignores a multi-entry collision and keeps the rest', async (): Promise<void> => {
+        expect(await connection.table('tagged').insertOrIgnore([
+            { title: 'C', tags: ['w'] },
+            { title: 'D', tags: ['v', 'y'] },
+            { title: 'E', tags: ['u', 'u'] },
+        ])).toEqual(2);
+
+        expect(await connection.table('tagged').orderBy('id').pluck('title')).toEqual(['A', 'B', 'C', 'E']);
+    });
+
+    test('merges an upsert into the one record holding an element of its array', async (): Promise<void> => {
+        expect(await connection.table('tagged').upsert([{ title: 'N', tags: ['x', 'w'] }], 'tags')).toEqual(1);
+
+        expect(await tagged()).toEqual([
+            { id: 1, title: 'N', slug: 'a', visits: 0, tags: ['x', 'w'] },
+            { id: 2, title: 'B', slug: 'b', visits: 0, tags: ['z', 7] },
+        ]);
+    });
+
+    test('merges an upsert into the record holding every element of its array', async (): Promise<void> => {
+        expect(await connection.table('tagged').upsert([{ title: 'N', tags: ['y', 'x'] }], 'tags')).toEqual(1);
+
+        expect(await tagged()).toEqual([
+            { id: 1, title: 'N', slug: 'a', visits: 0, tags: ['y', 'x'] },
+            { id: 2, title: 'B', slug: 'b', visits: 0, tags: ['z', 7] },
+        ]);
+    });
+
+    test('merges only the named columns into the record holding an element', async (): Promise<void> => {
+        expect(await connection.table('tagged').upsert([{ title: 'N', tags: ['x', 'w'] }], 'tags', ['title'])).toEqual(1);
+
+        expect(await tagged()).toEqual([
+            { id: 1, title: 'N', slug: 'a', visits: 0, tags: ['x', 'y'] },
+            { id: 2, title: 'B', slug: 'b', visits: 0, tags: ['z', 7] },
+        ]);
+    });
+
+    test('merges a single value into the record holding it as an element', async (): Promise<void> => {
+        expect(await connection.table('tagged').upsert([{ title: 'N', tags: 7 }], 'tags')).toEqual(1);
+
+        expect(await tagged()).toEqual([
+            { id: 1, title: 'A', slug: 'a', visits: 0, tags: ['x', 'y'] },
+            { id: 2, title: 'N', slug: 'b', visits: 0, tags: 7 },
+        ]);
+    });
+
+    test('merges an upsert repeating an element into the record it inserted', async (): Promise<void> => {
+        await connection.table('tagged').upsert([{ title: 'N', tags: ['w', 'w'] }], 'tags');
+        await connection.table('tagged').upsert([{ title: 'M', tags: ['w', 'w'] }], 'tags');
+
+        expect(await connection.table('tagged').orderBy('id').pluck('title')).toEqual(['A', 'B', 'M']);
+    });
+
+    test('inserts an upsert whose array shares no element', async (): Promise<void> => {
+        expect(await connection.table('tagged').upsert([{ title: 'N', tags: ['w'] }], 'tags')).toEqual(1);
+
+        expect(await connection.table('tagged').orderBy('id').pluck('title')).toEqual(['A', 'B', 'N']);
+    });
+
+    test.each([
+        ['an empty array', []],
+        ['null', null],
+        ['an object', { a: 1 }],
+        ['a boolean', true],
+    ])('inserts an upsert whose multi-entry conflict value is %s every time', async (_: string, tags: unknown): Promise<void> => {
+        await connection.table('tagged').upsert([{ title: 'N', tags }], 'tags');
+        await connection.table('tagged').upsert([{ title: 'M', tags }], 'tags');
+
+        expect(await connection.table('tagged').orderBy('id').pluck('title')).toEqual(['A', 'B', 'N', 'M']);
+    });
+
+    test('inserts an upsert whose plain unique conflict value cannot be a key', async (): Promise<void> => {
+        expect(await connection.table('profiles').upsert([{ meta: { a: 1 }, email: 'new@x' }], 'meta')).toEqual(1);
+
+        expect(await connection.table('profiles').orderBy('id').pluck('email')).toEqual(['a@x', 'bin@x', 'new@x']);
     });
 });
 
