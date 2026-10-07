@@ -664,6 +664,11 @@ all of them:
 - **By 7.0.0**, as midnight on the device that wrote it.
 - **Since 8.0.0**, as midnight in the connection's timezone.
 
+A row can also still hold the string itself, written before writes coerced dates or past the package.
+`Schema.coerce` in a migration stores such a string as a write does today, as midnight in the
+connection's timezone, as [Coercing rows already stored](schema.md#coercing-rows-already-stored)
+describes. It leaves a stored `Date` as it is, so the moments 7.0.0 stored need the migration below.
+
 Rows written before 7.0.0 read correctly again under the default `'UTC'`, with nothing to do. Rows
 written by 7.0.0 west of UTC still fall on their day there, but not on the moment the string now
 names:

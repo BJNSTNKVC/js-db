@@ -18,11 +18,14 @@ true. All of them are exported from the package root.
 | `SchemaException`                     | A schema or query call the shape of the database cannot support                                             |
 | `TableNotFoundException`              | A query or schema read names a table the database does not have                                             |
 | `TransactionClosedException`          | A `DB.transaction` callback awaited something outside this package, letting the transaction commit early    |
-| `UniqueConstraintViolationException`  | A write collides with a unique index, named in the message, multi-entry indexes included                    |
+| `UniqueConstraintViolationException`  | A write or `Schema.coerce` collides with a unique index, named in the message, multi-entry indexes included |
 
 `SchemaException` is the broad one, so here is every case that raises it:
 
-- `Schema.create`, `table`, `drop`, `dropIfExists` or `rename` called outside a migration
+- `Schema.create`, `table`, `coerce`, `drop`, `dropIfExists` or `rename` called outside a migration
+- `Schema.coerce` naming a column its table does not declare, a column of another table or the key
+  path, or finding, on a strict connection, a value a write would refuse or a required column
+  holding no value
 - `Schema.create` on a table that already exists, or `Schema.rename` onto a name already taken
 - dropping or renaming the key path, which IndexedDB fixes when the store is created
 - declaring the same column, or the same index name, twice on one blueprint, or adding a column

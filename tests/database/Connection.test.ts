@@ -2447,3 +2447,328 @@ describe('Schema.rename', (): void => {
         await expect(connect([CreateUsersTable, CreatePostsTable, Rename]).open()).rejects.toThrow(new SchemaException('Table [posts] already exists.'));
     });
 });
+
+describe('Schema.coerce', (): void => {
+    const zone: string = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+    const CreateVisitorsTable: MigrationConstructor = migration('CreateVisitorsTable', async (): Promise<void> => {
+        await Schema.create('visitors', (table: Blueprint): void => {
+            table.id();
+            table.string('name');
+            table.integer('age');
+            table.integer('visits').nullable();
+            table.decimal('price').nullable();
+            table.float('score').nullable();
+            table.boolean('active').nullable();
+            table.date('joined').nullable();
+            table.enum('role', ['admin', 'member']).nullable();
+            table.json('meta').nullable();
+            table.string('code').nullable().unique();
+            table.integer('rank').nullable().unique();
+            table.string('label').nullable().unique().multiEntry();
+        });
+    });
+
+    afterEach((): void => {
+        vi.stubEnv('TZ', zone);
+        vi.unstubAllEnvs();
+    });
+
+    /**
+     * Migrate a visitors table, plant the given rows past the package, then run a migration with the given up over them.
+     */
+    async function coerced(rows: Record<string, unknown>[], up: () => Promise<void>, options: { database?: string; strict?: boolean; timezone?: string } = {}): Promise<Connection> {
+        const database: string = options.database ?? `connection-${++sequence}`;
+        const strict: boolean = options.strict ?? true;
+        const first: Connection = connect([CreateVisitorsTable], database, strict, options.timezone);
+
+        await first.migrate();
+        await seed(first, 'visitors', rows);
+
+        first.disconnect();
+        connections.splice(connections.indexOf(first), 1);
+
+        const second: Connection = connect([CreateVisitorsTable, migration('CoerceVisitorsTable', up)], database, strict, options.timezone);
+
+        await second.migrate();
+
+        return second;
+    }
+
+    /**
+     * Coerce every declared column of the visitors table.
+     */
+    async function every(): Promise<void> {
+        await Schema.coerce('visitors');
+    }
+
+    /**
+     * Read the records the visitors table holds once its first migration alone has run.
+     */
+    async function kept(database: string): Promise<Record<string, unknown>[]> {
+        return records(connect([CreateVisitorsTable], database), 'visitors');
+    }
+
+    test('rewrites every declared column a record holds to what a write would store', async (): Promise<void> => {
+        const connection: Connection = await coerced([
+            { name: 7, age: '30', visits: '2', price: '1999', score: '1.5', active: 'false', joined: '2024-01-15T10:30:00Z', role: 'admin', code: 7, rank: '3', label: 4 },
+        ], every);
+
+        expect(await records(connection, 'visitors')).toEqual([
+            { id: 1, name: '7', age: 30, visits: 2, price: 1999, score: 1.5, active: false, joined: new Date('2024-01-15T10:30:00Z'), role: 'admin', code: '7', rank: 3, label: '4' },
+        ]);
+    });
+
+    test('leaves a missing value missing, and an undeclared column and a JSON column as they are', async (): Promise<void> => {
+        const connection: Connection = await coerced([{ name: 'Alice', note: '5', meta: '{"a":1}' }, { name: 'Bob', meta: '"hello"' }], every);
+
+        expect(await records(connection, 'visitors')).toEqual([{ id: 1, name: 'Alice', note: '5', meta: '{"a":1}' }, { id: 2, name: 'Bob', meta: '"hello"' }]);
+    });
+
+    test('coerces the timestamps a record holds without stamping them', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+        const first: Connection = connect([CreateUsersTable], database);
+
+        await first.migrate();
+        await seed(first, 'users', [{ name: 'A', email: 'a@x', updated_at: '2024-01-15T10:30:00Z' }]);
+
+        first.disconnect();
+        connections.splice(connections.indexOf(first), 1);
+
+        const second: Connection = connect([CreateUsersTable, migration('CoerceUsersTable', async (): Promise<void> => {
+            await Schema.coerce('users');
+        })], database);
+
+        expect(await records(second, 'users')).toEqual([{ id: 1, name: 'A', email: 'a@x', updated_at: new Date('2024-01-15T10:30:00Z') }]);
+    });
+
+    test('never rewrites the key path', async (): Promise<void> => {
+        const connection: Connection = await coerced([{ id: '1', name: 'Alice', visits: '2' }], every);
+
+        expect(await records(connection, 'visitors')).toEqual([{ id: '1', name: 'Alice', visits: 2 }]);
+    });
+
+    test.each([
+        ['visits', '0x10'],
+        ['visits', true],
+        ['visits', 'abc'],
+        ['visits', 1.5],
+        ['price', 19.99],
+        ['joined', '15/01/2024'],
+        ['role', 'owner'],
+        ['name', {}],
+    ] as [string, unknown][])('refuses a value %s cannot store, such as %s, on a strict connection', async (column: string, value: unknown): Promise<void> => {
+        await expect(coerced([{ name: 'A', [column]: value }, { name: 'B' }, { name: 'C', [column]: value }], every))
+            .rejects.toThrow(new SchemaException(`Column [${column}] of table [visitors] cannot be coerced, because it holds a value it cannot store in 2 rows, such as [${String(value)}].`));
+    });
+
+    test.each([
+        ['visits', '0x10', null],
+        ['visits', true, null],
+        ['visits', 'abc', null],
+        ['visits', 1.5, 2],
+        ['price', 19.99, 20],
+        ['joined', '15/01/2024', null],
+        ['role', 'owner', null],
+        ['name', {}, null],
+    ] as [string, unknown, unknown][])('stores what a loose write would in %s for %s', async (column: string, value: unknown, stored: unknown): Promise<void> => {
+        const connection: Connection = await coerced([{ name: 'A', [column]: value }], every, { strict: false });
+
+        expect((await records(connection, 'visitors'))[0]?.[column]).toEqual(stored);
+    });
+
+    test('rolls the whole migration back when a value is refused, leaving the rows as they were', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+        const rows: Record<string, unknown>[] = [{ id: 1, name: 'A', visits: '2' }, { id: 2, name: 'B', visits: 'abc' }];
+
+        await expect(coerced(rows, every, { database })).rejects.toBeInstanceOf(SchemaException);
+
+        expect(await kept(database)).toEqual(rows);
+    });
+
+    test.each([true, false])('reads a blank string as null on a connection with strict %s', async (strict: boolean): Promise<void> => {
+        const connection: Connection = await coerced([{ name: 'A', visits: '', joined: ' ' }], every, { strict });
+
+        expect(await records(connection, 'visitors')).toEqual([{ id: 1, name: 'A', visits: null, joined: null }]);
+    });
+
+    test('leaves increment nothing to read as 0, 16 or 1, on a loose connection, so it keeps null as it does for any null', async (): Promise<void> => {
+        const connection: Connection = await coerced([
+            { name: 'A', visits: '2' },
+            { name: 'B', visits: '' },
+            { name: 'C', visits: '0x10' },
+            { name: 'D', visits: true },
+        ], every, { strict: false });
+
+        expect(await connection.table('visitors').pluck('visits')).toEqual([2, null, null, null]);
+
+        await connection.table('visitors').increment('visits');
+
+        expect(await connection.table('visitors').pluck('visits')).toEqual([3, null, null, null]);
+    });
+
+    test('refuses a required column left without a value on a strict connection, leaving a missing one alone', async (): Promise<void> => {
+        await expect(coerced([{ name: 'A', age: '' }, { name: 'B', age: null }, { name: 'C' }], every))
+            .rejects.toThrow(new SchemaException('Column [age] of table [visitors] cannot be coerced, because it holds no value in 2 rows.'));
+    });
+
+    test('keeps null in a required column on a loose connection, leaving a missing one alone', async (): Promise<void> => {
+        const connection: Connection = await coerced([{ name: 'A', age: '' }, { name: 'B', age: null }, { name: 'C' }], every, { strict: false });
+
+        expect(await records(connection, 'visitors')).toEqual([{ id: 1, name: 'A', age: null }, { id: 2, name: 'B', age: null }, { id: 3, name: 'C' }]);
+    });
+
+    test.each([['visits'], ['visitors.visits']])('rewrites only the columns named, such as %s', async (column: string): Promise<void> => {
+        const connection: Connection = await coerced([{ name: 'A', visits: '2', score: '1.5' }], async (): Promise<void> => {
+            await Schema.coerce('visitors', [column]);
+        });
+
+        expect(await records(connection, 'visitors')).toEqual([{ id: 1, name: 'A', visits: 2, score: '1.5' }]);
+    });
+
+    test('rewrites nothing when no column is named', async (): Promise<void> => {
+        const connection: Connection = await coerced([{ name: 'A', visits: '2' }], async (): Promise<void> => {
+            await Schema.coerce('visitors', []);
+        });
+
+        expect(await records(connection, 'visitors')).toEqual([{ id: 1, name: 'A', visits: '2' }]);
+    });
+
+    test.each([
+        ['users.visits', 'Column [users.visits] names table [users], not table [visitors].'],
+        ['nickname', 'Column [nickname] does not exist on table [visitors].'],
+        ['meta->a', 'Column [meta->a] does not exist on table [visitors].'],
+        ['id', 'Column [id] is the key path of table [visitors] and may not be coerced.'],
+    ])('refuses to coerce %s', async (column: string, message: string): Promise<void> => {
+        await expect(coerced([{ name: 'A' }], async (): Promise<void> => {
+            await Schema.coerce('visitors', ['visits', column]);
+        })).rejects.toThrow(new SchemaException(message));
+    });
+
+    test.each([
+        ['code', 7, '7', 'visitors_code_unique'],
+        ['label', 5, '5', 'visitors_label_unique'],
+    ])('refuses two rows %s makes equal on its unique index, leaving the rows as they were', async (column: string, first: unknown, second: unknown, index: string): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+        const rows: Record<string, unknown>[] = [{ id: 1, name: 'A', [column]: first }, { id: 2, name: 'B', [column]: second }];
+
+        await expect(coerced(rows, every, { database })).rejects.toThrow(new UniqueConstraintViolationException('visitors', index));
+
+        expect(await kept(database)).toEqual(rows);
+    });
+
+    test('lets two rows share null on a nullable unique index', async (): Promise<void> => {
+        const connection: Connection = await coerced([{ name: 'A', rank: '' }, { name: 'B', rank: ' ' }], every);
+
+        expect(await connection.table('visitors').pluck('rank')).toEqual([null, null]);
+    });
+
+    test.each([
+        [undefined, '2024-01-15T00:00:00.000Z'],
+        ['America/New_York', '2024-01-15T05:00:00.000Z'],
+    ])('reads a date-only string in the migrating connection\'s timezone, %s, whatever the process runs in', async (timezone: string | undefined, moment: string): Promise<void> => {
+        vi.stubEnv('TZ', 'Asia/Tokyo');
+
+        const connection: Connection = await coerced([{ name: 'A', joined: '2024-01-15' }], every, { timezone });
+
+        expect((await records(connection, 'visitors'))[0]?.['joined']).toEqual(new Date(moment));
+    });
+
+    test('refuses to run outside a migration', async (): Promise<void> => {
+        await expect(Schema.coerce('visitors')).rejects.toThrow(new SchemaException('Schema.coerce() may only be called inside a migration.'));
+    });
+
+    test('fails for a table that does not exist', async (): Promise<void> => {
+        await expect(coerced([], async (): Promise<void> => {
+            await Schema.coerce('guests');
+        })).rejects.toThrow(new TableNotFoundException('guests'));
+    });
+
+    test('coerces a table created earlier in the same migration', async (): Promise<void> => {
+        const connection: Connection = await coerced([], async (): Promise<void> => {
+            await Schema.create('guests', (table: Blueprint): void => {
+                table.id();
+                table.integer('visits');
+            });
+
+            await Schema.coerce('guests');
+        });
+
+        expect(await records(connection, 'guests')).toEqual([]);
+    });
+
+    test('coerces by the columns a table has once changed earlier in the same migration', async (): Promise<void> => {
+        const connection: Connection = await coerced([{ name: 'A', level: '3' }], async (): Promise<void> => {
+            await Schema.table('visitors', (table: Blueprint): void => {
+                table.integer('level').nullable();
+            });
+
+            await Schema.coerce('visitors');
+        });
+
+        expect(await records(connection, 'visitors')).toEqual([{ id: 1, name: 'A', level: 3 }]);
+    });
+
+    test('changes nothing when run again', async (): Promise<void> => {
+        const rows: Record<string, unknown>[] = [{ name: 'A', visits: '2', joined: '2024-01-15', meta: '"x"' }];
+        const once: Connection = await coerced(rows, every);
+        const twice: Connection = await coerced(rows, async (): Promise<void> => {
+            await Schema.coerce('visitors');
+            await Schema.coerce('visitors');
+        });
+
+        expect(await records(twice, 'visitors')).toEqual(await records(once, 'visitors'));
+    });
+
+    test('leaves the indexes holding the rewritten values, so a lookup uses them again', async (): Promise<void> => {
+        const connection: Connection = await coerced([{ name: 'A', rank: '3' }, { name: 'B', rank: 4 }], every);
+        const database: IDBDatabase = await connection.open();
+        const index: IDBIndex = database.transaction('visitors', 'readonly').objectStore('visitors').index('visitors_rank_unique');
+
+        expect([await Request.settle(index.getKey(3)), await Request.settle(index.getKey('3'))]).toEqual([1, undefined]);
+
+        const plans: string[] = [];
+
+        const listener: (event: Event) => void = (event: Event): void => {
+            plans.push((event as unknown as { plan: string }).plan);
+        };
+
+        Dispatcher.listen('db:query', listener);
+
+        try {
+            expect(await connection.table('visitors').where('rank', 3).value('name')).toEqual('A');
+        } finally {
+            Dispatcher.forget('db:query', listener);
+        }
+
+        expect(plans).toEqual(['index:visitors_rank_unique']);
+    });
+
+    test('returns nothing and dispatches no event of its own', async (): Promise<void> => {
+        let returned: unknown = 'unset';
+
+        /**
+         * Collect the type of every event a migration with the given up dispatches.
+         */
+        async function dispatched(up: () => Promise<void>): Promise<string[]> {
+            const spy: MockInstance<(event: Event) => void> = vi.spyOn(Dispatcher, 'dispatch');
+
+            try {
+                await coerced([{ name: 'A', visits: '2' }], up);
+
+                return spy.mock.calls.map(([event]: [Event]): string => event.type);
+            } finally {
+                spy.mockRestore();
+            }
+        }
+
+        const quiet: string[] = await dispatched(async (): Promise<void> => {});
+
+        const coercing: string[] = await dispatched(async (): Promise<void> => {
+            returned = await Schema.coerce('visitors');
+        });
+
+        expect(returned).toBeUndefined();
+        expect(coercing).toEqual(quiet);
+    });
+});

@@ -404,11 +404,93 @@ interface User {
 }
 ```
 
+## Coercing rows already stored
+
+Every write coerces the value it gives a declared column, but a row stored earlier can still hold a
+value no write would store today: a string in a number column, from a default before 6.0.0 or a
+write before 5.0.0, a blank string, a date-only string where a `Date` belongs, or anything written
+past the package. `Schema.coerce` rewrites every row of a table so that each declared column it
+holds stores what a write would store now:
+
+```ts
+class CoerceStoredRows extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        await Schema.coerce('users');
+        await Schema.coerce('orders', ['total', 'placed_on']);
+    }
+}
+```
+
+Without a list it rewrites every declared column, and with one only the columns named, which may be
+qualified with their own table, as in `'users.visits'`. An empty list rewrites nothing. Naming a
+column the table does not declare, a column of another table or the key path throws
+`SchemaException`.
+
+Each value goes through the coercion an `update` applies, as strictly as the migrating connection
+writes, reading a date-only string in its timezone, as
+[Coercion on the way in](querying.md#coercion-on-the-way-in) describes:
+
+| Held                      | Column                   | Strict                                 | Loose  |
+|---------------------------|--------------------------|----------------------------------------|--------|
+| `'2'`                     | integer                  | `2`                                    | `2`    |
+| `''`                      | integer or date          | `null`                                 | `null` |
+| `'0x10'`, `true`, `'abc'` | integer                  | Fails                                  | `null` |
+| `1.5`                     | integer                  | Fails                                  | `2`    |
+| `'2024-01-15'`            | date                     | Midnight in the connection's timezone  | Same   |
+| `7`                       | string                   | `'7'`                                  | `'7'`  |
+| `'owner'`                 | enum not accepting it    | Fails                                  | `null` |
+
+Some things are left as they are:
+
+- **A missing value** stays missing, since filling one is a default's job.
+- **A column the table does not declare**, and **the key path**.
+- **`updated_at`** on a table with `timestamps()`, which a coerced row does not take as an update
+  does, though a value it already holds is coerced like any other.
+- **A JSON column.** Every value one holds is a value a write can store, and a string there is a
+  JSON string a write stored on purpose, which parsing again would change.
+- **A row the coercion leaves unchanged**, which is not written, so running it again changes
+  nothing.
+
+On a strict connection, a value the coercion refuses fails the migration, as does a required column
+holding no value, whether `null` or a blank string in a number or date column, which coerces to
+`null`. Every row is read before anything is written, and the message names the table, the column
+and how many rows are in the way:
+
+```
+SchemaException: Column [visits] of table [users] cannot be coerced, because it holds a value it
+cannot store in 2 rows, such as [0x10].
+```
+
+A loose connection writes `null` in place of a refused value and keeps `null` in a required column,
+as a loose write does. Two rows the coercion makes equal on a unique index, such as `7` and `'7'` in
+a unique string column, fail with `UniqueConstraintViolationException` naming the index. `null` is
+in no index, so rows that all become `null` still share a nullable unique column. Any failure aborts
+the migration's transaction, so every row keeps what it held. To keep a value a strict connection
+refuses, write the value you mean through the builder earlier in the same migration, as
+[Migrations](migrations.md#what-a-migration-may-await) shows.
+
+The rewritten rows update every index over their columns, so an index that held a value of another
+type serves queries again, as [Query plans](query-plans.md) describes. `increment` reads a value
+with `Number`, so before coercion it counted `''` as 0, `'0x10'` as 16 and `true` as 1. Once
+coerced, the column holds the number a write would store, or `null`, which `increment` leaves as it
+is.
+
+`Schema.coerce` runs only inside a migration, on a table that exists, including one created or
+changed earlier in the same migration, whose columns it reads as declared so far. It returns
+nothing and dispatches no event beyond the migration's own.
+
+> Laravel has no counterpart. The closest is a `->change()` migration converting a column's stored
+> values on MySQL, which refuses a value it cannot convert in strict mode, as a strict connection
+> does here.
+
 ## Schema outside a migration
 
-`Schema.create`, `Schema.table`, `Schema.drop`, `Schema.dropIfExists` and `Schema.rename` need the
-version-change transaction, so they only run **inside a migration** and throw `SchemaException`
-anywhere else. This is a real divergence from Laravel, where
+`Schema.create`, `Schema.table`, `Schema.coerce`, `Schema.drop`, `Schema.dropIfExists` and
+`Schema.rename` need the version-change transaction, so they only run **inside a migration** and
+throw `SchemaException` anywhere else. This is a real divergence from Laravel, where
 [`Schema::create()`](https://laravel.com/docs/12.x/migrations#creating-tables) works from anywhere.
 
 The read side works anywhere:

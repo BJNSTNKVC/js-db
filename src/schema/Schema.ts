@@ -1,8 +1,10 @@
 import { DatabaseManager } from '../database/DatabaseManager';
 import { Request } from '../database/Request';
-import { ReservedTableException, SchemaException, TableNotFoundException } from '../exceptions';
+import { NotNullConstraintViolationException, ReservedTableException, SchemaException, TableNotFoundException } from '../exceptions';
 import { Migrator } from '../migrations/Migrator';
 import { Repository } from '../migrations/Repository';
+import { Columns } from '../query/Columns';
+import { Writer } from '../query/Writer';
 import { Blueprint } from './Blueprint';
 import { Enforcer } from './Enforcer';
 import { Registry } from './Registry';
@@ -13,6 +15,13 @@ import type { BlueprintOperations, ChangedColumn, ColumnSchema, IndexSchema, Ren
 type Tally = { change: ChangedColumn; count: number };
 
 type KeyedRow = { key: IDBValidKey; row: number };
+
+type Refusal = { column: string; refused: number; empty: number; sample: unknown };
+
+type Writes = {
+    last: Promise<void>;
+    failure: { record: Record<string, unknown>; previous: Record<string, unknown>; error: unknown } | null;
+};
 
 export class Schema {
     /**
@@ -184,6 +193,27 @@ export class Schema {
 
         this.#delete(context, from);
         this.#record(context, { ...schema, table: to });
+    }
+
+    /**
+     * Rewrite every row of a table so each declared column it holds, or each one named, holds what a write would store, as strictly as the migrating connection writes and reading dates in its timezone.
+     */
+    static async coerce(table: string, columns?: string[]): Promise<void> {
+        const context: MigrationContext = this.#context('coerce');
+        const schema: TableSchema = this.#existing(context, table);
+        const coerced: ColumnSchema[] = this.#coercible(schema, columns);
+
+        if (coerced.length === 0) {
+            return;
+        }
+
+        const store: IDBObjectStore = context.transaction.objectStore(table);
+
+        if (context.strict) {
+            await this.#refusals(store, schema, coerced, context.timezone);
+        }
+
+        await this.#coerced(store, schema, coerced, context.strict, context.timezone);
     }
 
     /**
@@ -493,6 +523,108 @@ export class Schema {
         }
 
         return record;
+    }
+
+    /**
+     * Get the declared columns to coerce, every one when none are named, leaving out the key path and JSON columns, every value of which a write can store.
+     */
+    static #coercible(schema: TableSchema, columns: string[] | undefined): ColumnSchema[] {
+        const named: Set<string> = new Set<string>();
+
+        for (const column of columns ?? []) {
+            const { table, name }: { table: string | null; name: string } = Columns.split(column);
+
+            if (table !== null && table !== schema.table) {
+                throw new SchemaException(`Column [${column}] names table [${table}], not table [${schema.table}].`);
+            }
+
+            if (!schema.columns.some((candidate: ColumnSchema): boolean => candidate.name === name)) {
+                throw new SchemaException(`Column [${column}] does not exist on table [${schema.table}].`);
+            }
+
+            if (name === schema.key) {
+                throw new SchemaException(`Column [${name}] is the key path of table [${schema.table}] and may not be coerced.`);
+            }
+
+            named.add(name);
+        }
+
+        return schema.columns.filter((column: ColumnSchema): boolean => column.name !== schema.key
+            && column.type !== 'json'
+            && (columns === undefined || named.has(column.name)));
+    }
+
+    /**
+     * Refuse the coercion when a record holds a value a strict write would refuse in any of the columns, or would leave a required one without a value.
+     */
+    static async #refusals(store: IDBObjectStore, schema: TableSchema, columns: ColumnSchema[], timezone: string): Promise<void> {
+        const tallies: Refusal[] = columns.map((column: ColumnSchema): Refusal => ({ column: column.name, refused: 0, empty: 0, sample: undefined }));
+
+        await Request.walk(store.openCursor(), (cursor: IDBCursorWithValue): void => {
+            const record: Record<string, unknown> = cursor.value as Record<string, unknown>;
+
+            for (const tally of tallies.filter((candidate: Refusal): boolean => Object.hasOwn(record, candidate.column))) {
+                try {
+                    Enforcer.field(record[tally.column], tally.column, schema, true, timezone);
+                } catch (error: unknown) {
+                    if (error instanceof NotNullConstraintViolationException) {
+                        tally.empty++;
+
+                        continue;
+                    }
+
+                    if (tally.refused === 0) {
+                        tally.sample = record[tally.column];
+                    }
+
+                    tally.refused++;
+                }
+            }
+        });
+
+        for (const tally of tallies) {
+            if (tally.refused > 0) {
+                throw new SchemaException(`Column [${tally.column}] of table [${schema.table}] cannot be coerced, because it holds a value it cannot store in ${this.#rows(tally.refused)}, such as [${String(tally.sample)}].`);
+            }
+        }
+
+        for (const tally of tallies) {
+            if (tally.empty > 0) {
+                throw new SchemaException(`Column [${tally.column}] of table [${schema.table}] cannot be coerced, because it holds no value in ${this.#rows(tally.empty)}.`);
+            }
+        }
+    }
+
+    /**
+     * Write every record holding a value in the columns that a write would store differently, reporting a unique collision by its index.
+     */
+    static async #coerced(store: IDBObjectStore, schema: TableSchema, columns: ColumnSchema[], strict: boolean, timezone: string): Promise<void> {
+        const writes: Writes = { last: Promise.resolve(), failure: null };
+
+        await Request.walk(store.openCursor(), (cursor: IDBCursorWithValue): void => {
+            const previous: Record<string, unknown> = cursor.value as Record<string, unknown>;
+            const record: Record<string, unknown> = { ...previous };
+            let changed: boolean = false;
+
+            for (const column of columns.filter((candidate: ColumnSchema): boolean => Object.hasOwn(record, candidate.name))) {
+                record[column.name] = Enforcer.field(previous[column.name], column.name, schema, strict, timezone);
+                changed ||= !Object.is(record[column.name], previous[column.name]);
+            }
+
+            if (!changed) {
+                return;
+            }
+
+            writes.last = Request.settle(cursor.update(record), true).then((): void => undefined, (error: unknown): void => {
+                writes.failure ??= { record, previous, error };
+            });
+        });
+
+        await writes.last;
+
+        if (writes.failure !== null) {
+            throw await Writer.attributed(store, schema, writes.failure.record, writes.failure.previous, writes.failure.error);
+        }
     }
 
     /**

@@ -460,6 +460,7 @@ export class Connection {
 
                 runner = Migrator.run(
                     this.#name,
+                    this.strict,
                     this.#timezone,
                     request.result,
                     transaction,

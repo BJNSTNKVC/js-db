@@ -60,11 +60,14 @@ Each resolves to a description of the plan chosen:
   can use, the key path, or a scan, which `explain` and the `QueryExecuted` event then report. No
   verdict is kept, so the next query sees a row written past the package. A JSON column takes any
   key and is never checked. Writing the value again through the builder stores it in the column's
-  type, after which the index serves again.
+  type, after which the index serves again, and `Schema.coerce` in a migration does so for every
+  row of a table, as [Coercing rows already stored](schema.md#coercing-rows-already-stored)
+  describes.
 - A value IndexedDB cannot use as a key, such as `true` in an integer column, is in no index, so
   this check cannot see it. A scan compares it as JavaScript does, finding `true` for
   `where('visits', 1)`, while a lookup through the index never does. Writing the value again through
-  the builder repairs it in the same way.
+  the builder repairs it in the same way. `Schema.coerce` finds it too, failing the migration on a
+  strict connection, which refuses `true` in an integer column, and writing `null` on a loose one.
 - A multi-entry index holds one entry per distinct element of the array a record stores, so it
   never drives an equality, a `whereIn`, a range, a `whereBetween` or an order, which compare the
   whole value. It drives `whereJsonContains(column, value)` alone, as a point lookup of the value,
