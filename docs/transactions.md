@@ -78,11 +78,14 @@ await DB.transaction(async (transaction: Transaction): Promise<void> => {
 });
 ```
 
-A browser commits in the background, so a query that arrives while the commit is still being written
-fails with IndexedDB's own `TransactionInactiveError` instead. When the callback lets that error
-through, `DB.transaction` still waits for the commit and rejects with `TransactionClosedException`,
-carrying the platform's error as its `cause`. A callback that settles without an error before the
-commit has landed resolves as usual, with its work committed.
+A browser stops taking requests the moment the callback awaits outside work, but writes the commit in
+the background. A query made before the commit lands throws `TransactionClosedException` all the
+same, and once the callback settles `DB.transaction` waits for the commit and rejects as above. Two
+cases end in a rollback instead, rejecting with their own failure and dispatching
+`transaction-rolled-back`: a browser that refuses that commit, such as for a full quota, and a
+callback that lets the exception through while a write it left running still holds the transaction
+open. Before 9.1.1 such a query failed with IndexedDB's own `TransactionInactiveError`, and a
+callback that caught it or made no further query resolved as if nothing had happened.
 
 > Modeled on Laravel's [Database: Transactions](https://laravel.com/docs/12.x/database#database-transactions).
 > The tables have to be declared up front, because an IndexedDB transaction fixes its scope when it

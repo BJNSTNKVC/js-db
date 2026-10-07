@@ -265,6 +265,8 @@ export class Connection {
         const handle: IDBTransaction = database.transaction(tables, 'readwrite');
         const transaction: Transaction = new Transaction(this, handle);
 
+        Handles.open(handle, this.#name);
+
         let committed: boolean = false;
         let aborted: boolean = false;
         let aborting: boolean = false;
@@ -303,6 +305,10 @@ export class Connection {
             // IndexedDB commits a transaction the moment its request queue drains, so the callback
             // may only await operations from this package.
             const result: R = await callback(transaction);
+
+            if (!committed && !aborted && !aborting && Handles.inactive(handle)) {
+                await settled;
+            }
 
             if (committed) {
                 throw new TransactionClosedException(this.#name);

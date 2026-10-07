@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import type { MockInstance } from 'vitest';
 import { Connection } from '../../src/database/Connection';
 import { Migration } from '../../src/migrations/Migration';
 import { Schema } from '../../src/schema/Schema';
@@ -87,6 +88,27 @@ function elsewhere(): Promise<void> {
     return new Promise<void>((resolve: () => void): void => {
         setTimeout(resolve, 5);
     });
+}
+
+/**
+ * Make every transaction refuse requests from now on, as a browser's does once its callback awaits outside work, and refuse its abort too unless told it is not yet committing.
+ */
+function deactivate(committing: boolean = true): void {
+    const get: IDBObjectStore['get'] = IDBObjectStore.prototype.get;
+
+    vi.spyOn(IDBObjectStore.prototype, 'get').mockImplementation(function (this: IDBObjectStore, query: IDBValidKey | IDBKeyRange): IDBRequest {
+        if (query === undefined) {
+            throw new DOMException('The transaction is not active.', 'TransactionInactiveError');
+        }
+
+        return get.call(this, query);
+    });
+
+    if (committing) {
+        vi.spyOn(IDBTransaction.prototype, 'abort').mockImplementation((): void => {
+            throw new DOMException('The transaction is committing.', 'InvalidStateError');
+        });
+    }
 }
 
 /**
@@ -547,6 +569,287 @@ describe('Transaction that closed early', (): void => {
 
         expect(seen).toEqual(['db:transaction-beginning', 'db:transaction-committed']);
         expect(await connection.table<User>('users').pluck('name')).toEqual(['Bob']);
+    });
+});
+
+describe('Transaction that went inactive before it completed', (): void => {
+    afterEach((): void => {
+        vi.restoreAllMocks();
+    });
+
+    test('reports the close from the next query and keeps the work committed before it', async (): Promise<void> => {
+        const [reason, seen]: [unknown, string[]] = await rejected(async (transaction: Transaction): Promise<void> => {
+            await transaction.table<User>('users').insert({ name: 'Alice' });
+
+            deactivate();
+
+            await transaction.table<User>('users').insert({ name: 'Bob' });
+        });
+
+        vi.restoreAllMocks();
+
+        expect(reason).toEqual(new TransactionClosedException('app'));
+        expect(seen).toEqual(['db:transaction-beginning', 'db:transaction-committed']);
+        expect(await connection.table<User>('users').pluck('name')).toEqual(['Alice']);
+    }, 2000);
+
+    test('rejects even when the callback catches the error', async (): Promise<void> => {
+        let caught: unknown = null;
+
+        const [reason, seen]: [unknown, string[]] = await rejected(async (transaction: Transaction): Promise<string> => {
+            await transaction.table<User>('users').insert({ name: 'Alice' });
+
+            deactivate();
+
+            try {
+                await transaction.table<User>('users').insert({ name: 'Bob' });
+            } catch (error: unknown) {
+                caught = error;
+            }
+
+            return 'done';
+        });
+
+        vi.restoreAllMocks();
+
+        expect(caught).toEqual(new TransactionClosedException('app'));
+        expect(reason).toEqual(new TransactionClosedException('app'));
+        expect(seen).toEqual(['db:transaction-beginning', 'db:transaction-committed']);
+        expect(await connection.table<User>('users').pluck('name')).toEqual(['Alice']);
+    }, 2000);
+
+    test('rejects once the callback settles, though it made no further call', async (): Promise<void> => {
+        const [reason, seen]: [unknown, string[]] = await rejected(async (transaction: Transaction): Promise<string> => {
+            await transaction.table<User>('users').insert({ name: 'Alice' });
+
+            deactivate();
+
+            return 'done';
+        });
+
+        vi.restoreAllMocks();
+
+        expect(reason).toEqual(new TransactionClosedException('app'));
+        expect(seen).toEqual(['db:transaction-beginning', 'db:transaction-committed']);
+        expect(await connection.table<User>('users').pluck('name')).toEqual(['Alice']);
+    }, 2000);
+
+    test.each(CALLS)('refuses %s through a transaction that went inactive', async (_: string, call: (transaction: Transaction) => Promise<unknown>): Promise<void> => {
+        let caught: unknown = null;
+
+        const [reason, seen]: [unknown, string[]] = await rejected(async (transaction: Transaction): Promise<void> => {
+            deactivate();
+
+            try {
+                await call(transaction);
+            } catch (error: unknown) {
+                caught = error;
+            }
+        });
+
+        expect(caught).toEqual(new TransactionClosedException('app'));
+        expect(reason).toEqual(new TransactionClosedException('app'));
+        expect(seen).toEqual(['db:transaction-beginning', 'db:transaction-committed']);
+    }, 2000);
+
+    test('refuses the next page of a chunk whose callback let the transaction go inactive', async (): Promise<void> => {
+        await connection.table<User>('users').insert([{ name: 'Alice' }, { name: 'Bob' }]);
+
+        const pages: number[] = [];
+
+        const [reason]: [unknown, string[]] = await rejected(async (transaction: Transaction): Promise<void> => {
+            await transaction.table<User>('users').chunk(1, (_: User[], page: number): void => {
+                pages.push(page);
+
+                deactivate();
+            });
+        });
+
+        expect(reason).toEqual(new TransactionClosedException('app'));
+        expect(pages).toEqual([1]);
+    }, 2000);
+
+    test('refuses the next page of a lazy walk whose consumer let the transaction go inactive', async (): Promise<void> => {
+        await connection.table<User>('users').insert([{ name: 'Alice' }, { name: 'Bob' }]);
+
+        const names: string[] = [];
+
+        const [reason]: [unknown, string[]] = await rejected(async (transaction: Transaction): Promise<void> => {
+            for await (const user of transaction.table<User>('users').lazy(1)) {
+                names.push(user.name);
+
+                deactivate();
+            }
+        });
+
+        expect(reason).toEqual(new TransactionClosedException('app'));
+        expect(names).toEqual(['Alice']);
+    }, 2000);
+
+    test('refuses a nested call made after the transaction went inactive', async (): Promise<void> => {
+        let caught: unknown = null;
+
+        const [reason]: [unknown, string[]] = await rejected(async (): Promise<void> => {
+            deactivate();
+
+            try {
+                await connection.transaction(async (inner: Transaction): Promise<number> => inner.table<User>('users').insert({ name: 'Alice' }));
+            } catch (error: unknown) {
+                caught = error;
+            }
+        });
+
+        vi.restoreAllMocks();
+
+        expect(caught).toEqual(new TransactionClosedException('app'));
+        expect(reason).toEqual(new TransactionClosedException('app'));
+        expect(await connection.table<User>('users').count()).toEqual(0);
+    }, 2000);
+
+    test('refuses a builder made before the transaction went inactive', async (): Promise<void> => {
+        const [reason]: [unknown, string[]] = await rejected(async (transaction: Transaction): Promise<void> => {
+            const users: ReturnType<Transaction['table']> = transaction.table('users');
+
+            deactivate();
+
+            await users.get();
+        });
+
+        expect(reason).toEqual(new TransactionClosedException('app'));
+    }, 2000);
+
+    test('rolls back a transaction that went inactive while it could still abort', async (): Promise<void> => {
+        const [reason, seen]: [unknown, string[]] = await rejected(async (transaction: Transaction): Promise<void> => {
+            await transaction.table<User>('users').insert({ name: 'Alice' });
+
+            deactivate(false);
+
+            await transaction.table<User>('users').insert({ name: 'Bob' });
+        });
+
+        vi.restoreAllMocks();
+
+        expect(reason).toEqual(new TransactionClosedException('app'));
+        expect(seen).toEqual(['db:transaction-beginning', 'db:transaction-rolled-back']);
+        expect(await connection.table<User>('users').count()).toEqual(0);
+    }, 2000);
+
+    test('rolls back a commit the browser refuses after the transaction went inactive', async (): Promise<void> => {
+        const open: IDBDatabase['transaction'] = IDBDatabase.prototype.transaction;
+        const abort: IDBTransaction['abort'] = IDBTransaction.prototype.abort;
+        const get: IDBObjectStore['get'] = IDBObjectStore.prototype.get;
+        let handle: IDBTransaction | null = null;
+        let inactive: boolean = false;
+
+        vi.spyOn(IDBDatabase.prototype, 'transaction').mockImplementation(function (this: IDBDatabase, ...parameters: Parameters<IDBDatabase['transaction']>): IDBTransaction {
+            handle = open.apply(this, parameters);
+
+            return handle;
+        });
+
+        vi.spyOn(IDBObjectStore.prototype, 'get').mockImplementation(function (this: IDBObjectStore, query: IDBValidKey | IDBKeyRange): IDBRequest {
+            if (query === undefined && inactive) {
+                queueMicrotask((): void => {
+                    Object.defineProperty(handle, 'error', { value: new DOMException('Full.', 'QuotaExceededError') });
+
+                    abort.call(handle as unknown as IDBTransaction);
+                });
+
+                throw new DOMException('The transaction is not active.', 'TransactionInactiveError');
+            }
+
+            return get.call(this, query);
+        });
+
+        const [reason, seen]: [unknown, string[]] = await rejected(async (transaction: Transaction): Promise<void> => {
+            await transaction.table<User>('users').insert({ name: 'Alice' });
+
+            inactive = true;
+        });
+
+        vi.restoreAllMocks();
+
+        expect(reason).toBeInstanceOf(QuotaExceededException);
+        expect(seen).toEqual(['db:transaction-beginning', 'db:transaction-rolled-back']);
+        expect(await connection.table<User>('users').count()).toEqual(0);
+    }, 2000);
+
+    test('checks a transaction still in use without disturbing it, and again once the callback settles', async (): Promise<void> => {
+        const get: IDBObjectStore['get'] = IDBObjectStore.prototype.get;
+        const steps: string[] = [];
+
+        vi.spyOn(IDBObjectStore.prototype, 'get').mockImplementation(function (this: IDBObjectStore, query: IDBValidKey | IDBKeyRange): IDBRequest {
+            if (query !== undefined) {
+                steps.push('get');
+
+                return get.call(this, query);
+            }
+
+            try {
+                return get.call(this, query);
+            } catch (error: unknown) {
+                steps.push(`check: ${(error as DOMException).name}`);
+
+                throw error;
+            }
+        });
+
+        const seen: string[] = await recorded(EVENTS, async (): Promise<unknown> => {
+            return connection.transaction(async (transaction: Transaction): Promise<void> => {
+                steps.push('insert');
+
+                await transaction.table<User>('users').insert({ name: 'Alice' });
+
+                steps.push('find');
+
+                await transaction.table<User>('users').find(1);
+
+                steps.push('settle');
+            });
+        });
+
+        expect(steps).toEqual(['insert', 'check: DataError', 'find', 'check: DataError', 'get', 'settle', 'check: DataError']);
+        expect(seen).toEqual(['db:transaction-beginning', 'db:transaction-committed']);
+        expect(await connection.table<User>('users').pluck('name')).toEqual(['Alice']);
+    });
+
+    test('makes no check once the transaction has completed', async (): Promise<void> => {
+        const read: MockInstance = vi.spyOn(IDBObjectStore.prototype, 'get');
+
+        const [reason]: [unknown, string[]] = await rejected(async (transaction: Transaction): Promise<void> => {
+            await transaction.table<User>('users').insert({ name: 'Alice' });
+            await elsewhere();
+
+            read.mockClear();
+        });
+
+        expect(reason).toEqual(new TransactionClosedException('app'));
+        expect(read).not.toHaveBeenCalled();
+    });
+
+    test('makes no check once the transaction has aborted', async (): Promise<void> => {
+        const read: MockInstance = vi.spyOn(IDBObjectStore.prototype, 'get');
+
+        vi.spyOn(IDBObjectStore.prototype, 'clear').mockImplementation(function (this: IDBObjectStore): IDBRequest<undefined> {
+            return this.add({ slug: 'a', label: 'y' }) as IDBRequest<unknown> as IDBRequest<undefined>;
+        });
+
+        const [reason, seen]: [unknown, string[]] = await rejected(async (transaction: Transaction): Promise<string> => {
+            await transaction.table('tags').insert({ slug: 'a', label: 'x' });
+
+            try {
+                await transaction.table('tags').truncate();
+            } catch {
+                read.mockClear();
+            }
+
+            return 'done';
+        });
+
+        expect(reason).toHaveProperty('name', 'ConstraintError');
+        expect(seen).toEqual(['db:transaction-beginning', 'db:transaction-rolled-back']);
+        expect(read).not.toHaveBeenCalled();
+        expect(await connection.table('tags').count()).toEqual(0);
     });
 });
 

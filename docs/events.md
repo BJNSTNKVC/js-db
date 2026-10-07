@@ -43,8 +43,10 @@ fails whether it was awaited or left running when the callback returned, and a c
 refuses, such as for a full quota.
 
 A transaction whose callback awaited something outside this package commits early, so it announces
-`transaction-committed` and never `transaction-rolled-back`, even though `DB.transaction` rejects with
-`TransactionClosedException`. See [What the callback may await](transactions.md#what-the-callback-may-await).
+`transaction-committed` and not `transaction-rolled-back`, even though `DB.transaction` rejects with
+`TransactionClosedException`. Only a browser that refuses that commit, or a transaction that could
+still roll back, announces `transaction-rolled-back` instead. See
+[What the callback may await](transactions.md#what-the-callback-may-await).
 
 A `DB.transaction` that joins one already running, whether a transaction or a migration, announces
 nothing of its own. Inside a migration the migration events cover it. See
