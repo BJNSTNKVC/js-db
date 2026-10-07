@@ -12,6 +12,11 @@ Throwing inside the callback aborts the transaction and rethrows your error, unl
 has already committed because the callback awaited something outside this package. See
 [What the callback may await](#what-the-callback-may-await).
 
+A write the callback starts without awaiting still belongs to the transaction. If it fails after the
+callback has returned, or the browser refuses the commit, the whole transaction rolls back and
+`DB.transaction` rejects with that failure. Every rejection that leaves nothing committed dispatches
+`transaction-rolled-back`. See [Events](events.md).
+
 By default the transaction covers every table, since the callback's reach is unknowable up front.
 Narrow it when you care:
 

@@ -37,6 +37,11 @@ DB.onQueryExecuted((event: QueryExecuted): void => {
 A connection with no seeders announces nothing, so `seeding-started` firing always means at least
 one seeder is about to run.
 
+`transaction-rolled-back` is dispatched once whenever `DB.transaction` rejects without committing,
+and its `reason` is the error the call rejects with. That covers a callback that throws, a write that
+fails whether it was awaited or left running when the callback returned, and a commit the browser
+refuses, such as for a full quota.
+
 A transaction whose callback awaited something outside this package commits early, so it announces
 `transaction-committed` and never `transaction-rolled-back`, even though `DB.transaction` rejects with
 `TransactionClosedException`. See [What the callback may await](transactions.md#what-the-callback-may-await).

@@ -333,9 +333,7 @@ export class Connection {
                 throw error instanceof TransactionClosedException ? error : new TransactionClosedException(this.#name, { cause: error });
             }
 
-            if (!aborted) {
-                Dispatcher.dispatch(new TransactionRolledBack(this.#name, error));
-            }
+            Dispatcher.dispatch(new TransactionRolledBack(this.#name, error));
 
             throw error;
         }

@@ -4,7 +4,7 @@ import { Migration } from '../../src/migrations/Migration';
 import { Schema } from '../../src/schema/Schema';
 import { Blueprint } from '../../src/schema/Blueprint';
 import { Dispatcher } from '../../src/events/Dispatcher';
-import { SchemaException, TransactionClosedException, UniqueConstraintViolationException } from '../../src/exceptions';
+import { QuotaExceededException, SchemaException, TransactionClosedException, UniqueConstraintViolationException } from '../../src/exceptions';
 import type { Transaction } from '../../src/database/Transaction';
 import type { TransactionRolledBack } from '../../src/events';
 
@@ -327,6 +327,33 @@ describe('Transaction events', (): void => {
         expect(reason).toBe(failure);
     });
 
+    test('announces a commit the platform refuses as a rollback', async (): Promise<void> => {
+        const open: IDBDatabase['transaction'] = IDBDatabase.prototype.transaction;
+        let handle: IDBTransaction | null = null;
+
+        vi.spyOn(IDBDatabase.prototype, 'transaction').mockImplementation(function (this: IDBDatabase, ...parameters: Parameters<IDBDatabase['transaction']>): IDBTransaction {
+            handle = open.apply(this, parameters);
+
+            return handle;
+        });
+
+        const [reason, seen]: [unknown, string[]] = await rejected(async (transaction: Transaction): Promise<void> => {
+            await transaction.table<User>('users').insert({ name: 'Alice' });
+
+            queueMicrotask((): void => {
+                Object.defineProperty(handle, 'error', { value: new DOMException('Full.', 'QuotaExceededError') });
+
+                (handle as unknown as IDBTransaction).abort();
+            });
+        });
+
+        vi.restoreAllMocks();
+
+        expect(reason).toBeInstanceOf(QuotaExceededException);
+        expect(seen).toEqual(['db:transaction-beginning', 'db:transaction-rolled-back']);
+        expect(await connection.table<User>('users').count()).toEqual(0);
+    });
+
     test('announces nothing extra for a nested call', async (): Promise<void> => {
         const seen: string[] = await recorded(['db:transaction-beginning', 'db:transaction-committed'], async (): Promise<unknown> => {
             return connection.transaction(async (): Promise<void> => {
@@ -542,14 +569,14 @@ describe('Transaction aborted by a failed request', (): void => {
             return this.add({ slug: 'a', label: 'y' }) as IDBRequest<unknown> as IDBRequest<undefined>;
         });
 
-        const failure: Promise<void> = connection.transaction(async (transaction: Transaction): Promise<void> => {
+        const [reason, seen]: [unknown, string[]] = await rejected(async (transaction: Transaction): Promise<void> => {
             await transaction.table('tags').insert({ slug: 'a', label: 'x' });
             await transaction.table('tags').truncate();
         });
 
-        await expect(failure).rejects.toBeInstanceOf(DOMException);
-        await expect(failure).rejects.toHaveProperty('name', 'ConstraintError');
-
+        expect(reason).toBeInstanceOf(DOMException);
+        expect(reason).toHaveProperty('name', 'ConstraintError');
+        expect(seen).toEqual(['db:transaction-beginning', 'db:transaction-rolled-back']);
         expect(await connection.table('tags').count()).toEqual(0);
     });
 
@@ -558,14 +585,21 @@ describe('Transaction aborted by a failed request', (): void => {
             return this.add({ slug: 'a', label: 'y' }) as IDBRequest<unknown> as IDBRequest<undefined>;
         });
 
-        const failure: Promise<void> = connection.transaction(async (transaction: Transaction): Promise<void> => {
+        let carried: unknown = null;
+
+        Dispatcher.listen('db:transaction-rolled-back', ((event: TransactionRolledBack): void => {
+            carried = event.reason;
+        }) as (event: Event) => void, true);
+
+        const [reason, seen]: [unknown, string[]] = await rejected(async (transaction: Transaction): Promise<void> => {
             await transaction.table('tags').insert({ slug: 'a', label: 'x' });
 
             transaction.table('tags').truncate().catch((): void => {});
         });
 
-        await expect(failure).rejects.toHaveProperty('name', 'ConstraintError');
-
+        expect(reason).toHaveProperty('name', 'ConstraintError');
+        expect(seen).toEqual(['db:transaction-beginning', 'db:transaction-rolled-back']);
+        expect(carried).toBe(reason);
         expect(await connection.table('tags').count()).toEqual(0);
     });
 });
