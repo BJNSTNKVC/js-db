@@ -52,7 +52,7 @@ Each resolves to a description of the plan chosen:
   every kind together, arrays above all, so a range or a `whereBetween` over a JSON column, or over
   an indexed column no blueprint declares, also collects keys of other kinds, which a scan finds
   false or unknown. Each record such a range reaches is checked against the constraint again.
-  Equality and `whereIn` find exactly what a scan finds, an array value included, and need no check.
+  Equality and `whereIn` find exactly what a scan finds, and need no check.
 - An index, and the key path, serves a query only while every entry it holds is of its column's
   type. IndexedDB orders keys by type first, numbers before dates before strings, while a scan
   compares two scalars as JavaScript does, so an integer index holding `'2'` would miss it in

@@ -587,6 +587,56 @@ describe('Builder.distinct over JSON values', (): void => {
     });
 });
 
+describe('Builder binding an array value as Laravel does', (): void => {
+    test('compares a where against the first element of an array value, at any depth', async (): Promise<void> => {
+        expect(await names(profiles().where('name', ['Bob', 'Alice']))).toEqual(['Bob']);
+        expect(await names(profiles().where('name', [['Carol'], 'Alice']))).toEqual(['Carol']);
+        expect(await names(profiles().where('tags', ['js']))).toEqual([]);
+        expect(await names(profiles().where('settings->rank', '>', [1, 5]))).toEqual(['Alice', 'Erin']);
+        expect(await names(profiles().whereNot('name', ['Alice']))).toEqual(['Bob', 'Carol', 'Dave', 'Erin']);
+        expect(await names(profiles().where('name', 'Dave').orWhere('name', ['Erin']))).toEqual(['Dave', 'Erin']);
+        expect(await names(profiles().where({ name: ['Bob'] } as unknown as Partial<Profile>))).toEqual(['Bob']);
+        expect(await names(profiles().whereAny(['name'], ['Carol']))).toEqual(['Carol']);
+    });
+
+    test('compares a where against the first value of an object value, as an associative array', async (): Promise<void> => {
+        expect(await names(profiles().where('settings->theme', { theme: 'light' }))).toEqual(['Bob', 'Erin']);
+        expect(await names(profiles().where('settings', { theme: 'dark' }))).toEqual([]);
+    });
+
+    test('compares a where against false for an empty array or object', async (): Promise<void> => {
+        expect(await names(profiles().where('settings->notifications->email', []))).toEqual(['Bob']);
+        expect(await names(profiles().where('settings->notifications->email', {}))).toEqual(['Bob']);
+    });
+
+    test('compares a where against null for an array holding null, matching nothing', async (): Promise<void> => {
+        expect(await names(profiles().where('settings', [null]))).toEqual([]);
+        expect(await names(profiles().whereNot('settings', [null]))).toEqual([]);
+    });
+
+    test('flattens the bounds of a between and keeps the first two', async (): Promise<void> => {
+        expect(await names(profiles().whereBetween('settings->rank', [[1], [2]]))).toEqual(['Alice', 'Bob']);
+        expect(await names(profiles().whereBetween('settings->rank', [[2, 3], [9]]))).toEqual(['Alice', 'Erin']);
+        expect(await names(profiles().whereNotBetween('settings->rank', [[2], [3]]))).toEqual(['Bob']);
+    });
+
+    test.each([
+        ['an array', [['js']]],
+        ['an empty array', [[]]],
+        ['an object', [{ a: 1 }]],
+        ['an array beside a scalar', ['js', ['go']]],
+    ])('refuses %s in a where in list', (_: string, values: unknown[]): void => {
+        expect((): unknown => profiles().whereIn('tags', values)).toThrow(new TypeError('Nested arrays may not be passed to whereIn method.'));
+        expect((): unknown => profiles().whereNotIn('tags', values)).toThrow(new TypeError('Nested arrays may not be passed to whereIn method.'));
+        expect((): unknown => profiles().orWhereIn('tags', values)).toThrow(TypeError);
+        expect((): unknown => profiles().orWhereNotIn('tags', values)).toThrow(TypeError);
+    });
+
+    test('keeps a date as it is', async (): Promise<void> => {
+        expect(await profiles().where('name', new Date(0)).count()).toEqual(0);
+    });
+});
+
 describe('Builder comparing whole JSON values', (): void => {
     beforeEach(async (): Promise<void> => {
         await connection.table<Layout>('layouts').truncate();
@@ -598,18 +648,19 @@ describe('Builder comparing whole JSON values', (): void => {
         ]);
     });
 
-    test('finds an array or an object equal only to the same content', async (): Promise<void> => {
-        expect(await names(profiles().where('tags', ['js']))).toEqual(['Bob']);
+    test('never finds an array equal to a scalar', async (): Promise<void> => {
         expect(await names(profiles().where('tags', 'js'))).toEqual([]);
         expect(await names(profiles().whereNot('tags', 'js'))).toEqual(['Alice', 'Bob', 'Carol', 'Erin']);
-        expect(await names(profiles().where('settings', { theme: 'dark' }))).toEqual(['Carol']);
-        expect(await names(profiles().whereIn('tags', [['js'], [], 'go']))).toEqual(['Bob', 'Carol']);
+        expect(await names(profiles().whereIn('tags', ['js', 'go']))).toEqual([]);
     });
 
-    test('orders an array only against an array', async (): Promise<void> => {
-        expect(await names(profiles().where('tags', '>', ['a']))).toEqual(['Alice', 'Bob', 'Erin']);
-        expect(await names(profiles().where('tags', '>', 'a'))).toEqual([]);
-        expect(await names(profiles().whereNot('tags', '>', 'a'))).toEqual([]);
+    test('ranks an array above every scalar', async (): Promise<void> => {
+        expect(await names(profiles().where('tags', '>', 'z'))).toEqual(['Alice', 'Bob', 'Carol', 'Erin']);
+        expect(await names(profiles().whereNot('tags', '>', 'z'))).toEqual([]);
+        expect(await names(profiles().where('tags', '<', 9))).toEqual([]);
+        expect(await names(profiles().whereBetween('tags', ['a', 'z']))).toEqual([]);
+        expect(await names(profiles().where('settings', '>', 'a'))).toEqual([]);
+        expect(await names(profiles().whereNot('settings', '>', 'a'))).toEqual([]);
     });
 
     test('sorts arrays element by element', async (): Promise<void> => {

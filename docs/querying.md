@@ -106,22 +106,31 @@ matches none of them, under `!=` as under any other operator. None of them has a
 Operators: `=`, `==`, `===`, `!=`, `<>`, `!==`, `<`, `>`, `<=`, `>=`, `like`, `not like`. `==` is
 loose and `===` is strict.
 
-Loose and strict apply to scalars. An array or an object compares by content and kind, as
-`distinct()` compares JSON values (see [Shaping](#shaping)), and never equals a scalar. So under `=`,
-`==`, `===`, `!=`, `<>`, `!==`, `whereIn` and `whereNotIn`, `where('tags', ['php', 'js'])` matches
-only `['php', 'js']`, while `where('tags', 'php')` never matches `['php']`, nor
-`where('tags', 'php,js')` the array `['php', 'js']`. To ask whether an array holds an element, use
-`whereJsonContains`. Under `<`, `>`, `<=`, `>=`, `whereBetween` and `whereNotBetween`, an array
-compares only with another array, element by element as IndexedDB orders keys, so `[9]` comes
-before `[9, 1]` and `[10]`. Any other pairing with an array or an object is unknown, as a comparison
-with `null` is below, so `where('tags', '>', 'a')` and its `whereNot` both leave every array out. So
-is an array holding a boolean or an object, which IndexedDB cannot use as a key. A date, binary data
-and every other value keep the rules above.
+A value given as an array or an object is bound the way Laravel binds it. `where`, its `or` and
+`not` forms, `whereAny`, `whereAll`, `whereNone`, the object form of `where` and `having` compare
+against the first value it holds at any depth, or `false` when it holds none, so
+`where('role', ['admin', 'owner'])` is `where('role', 'admin')`. `whereBetween` and
+`whereNotBetween` flatten their bounds and keep the first two, so `whereBetween('age', [[18], [65]])`
+is `whereBetween('age', [18, 65])`. `whereIn` and its forms throw a `TypeError` reading
+`Nested arrays may not be passed to whereIn method.` when the list holds an array or an object. A date
+and binary data are values of their own and are bound as given.
+
+A column that holds an array or an object, such as a JSON column, compares by content and kind, as
+`distinct()` compares JSON values (see [Shaping](#shaping)). It never equals a scalar, so
+`where('tags', 'php')` never matches `['php']`, nor `where('tags', 'php,js')` the array
+`['php', 'js']`. To ask whether an array holds an element, use `whereJsonContains`. Two such columns,
+compared with `whereColumn` or a join, are equal when their contents are. Under `<`, `>`, `<=`, `>=`,
+`whereBetween` and `whereNotBetween`, an array ranks above every number, date and string, as MySQL
+ranks JSON values and IndexedDB ranks keys, so `where('tags', '>', 'z')` matches every array, and two
+arrays compare element by element, `[9]` before `[9, 1]` and `[10]`. An object, and an array holding
+a boolean or an object, has no place in that order, since IndexedDB cannot use it as a key, so
+ordering it is unknown, as a comparison with `null` is below: neither `where('settings', '>', 'a')`
+nor its `whereNot` matches it.
 
 Before 10.0.0 an array compared as the string its elements join into and an object as
-`'[object Object]'`, so `where('tags', 'php')` matched `['php']`, two arrays were never equal, an
-array against a scalar under `<` or `>` could match, and `[10]` came before `[9]`. A query that
-relied on matching an element should use `whereJsonContains('tags', 'php')` instead.
+`'[object Object]'`, so `where('tags', 'php')` matched `['php']`, two arrays were never equal, and
+`[10]` came before `[9]`. A query that relied on matching an element should use
+`whereJsonContains('tags', 'php')` instead.
 
 A value compared with a declared column is first converted to that column's type, so a value that
 arrives as a string from a form, a URL or storage matches what the typed value would. This applies

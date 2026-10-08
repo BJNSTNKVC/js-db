@@ -861,15 +861,30 @@ describe('Predicate comparing arrays and objects', (): void => {
 
     test.each([
         [['x'], 'x'],
-        [['x'], 'a'],
+        [['a'], 'z'],
         [[9], 9],
         [[], ''],
+        [[], 1e9],
+        [[new Date(1)], new Date(0)],
+        [[0], new Date(9)],
+    ] as [unknown[], unknown][])('ranks the array %j above the scalar %j, as IndexedDB and MySQL rank kinds', (array: unknown[], scalar: unknown): void => {
+        expect(both(array, '>', scalar)).toEqual([true, false]);
+        expect(both(array, '>=', scalar)).toEqual([true, false]);
+        expect(both(array, '<', scalar)).toEqual([false, true]);
+        expect(both(scalar, '<', array)).toEqual([true, false]);
+        expect(both(scalar, '>=', array)).toEqual([false, true]);
+    });
+
+    test.each([
         [{ a: 1 }, 'z'],
+        [{ a: 1 }, 9],
         [{ a: 1 }, { a: 1 }],
         [{ a: 1 }, [1]],
         [[true], [false]],
+        [[true], 'z'],
         [[1, { a: 1 }], [2]],
-        [[new Date(1)], new Date(0)],
+        [[9], true],
+        [[9], NaN],
     ])('treats ordering %o against %o as unknown, satisfying neither a comparison nor its negation, in either order', (first: unknown, second: unknown): void => {
         for (const operator of ['<', '>', '<=', '>='] as Operator[]) {
             expect(both(first, operator, second)).toEqual([false, false]);
@@ -902,10 +917,17 @@ describe('Predicate comparing arrays and objects', (): void => {
         expect(matches([between([1], [10], true)], { value: [5] })).toEqual(false);
     });
 
+    test('bounds an array against scalars by kind, arrays above every scalar', (): void => {
+        expect(matches([between('a', 'z')], { value: ['m'] })).toEqual(false);
+        expect(matches([between('a', 'z', true)], { value: ['m'] })).toEqual(true);
+        expect(matches([between('a', ['z'])], { value: ['m'] })).toEqual(true);
+        expect(matches([between(['a'], ['z'])], { value: 'm' })).toEqual(false);
+        expect(matches([between(['a'], ['z'], true)], { value: 'm' })).toEqual(true);
+    });
+
     test.each([
-        [['m'], 'a', 'z'],
-        ['m', ['a'], ['z']],
         [{ a: 1 }, 'a', 'z'],
+        [['m'], 'a', { z: 1 }],
         [{ a: 1 }, { a: 0 }, { a: 2 }],
         [[true], [false], [true, true]],
     ])('treats %o between %o and %o as unknown, satisfying neither between nor not between', (held: unknown, from: unknown, to: unknown): void => {
@@ -929,7 +951,9 @@ describe('Predicate comparing arrays and objects', (): void => {
         expect(matches([column('!=')], { a: ['x'], b: 'x' })).toEqual(true);
         expect(matches([column('<')], { a: [9], b: [10] })).toEqual(true);
         expect(matches([column('<')], { a: [9], b: 10 })).toEqual(false);
-        expect(matches([column('<', true)], { a: [9], b: 10 })).toEqual(false);
+        expect(matches([column('<', true)], { a: [9], b: 10 })).toEqual(true);
+        expect(matches([column('<')], { a: { x: 1 }, b: 10 })).toEqual(false);
+        expect(matches([column('<', true)], { a: { x: 1 }, b: 10 })).toEqual(false);
     });
 
     test('compares a value a path reaches by content', (): void => {

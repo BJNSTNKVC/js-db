@@ -244,6 +244,17 @@ describe('Grouping having', (): void => {
         expect(rows).toEqual([{ role: 'member', total: 3 }]);
     });
 
+    test('compares against the first element of an array value, as Laravel binds it', async (): Promise<void> => {
+        const rows: { role: string; total: number }[] = await users()
+            .groupBy('role')
+            .aggregate({ total: { count: '*' } })
+            .having('total', [[3], 1])
+            .orHaving('role', '=', ['nobody'])
+            .get();
+
+        expect(rows).toEqual([{ role: 'member', total: 3 }]);
+    });
+
     test('keeps an explicit operator when the value is undefined', async (): Promise<void> => {
         const compile: MockInstance = vi.spyOn(Predicate, 'compile');
 

@@ -1,5 +1,6 @@
 import { Calendar } from '../schema/Calendar';
 import type { Parts } from '../schema/Calendar';
+import { Binding } from './Binding';
 import { Columns } from './Columns';
 import { Comparator } from './Comparator';
 import { Signature } from './Signature';
@@ -243,7 +244,7 @@ export class Predicate {
             return operator === 'like' ? matched : !matched;
         }
 
-        if (this.#structured(held) || this.#structured(given)) {
+        if (Binding.structured(held) || Binding.structured(given)) {
             return this.#structural(held, operator, given);
         }
 
@@ -280,18 +281,18 @@ export class Predicate {
     }
 
     /**
-     * Compare two values when either is an array or an object: equal only to the same content of the same kinds, and ordered only as two arrays that are keys.
+     * Compare two values when either is an array or an object: equal only to the same content of the same kinds, and ordered only as two keys, an array above every scalar.
      */
     static #structural(held: unknown, operator: Operator, given: unknown): Truth {
         if (operator === '<' || operator === '>' || operator === '<=' || operator === '>=') {
-            if (!Array.isArray(held) || !Array.isArray(given) || !Comparator.key(held) || !Comparator.key(given)) {
+            if (!Comparator.key(held) || !Comparator.key(given)) {
                 return null;
             }
 
             return this.#ordered(indexedDB.cmp(held, given), operator);
         }
 
-        const equal: boolean = this.#structured(held) && this.#structured(given) && Signature.value(held) === Signature.value(given);
+        const equal: boolean = Binding.structured(held) && Binding.structured(given) && Signature.value(held) === Signature.value(given);
 
         return operator === '=' || operator === '==' || operator === '===' ? equal : !equal;
     }
@@ -313,13 +314,6 @@ export class Predicate {
             default:
                 return order >= 0;
         }
-    }
-
-    /**
-     * Determine whether a value is an array or a plain object, which compare by content and kind, unlike a date or binary data.
-     */
-    static #structured(value: unknown): boolean {
-        return Array.isArray(value) || Object.prototype.toString.call(value) === '[object Object]';
     }
 
     /**

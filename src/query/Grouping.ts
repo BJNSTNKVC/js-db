@@ -1,3 +1,4 @@
+import { Binding } from './Binding';
 import { Comparator } from './Comparator';
 import { Predicate } from './Predicate';
 import { Signature } from './Signature';
@@ -270,7 +271,7 @@ export class Grouping<T, G extends (keyof T & string)[], A extends Aggregations 
             ? { operator: '=', value: parameters[0] }
             : { operator: parameters[0] as Operator, value: parameters[1] };
 
-        this.#constraints.push({ type: 'basic', column, operator: resolved.operator, value: resolved.value, conjunction, not: false });
+        this.#constraints.push({ type: 'basic', column, operator: resolved.operator, value: Binding.scalar(resolved.value), conjunction, not: false });
 
         return this;
     }

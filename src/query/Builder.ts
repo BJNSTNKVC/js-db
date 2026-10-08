@@ -1,4 +1,5 @@
 import { MultipleRecordsFoundException, RecordsNotFoundException, SchemaException } from '../exceptions';
+import { Binding } from './Binding';
 import { Columns } from './Columns';
 import { Join } from './Join';
 import { Grouping } from './Grouping';
@@ -143,28 +144,28 @@ export class Builder<T = Record<string, unknown>> {
      * Constrain a column to one of the given values.
      */
     whereIn(column: Key<T>, values: unknown[]): this {
-        return this.#push({ type: 'in', column, values, conjunction: 'and', not: false });
+        return this.#push({ type: 'in', column, values: this.#listed(values), conjunction: 'and', not: false });
     }
 
     /**
      * Constrain a column to one of the given values, disjunctively.
      */
     orWhereIn(column: Key<T>, values: unknown[]): this {
-        return this.#push({ type: 'in', column, values, conjunction: 'or', not: false });
+        return this.#push({ type: 'in', column, values: this.#listed(values), conjunction: 'or', not: false });
     }
 
     /**
      * Constrain a column to none of the given values.
      */
     whereNotIn(column: Key<T>, values: unknown[]): this {
-        return this.#push({ type: 'in', column, values, conjunction: 'and', not: true });
+        return this.#push({ type: 'in', column, values: this.#listed(values), conjunction: 'and', not: true });
     }
 
     /**
      * Constrain a column to none of the given values, disjunctively.
      */
     orWhereNotIn(column: Key<T>, values: unknown[]): this {
-        return this.#push({ type: 'in', column, values, conjunction: 'or', not: true });
+        return this.#push({ type: 'in', column, values: this.#listed(values), conjunction: 'or', not: true });
     }
 
     /**
@@ -199,28 +200,28 @@ export class Builder<T = Record<string, unknown>> {
      * Constrain a column to fall between two values, inclusive.
      */
     whereBetween(column: Key<T>, values: [unknown, unknown]): this {
-        return this.#push({ type: 'between', column, from: values[0], to: values[1], conjunction: 'and', not: false });
+        return this.#push(this.#between(column, values, 'and', false));
     }
 
     /**
      * Constrain a column to fall between two values, disjunctively.
      */
     orWhereBetween(column: Key<T>, values: [unknown, unknown]): this {
-        return this.#push({ type: 'between', column, from: values[0], to: values[1], conjunction: 'or', not: false });
+        return this.#push(this.#between(column, values, 'or', false));
     }
 
     /**
      * Constrain a column to fall outside two values.
      */
     whereNotBetween(column: Key<T>, values: [unknown, unknown]): this {
-        return this.#push({ type: 'between', column, from: values[0], to: values[1], conjunction: 'and', not: true });
+        return this.#push(this.#between(column, values, 'and', true));
     }
 
     /**
      * Constrain a column to fall outside two values, disjunctively.
      */
     orWhereNotBetween(column: Key<T>, values: [unknown, unknown]): this {
-        return this.#push({ type: 'between', column, from: values[0], to: values[1], conjunction: 'or', not: true });
+        return this.#push(this.#between(column, values, 'or', true));
     }
 
     /**
@@ -1288,14 +1289,34 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Build a comparison, which Laravel turns into a null check when it tests equality or inequality with null.
+     * Build a comparison, which Laravel turns into a null check when it tests equality or inequality with null, and otherwise compares against the value it binds.
      */
     #basic(conjunction: Conjunction, not: boolean, column: string, operator: Operator, value: unknown): Constraint {
         if ((value === null || value === undefined) && (EQUALITIES.has(operator) || INEQUALITIES.has(operator))) {
             return { type: 'null', column, conjunction, not: not !== INEQUALITIES.has(operator) };
         }
 
-        return { type: 'basic', column, operator, value, conjunction, not };
+        return { type: 'basic', column, operator, value: Binding.scalar(value), conjunction, not };
+    }
+
+    /**
+     * Build a range between the first two values the given ones flatten into, as Laravel binds them.
+     */
+    #between(column: string, values: [unknown, unknown], conjunction: Conjunction, not: boolean): Constraint {
+        const [from, to]: unknown[] = Binding.flatten(values);
+
+        return { type: 'between', column, from, to, conjunction, not };
+    }
+
+    /**
+     * Refuse a list holding an array or an object, as Laravel's whereIn does.
+     */
+    #listed(values: unknown[]): unknown[] {
+        if (values.some((value: unknown): boolean => Binding.structured(value))) {
+            throw new TypeError('Nested arrays may not be passed to whereIn method.');
+        }
+
+        return values;
     }
 
     /**

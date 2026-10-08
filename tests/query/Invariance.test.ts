@@ -394,16 +394,20 @@ const DOCUMENTINGS: Documenting[] = [
     ...GIVENS.flatMap((given: unknown): Documenting[] => OPERATORS.map((operator: Operator): Documenting => [
         `where('doc', '${operator}', ${shown(given)})`,
         (query: Builder<Documented>): Builder<Documented> => query.where('doc', operator, given),
-        (row: Documented): Truth => compare(row.doc, operator, given),
+        (row: Documented): Truth => compare(row.doc, operator, bound(given)),
     ])),
-    ...[['x', [9]], [['x']], ['x'], [{ b: [1], a: 1 }, 7], [[10], 'y', []], [[9], null]].flatMap((values: unknown[]): Documenting[] => [
+    ...[['x'], ['x', 9], [7, 'y'], ['[object Object]', '9,1'], ['x', null], [false]].flatMap((values: unknown[]): Documenting[] => [
         [`whereIn('doc', ${shown(values)})`, (query: Builder<Documented>): Builder<Documented> => query.whereIn('doc', values), (row: Documented): Truth => within(row.doc, values)],
         [`whereNotIn('doc', ${shown(values)})`, (query: Builder<Documented>): Builder<Documented> => query.whereNotIn('doc', values), (row: Documented): Truth => not(within(row.doc, values))],
     ]),
-    ...[[[9], [10]], ['a', 'z'], [5, [9]], [[], [9, 5]], [1, 8], [{ a: 1 }, [9]], [[9], { a: 1 }]].flatMap(([from, to]: unknown[]): Documenting[] => [
-        [`whereBetween('doc', ${shown([from, to])})`, (query: Builder<Documented>): Builder<Documented> => query.whereBetween('doc', [from, to]), (row: Documented): Truth => between(row.doc, from, to)],
-        [`whereNotBetween('doc', ${shown([from, to])})`, (query: Builder<Documented>): Builder<Documented> => query.whereNotBetween('doc', [from, to]), (row: Documented): Truth => not(between(row.doc, from, to))],
-    ]),
+    ...[[[9], [10]], ['a', 'z'], ['a', 'zz'], [5, [9]], [[], [9, 5]], [1, 8], [{ a: 1 }, [9]], [[9], { a: 1 }]].flatMap(([from, to]: unknown[]): Documenting[] => {
+        const [lower, upper]: unknown[] = flattened([from, to]);
+
+        return [
+            [`whereBetween('doc', ${shown([from, to])})`, (query: Builder<Documented>): Builder<Documented> => query.whereBetween('doc', [from, to]), (row: Documented): Truth => between(row.doc, lower, upper)],
+            [`whereNotBetween('doc', ${shown([from, to])})`, (query: Builder<Documented>): Builder<Documented> => query.whereNotBetween('doc', [from, to]), (row: Documented): Truth => not(between(row.doc, lower, upper))],
+        ];
+    }),
 ];
 
 /**
@@ -620,6 +624,22 @@ function structured(value: unknown): boolean {
 }
 
 /**
+ * Flatten arrays and objects into the values they hold, at every depth, as Laravel's Arr::flatten does.
+ */
+function flattened(value: unknown): unknown[] {
+    return structured(value) ? Object.values(value as object).flatMap(flattened) : [value];
+}
+
+/**
+ * Get the value Laravel binds for a given one, the first value an array or an object holds, or false when it holds none.
+ */
+function bound(value: unknown): unknown {
+    const values: unknown[] = flattened(value);
+
+    return !structured(value) ? value : (values.length === 0 ? false : values[0]);
+}
+
+/**
  * Determine whether IndexedDB accepts a value as a key.
  */
 function keyed(value: unknown): boolean {
@@ -735,11 +755,11 @@ function compare(held: unknown, operator: Operator, given: unknown): Truth {
 }
 
 /**
- * Apply the documented semantics of an operator when either side is an array or an object, three-valued, which orders only two arrays that are keys.
+ * Apply the documented semantics of an operator when either side is an array or an object, three-valued, which orders only two keys, ranking an array above every scalar.
  */
 function structural(held: unknown, operator: Operator, given: unknown): Truth {
     if (operator === '<' || operator === '>' || operator === '<=' || operator === '>=') {
-        if (!Array.isArray(held) || !Array.isArray(given) || !keyed(held) || !keyed(given)) {
+        if (!keyed(held) || !keyed(given)) {
             return null;
         }
 
@@ -1371,7 +1391,7 @@ describe.each(INDEXINGS)('a JSON column under %s on one copy', (_: string, migra
         expect(await indexed().where('doc', '>=', [9]).explain()).toEqual(source);
         expect(await indexed().where('doc', '<', 'x').explain()).toEqual(source);
         expect(await indexed().whereBetween('doc', [5, [9]]).explain()).toEqual(source);
-        expect(await indexed().whereIn('doc', ['x', [9]]).explain()).toEqual(source);
+        expect(await indexed().whereIn('doc', ['x', 9]).explain()).toEqual(source);
     });
 });
 
