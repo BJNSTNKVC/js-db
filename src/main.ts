@@ -47,7 +47,7 @@ export {
 
 export type { DatabaseEvent, DatabaseEventListener } from './events';
 export type { ColumnSchema, ColumnType, Enumerable, IndexSchema, TableSchema } from './schema/types';
-export type { Aggregated, Aggregation, Aggregations, Conjunction, Constraint, DateOperator, DatePart, Direction, Grouped, JoinClause, JoinCondition, JoinType, Key, Operator, Order, Paginated, Plan, Projection } from './query/types';
+export type { Aggregated, Aggregation, Aggregations, Conjunction, Constraint, DateOperator, DatePart, Direction, Grouped, Held, JoinClause, JoinCondition, JoinType, Key, Operator, Order, Paginated, Plan, Projection } from './query/types';
 export type { ConnectionConfig, DatabaseConfig, FreshOptions, ListenOptions, QueryLogEntry, TransactionOptions } from './database/types';
 export type { MigrationConstructor, MigrationStatus } from './migrations/types';
 export type { SeederConstructor } from './seeders/types';

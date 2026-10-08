@@ -724,6 +724,18 @@ describe('Builder aggregates over a JSON path', (): void => {
         expect(await readings().whereIn('label', ['e', 'f', 'g']).sum('data->value')).toEqual(0);
     });
 
+    test('takes the extremes of a path as orderBy orders it, every number before a string', async (): Promise<void> => {
+        expect(await readings().whereNotNull('data->value').orderBy('data->value', 'desc').pluck('data->value')).toEqual(['5', 5, 5, 2]);
+        expect([await readings().min('data->value'), await readings().max('data->value')]).toEqual([2, '5']);
+        expect([await readings().distinct().min('data->value'), await readings().distinct().max('data->value')]).toEqual([2, '5']);
+        expect(await readings().where('label', '!=', 'b').max('data->value')).toEqual(5);
+    });
+
+    test('takes the first object in order as the extreme of a column holding only objects, which tie', async (): Promise<void> => {
+        expect([await readings().min('data'), await readings().max('data')]).toEqual([{ value: 5 }, { value: 5 }]);
+        expect(await readings().where('label', 'f').max('data')).toEqual({});
+    });
+
     test('gets null for the extremes and 0 for the sum of a query that matches nothing', async (): Promise<void> => {
         expect(await readings().where('label', 'none').min('data->value')).toBeNull();
         expect(await readings().where('label', 'none').max('data->value')).toBeNull();

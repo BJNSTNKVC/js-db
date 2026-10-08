@@ -403,7 +403,8 @@ await DB.table<User>('users').max('age');
 | `exists()` / `doesntExist()`                  | `boolean`                                                                   |
 | `count()`                                     | `number`                                                                    |
 | `sum(column)`                                 | `number`                                                                    |
-| `avg(column)` / `min(column)` / `max(column)` | `number` or `null` when nothing matched                                     |
+| `avg(column)`                                 | `number` or `null` when nothing matched                                     |
+| `min(column)` / `max(column)`                 | The column's value as it holds it, or `null` when nothing matched           |
 | `sole()`                                      | `T`, or throws `RecordsNotFoundException` / `MultipleRecordsFoundException` |
 | `paginate(page?, perPage?)`                   | `{ data, total, perPage, currentPage, lastPage }`                           |
 
@@ -457,10 +458,31 @@ await DB.table<User>('users').sum('visits');
 value and key once, whatever the `select`, as `SELECT DISTINCT` over those columns does. `value`
 reads the first distinct row, which is the first matching row.
 
+`min` and `max` return the smallest and largest value as the column holds it, as Laravel's do: a
+number for a number column, a `Date` for a date or datetime column, a string for a string column,
+`false` or `true` for a boolean column, and for a decimal the whole number of its smallest unit a
+read returns. They compare values as `orderBy` does, leaving out `null` and missing values, so a
+column holding values of several kinds, such as a JSON column or an integer column holding `'2'`,
+takes every number before every date, string, array, boolean and object. Objects tie, and the first
+one read wins. The result is typed by the column: `max('created_at')` on a `Builder<User>`
+resolves to `User['created_at'] | null`, and a qualified column or a path resolves to `unknown`.
+
+```ts
+// The latest activity, a Date.
+await DB.table<User>('users').max('created_at');
+```
+
+Before 11.0.0 `min` and `max` read every value as a number, giving `NaN` for a string column,
+milliseconds for a date column and `0` or `1` for a boolean one. `new Date(value)` still works on
+a date they return, while arithmetic on it needs `getTime()`, as in `Date.now() - latest.getTime()`.
+
 `min` and `max` read the answer straight off the index when the column has one and the query is
 unconstrained, whatever its order and paging, so they cost one cursor rather than a full scan. They
 read the records instead when the index holds a value of another type than its column's, as
 [Query plans](query-plans.md) describes, and always for a boolean column, whose index holds nothing.
+On a JSON column, or a column no blueprint declares, they read the index only when it holds an entry
+for every record, as an order does, since a value that is not a key ranks above every key and is in
+no index.
 
 `paginate` gives you the totals a pager needs, which `forPage` cannot, and counts what the query
 matches rather than what the page returns:

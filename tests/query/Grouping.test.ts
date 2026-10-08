@@ -30,6 +30,14 @@ class CreateUsersTable extends Migration {
             table.integer('age').nullable();
             table.integer('visits');
         });
+
+        await Schema.create('events', (table: Blueprint): void => {
+            table.id();
+            table.string('kind').index();
+            table.string('title').nullable();
+            table.datetime('at').nullable();
+            table.integer('weight').nullable();
+        });
     }
 }
 
@@ -39,6 +47,22 @@ const seed: Omit<User, 'id'>[] = [
     { name: 'Carol', role: 'member', team: 'core', age: 35, visits: 6 },
     { name: 'Dave', role: 'member', team: 'ops', age: null, visits: 1 },
     { name: 'Erin', role: 'owner', team: 'ops', age: 41, visits: 8 },
+];
+
+interface Event {
+    id: number;
+    kind: string;
+    title: string | null;
+    at: Date | null;
+    weight: number | null;
+}
+
+const events: Omit<Event, 'id'>[] = [
+    { kind: 'talk', title: 'Tide', at: new Date('2026-02-01T00:00:00.000Z'), weight: 10 },
+    { kind: 'talk', title: 'Echo', at: new Date('2026-03-01T00:00:00.000Z'), weight: 9 },
+    { kind: 'talk', title: null, at: null, weight: null },
+    { kind: 'walk', title: 'Moss', at: new Date('2026-01-15T00:00:00.000Z'), weight: 2 },
+    { kind: 'walk', title: 'Fern', at: new Date('2026-01-20T00:00:00.000Z'), weight: 30 },
 ];
 
 type AgeAggregation = { age: { avg: 'age' } } | { age: { min: 'age' } } | { age: { max: 'age' } };
@@ -57,6 +81,7 @@ beforeAll(async (): Promise<void> => {
 
     await connection.migrate();
     await users().insert(seed);
+    await connection.table<Event>('events').insert(events);
 });
 
 afterEach((): void => {
@@ -220,6 +245,52 @@ describe('Grouping aggregations', (): void => {
             .get();
 
         expect(rows).toEqual([{ team: 'ops', total: 2 }]);
+    });
+});
+
+describe('Grouping extremes in the column\'s own type', (): void => {
+    type Taken = { first: { min: 'title' }; last: { max: 'title' }; earliest: { min: 'at' }; latest: { max: 'at' }; lightest: { min: 'weight' }; heaviest: { max: 'weight' } };
+
+    type Extremes = { kind: string; first: string | null; last: string | null; earliest: Date | null; latest: Date | null; lightest: number | null; heaviest: number | null };
+
+    const expected: Extremes[] = [
+        { kind: 'talk', first: 'Echo', last: 'Tide', earliest: new Date('2026-02-01T00:00:00.000Z'), latest: new Date('2026-03-01T00:00:00.000Z'), lightest: 9, heaviest: 10 },
+        { kind: 'walk', first: 'Fern', last: 'Moss', earliest: new Date('2026-01-15T00:00:00.000Z'), latest: new Date('2026-01-20T00:00:00.000Z'), lightest: 2, heaviest: 30 },
+    ];
+
+    /**
+     * Group the events by kind, taking the extremes of a string, a date and a number column.
+     */
+    function extremes(query: Builder<Event> = connection.table<Event>('events')): Grouping<Event, ['kind'], Taken> {
+        return query.groupBy('kind').aggregate({
+            first   : { min: 'title' },
+            last    : { max: 'title' },
+            earliest: { min: 'at' },
+            latest  : { max: 'at' },
+            lightest: { min: 'weight' },
+            heaviest: { max: 'weight' },
+        });
+    }
+
+    test.each([
+        ['from every record', (query: Builder<Event>): Builder<Event> => query, 'scan'],
+        ['from the records an index finds', (query: Builder<Event>): Builder<Event> => query.whereIn('kind', ['talk', 'walk']), 'index:events_kind_index'],
+    ])('takes min and max of strings, dates and numbers %s', async (_: string, constrain: (query: Builder<Event>) => Builder<Event>, plan: string): Promise<void> => {
+        const rows: Extremes[] = await extremes(constrain(connection.table<Event>('events'))).orderBy('kind').get();
+
+        expect(await constrain(connection.table<Event>('events')).explain()).toEqual(plan);
+        expect(rows).toEqual(expected);
+    });
+
+    test('constrains and sorts the groups by the extremes they take', async (): Promise<void> => {
+        const kinds: (rows: Extremes[]) => string[] = (rows: Extremes[]): string[] => rows.map((row: Extremes): string => row.kind);
+
+        expect(kinds(await extremes().having('latest', '>', new Date('2026-02-15T00:00:00.000Z')).get())).toEqual(['talk']);
+        expect(kinds(await extremes().having('first', '<', 'F').get())).toEqual(['talk']);
+        expect(kinds(await extremes().having('heaviest', '>', 10).get())).toEqual(['walk']);
+        expect(kinds(await extremes().orderBy('first', 'desc').get())).toEqual(['walk', 'talk']);
+        expect(kinds(await extremes().orderBy('earliest').get())).toEqual(['walk', 'talk']);
+        expect(kinds(await extremes().orderBy('lightest', 'desc').get())).toEqual(['talk', 'walk']);
     });
 });
 
@@ -736,7 +807,7 @@ describe('Grouping constructed without a way to place columns', (): void => {
         expect(await grouping.aggregate({ least: { min: 'value' }, most: { max: 'value' } }).get()).toEqual([{ kind: 'a', least: 0, most: 199999 }]);
     });
 
-    test('takes the extremes of strings and dates as numbers', async (): Promise<void> => {
+    test('takes the extremes of strings and dates in their own type', async (): Promise<void> => {
         const grouping: Grouping<Record<string, unknown>, ['kind']> = new Grouping<Record<string, unknown>, ['kind']>(
             async (): Promise<Record<string, unknown>[]> => [
                 { kind: 'name', value: 'Bob' },
@@ -749,8 +820,8 @@ describe('Grouping constructed without a way to place columns', (): void => {
         );
 
         expect(await grouping.aggregate({ least: { min: 'value' }, most: { max: 'value' } }).orderBy('kind').get()).toEqual([
-            { kind: 'day', least: Date.parse('2024-01-15T00:00:00Z'), most: Date.parse('2024-03-01T00:00:00Z') },
-            { kind: 'name', least: NaN, most: NaN },
+            { kind: 'day', least: new Date('2024-01-15T00:00:00Z'), most: new Date('2024-03-01T00:00:00Z') },
+            { kind: 'name', least: 'Alice', most: 'Bob' },
         ]);
     });
 });

@@ -31,7 +31,10 @@ Each resolves to a description of the plan chosen:
   with the table's, reading no records. When they differ, it sorts in memory instead, placing `null` and missing
   values first ascending and last descending, and the plan reads `'scan'`. Reads, `explain` and
   ordered writes all take this check, and `count`, `sum`, `avg`, `min` and `max` set the order
-  aside along with the paging. It is skipped when a range
+  aside along with the paging. `min` and `max` take it too on a JSON column, or a column no
+  blueprint declares, reading the records unless the index holds every one, since a value there
+  that is not a key, such as an object or a boolean, ranks above every key in their order. The
+  check is skipped when a range
   or point lookup on the ordering column drives the query, since `null` never satisfies one, and
   when ordering by the key path, since every record has a key.
 - `whereIn` on the key path or an index becomes one point lookup per distinct value, so a repeated
@@ -69,7 +72,8 @@ Each resolves to a description of the plan chosen:
   describes.
 - A value IndexedDB cannot use as a key, such as `true` in an integer column, is in no index, so
   this check cannot see it. A scan compares it as JavaScript does, finding `true` for
-  `where('visits', 1)`, while a lookup through the index never does. Writing the value again through
+  `where('visits', 1)`, while a lookup through the index never does. `max('visits')` likewise
+  reads the largest number off the index, while the records rank `true` above every number. Writing the value again through
   the builder repairs it in the same way. `Schema.coerce` finds it too, failing the migration on a
   strict connection, which refuses `true` in an integer column, and writing `null` on a loose one.
 - A multi-entry index holds one entry per distinct element of the array a record stores, so it

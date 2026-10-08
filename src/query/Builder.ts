@@ -16,6 +16,7 @@ import type {
     DateOperator,
     DatePart,
     Direction,
+    Held,
     JoinClause,
     JoinType,
     Key,
@@ -811,21 +812,21 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Get the smallest value of a column across the records matching the query.
+     * Get the smallest value of a column across the records matching the query, as the column holds it.
      */
-    async min(column: Key<T>): Promise<number | null> {
+    async min<K extends Key<T>>(column: K): Promise<Held<T, K> | null> {
         const [query, read]: [Builder<T>, string] = this.#over(column);
 
-        return query.#executor().extreme(read, 'next');
+        return await query.#executor().extreme(read, 'next') as Held<T, K> | null;
     }
 
     /**
-     * Get the largest value of a column across the records matching the query.
+     * Get the largest value of a column across the records matching the query, as the column holds it.
      */
-    async max(column: Key<T>): Promise<number | null> {
+    async max<K extends Key<T>>(column: K): Promise<Held<T, K> | null> {
         const [query, read]: [Builder<T>, string] = this.#over(column);
 
-        return query.#executor().extreme(read, 'prev');
+        return await query.#executor().extreme(read, 'prev') as Held<T, K> | null;
     }
 
     /**

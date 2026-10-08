@@ -69,7 +69,7 @@ export class Grouping<T, G extends (keyof T & string)[], A extends Aggregations 
     /**
      * Compute the given aggregations for each group.
      */
-    aggregate<N extends Aggregations>(aggregations: N): Grouping<T, G, N> {
+    aggregate<const N extends Aggregations>(aggregations: N): Grouping<T, G, N> {
         const grouping: Grouping<T, G, N> = new Grouping<T, G, N>(this.#records, this.#columns, this.#names, this.#placing);
 
         grouping.#aggregations = aggregations;
@@ -219,46 +219,51 @@ export class Grouping<T, G extends (keyof T & string)[], A extends Aggregations 
     /**
      * Compute a single aggregate over the members of a group.
      */
-    #aggregate(aggregation: Aggregation, members: Record<string, unknown>[]): number | null {
+    #aggregate(aggregation: Aggregation, members: Record<string, unknown>[]): unknown {
         if ('count' in aggregation) {
             return aggregation.count === '*'
                 ? members.length
                 : this.#values(aggregation.count, members).length;
         }
 
-        const column: string = 'sum' in aggregation
-            ? aggregation.sum
-            : 'avg' in aggregation
-                ? aggregation.avg
-                : 'min' in aggregation ? aggregation.min : aggregation.max;
-
-        const values: number[] = this.#values(column, members);
-
-        if ('sum' in aggregation) {
-            return values.reduce((carry: number, value: number): number => carry + value, 0);
+        if ('min' in aggregation || 'max' in aggregation) {
+            return this.#extreme(this.#values('min' in aggregation ? aggregation.min : aggregation.max, members), 'min' in aggregation);
         }
 
+        const values: number[] = this.#values('sum' in aggregation ? aggregation.sum : aggregation.avg, members)
+            .map((value: unknown): number => Number(value));
+
+        const sum: number = values.reduce((carry: number, value: number): number => carry + value, 0);
+
+        if ('sum' in aggregation) {
+            return sum;
+        }
+
+        return values.length === 0 ? null : sum / values.length;
+    }
+
+    /**
+     * Get the least or the greatest of the values as orderBy orders them, or null when there are none.
+     */
+    #extreme(values: unknown[], least: boolean): unknown {
         if (values.length === 0) {
             return null;
         }
 
-        if ('avg' in aggregation) {
-            return values.reduce((carry: number, value: number): number => carry + value, 0) / values.length;
-        }
+        return values.reduce((carry: unknown, value: unknown): unknown => {
+            const compared: number = Comparator.compare(value, carry);
 
-        return values.reduce((carry: number, value: number): number => 'min' in aggregation
-            ? Math.min(carry, value)
-            : Math.max(carry, value));
+            return (least ? compared < 0 : compared > 0) ? value : carry;
+        });
     }
 
     /**
-     * Get the numeric values of a column across the members of a group.
+     * Get the values a column holds across the members of a group, passing over null and undefined.
      */
-    #values(column: string, members: Record<string, unknown>[]): number[] {
+    #values(column: string, members: Record<string, unknown>[]): unknown[] {
         return members
             .map((member: Record<string, unknown>): unknown => member[column])
-            .filter((value: unknown): boolean => value !== null && value !== undefined)
-            .map((value: unknown): number => Number(value));
+            .filter((value: unknown): boolean => value !== null && value !== undefined);
     }
 
     /**

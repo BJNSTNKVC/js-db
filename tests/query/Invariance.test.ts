@@ -56,8 +56,8 @@ interface Totals {
     count: number;
     sum: number;
     avg: number | null;
-    min: number | null;
-    max: number | null;
+    min: unknown;
+    max: unknown;
 }
 
 type Copy = 'indexed' | 'plain';
@@ -1029,19 +1029,29 @@ async function totals<T extends Item>(query: Builder<T>, column: string): Promis
 }
 
 /**
- * Apply the documented aggregates to the rows a query matches, which pass over a null or missing value.
+ * Apply the documented aggregates to the rows a query matches, which pass over a null or missing value: sum and avg read numbers, min and max keep the values as held, in the documented order.
  */
 function modeled<R>(rows: R[], read: (row: R) => unknown): Totals {
-    const values: number[] = rows.map(read).filter((value: unknown): boolean => !absent(value)) as number[];
-    const sum: number = values.reduce((carry: number, value: number): number => carry + value, 0);
-    const empty: boolean = values.length === 0;
+    const values: unknown[] = rows.map(read).filter((value: unknown): boolean => !absent(value));
+    const sum: number = values.reduce((carry: number, value: unknown): number => carry + Number(value), 0);
 
     return {
         count: rows.length,
         sum,
-        avg  : empty ? null : sum / values.length,
-        min  : empty ? null : Math.min(...values),
-        max  : empty ? null : Math.max(...values),
+        avg  : values.length === 0 ? null : sum / values.length,
+        ...extremes(values),
+    };
+}
+
+/**
+ * Take the least and the greatest of the values present in the documented order, the first of those tied.
+ */
+function extremes(values: unknown[]): { min: unknown; max: unknown } {
+    const present: unknown[] = values.filter((value: unknown): boolean => !absent(value));
+
+    return {
+        min: present.reduce((carry: unknown, value: unknown): unknown => precedes(value, carry) < 0 ? value : carry, present[0] ?? null),
+        max: present.reduce((carry: unknown, value: unknown): unknown => precedes(value, carry) > 0 ? value : carry, present[0] ?? null),
     };
 }
 
@@ -1296,8 +1306,7 @@ describe('a column holding arrays under a multi-entry index', (): void => {
     });
 
     test('min and max over the tags give the same answer through an index, through a scan and from the model', async (): Promise<void> => {
-        const values: number[] = TAGGED.filter((row: Tagged): boolean => !absent(row.tags)).map((row: Tagged): number => Number(row.tags));
-        const expected: { min: number; max: number } = { min: values.reduce((a: number, b: number): number => Math.min(a, b)), max: values.reduce((a: number, b: number): number => Math.max(a, b)) };
+        const expected: { min: unknown; max: unknown } = extremes(TAGGED.map((row: Tagged): unknown => row.tags));
 
         const answers: Record<Copy, unknown> = await both(async (query: Builder<Tagged>): Promise<unknown> => ({ min: await query.clone().min('tags'), max: await query.clone().max('tags') }));
 
@@ -1370,6 +1379,24 @@ describe.each(INDEXINGS)('a JSON column under %s on one copy', (_: string, migra
             }));
 
             const modeled: unknown = { rows: expected, limited: expected.slice(0, 3), first: expected[0], paginated: expected.slice(3, 6) };
+
+            expect(answers).toEqual({ indexed: modeled, plain: modeled });
+        });
+
+        test('min and max over the doc give the same answer, alone, distinct and narrowed, through an index, through a scan and from the model', async (): Promise<void> => {
+            const narrowed: Documented[] = rows.filter((row: Documented): boolean => row.id > 2);
+
+            const answers: Record<Copy, unknown> = await both(async (query: Builder<Documented>): Promise<unknown> => ({
+                whole   : { min: await query.clone().min('doc'), max: await query.clone().max('doc') },
+                distinct: { min: await query.clone().distinct().min('doc'), max: await query.clone().distinct().max('doc') },
+                narrowed: { min: await query.clone().where('id', '>', 2).min('doc'), max: await query.clone().where('id', '>', 2).max('doc') },
+            }));
+
+            const modeled: unknown = {
+                whole   : extremes(rows.map((row: Documented): unknown => row.doc)),
+                distinct: extremes(rows.map((row: Documented): unknown => row.doc)),
+                narrowed: extremes(narrowed.map((row: Documented): unknown => row.doc)),
+            };
 
             expect(answers).toEqual({ indexed: modeled, plain: modeled });
         });
@@ -1567,7 +1594,7 @@ describe('a column holding values of another type', (): void => {
     }, 2000);
 
     test('aggregates the column the same way through an index, through a scan and in the model', async (): Promise<void> => {
-        const expected: Totals = modeled(MIXED, (row: Item): unknown => Number(row.visits));
+        const expected: Totals = modeled(MIXED, (row: Item): unknown => row.visits);
 
         const answers: Record<Copy, Totals> = await both((query: Builder<Item>): Promise<Totals> => totals(query, 'visits'));
 
@@ -1658,7 +1685,7 @@ describe('a column holding values of another type', (): void => {
             answers.push(await transaction.table<Item>('indexed').where('visits', '>=', 2).explain());
         }, { tables: ['indexed'] });
 
-        expect(answers).toEqual([expected, expected.length, 0, 'scan']);
+        expect(answers).toEqual([expected, expected.length, extremes(MIXED.map((row: Item): unknown => row.visits)).min, 'scan']);
     }, 2000);
 
     test('reads the records inside a migration', async (): Promise<void> => {
@@ -1684,6 +1711,6 @@ describe('a column holding values of another type', (): void => {
 
         await connection.migrate();
 
-        expect(answers).toEqual([expected, expected.length, 9, visited(MIXED, 'asc').map((row: Item): number => row.id)]);
+        expect(answers).toEqual([expected, expected.length, extremes(MIXED.map((row: Item): unknown => row.visits)).max, visited(MIXED, 'asc').map((row: Item): number => row.id)]);
     }, 2000);
 });

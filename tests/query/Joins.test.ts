@@ -1206,6 +1206,17 @@ describe('Joins across the types the columns hold', (): void => {
         ]);
     });
 
+    test('takes min and max of a date and a string column on a joined query in their own type', async (): Promise<void> => {
+        const joined: () => Builder<Record<string, unknown>> = (): Builder<Record<string, unknown>> => authored.table('users').join('posts', 'users.id', '=', 'posts.user_id');
+
+        expect([await joined().min('users.joined'), await joined().max('users.joined')]).toEqual([new Date('2024-01-01T00:00:00.000Z'), new Date('2024-02-01T00:00:00.000Z')]);
+        expect([await joined().min('posts.title'), await joined().max('title')]).toEqual(['First', 'Third']);
+        expect(await joined().groupBy('users.name').aggregate({ latest: { max: 'posts.day' }, first: { min: 'posts.title' } }).get()).toEqual([
+            { name: 'Alice', latest: new Date('2024-01-01T00:00:00.000Z'), first: 'First' },
+            { name: 'Bob', latest: new Date('2024-02-01T00:00:00.000Z'), first: 'Third' },
+        ]);
+    });
+
     describe.each(PAIRINGS)('on %s', (_: string, first: string, second: string): void => {
         describe.each([
             ['users', [first, second]],

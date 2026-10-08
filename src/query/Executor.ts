@@ -146,26 +146,31 @@ export class Executor<T> {
     }
 
     /**
-     * Get the numeric values of a column across the records matching the query, each value once when the query is distinct.
+     * Get the values a column holds across the records matching the query, passing over null and undefined, each value once when the query is distinct.
      */
-    async numbers(column: string): Promise<number[]> {
+    async values(column: string): Promise<unknown[]> {
         const records: Record<string, unknown>[] = (await this.#matched(false)).records as Record<string, unknown>[];
 
         const held: unknown[] = records
             .map((record: Record<string, unknown>): unknown => Columns.read(record, column))
             .filter((value: unknown): boolean => value !== null && value !== undefined);
 
-        const values: unknown[] = this.#query.distinct
+        return this.#query.distinct
             ? [...new Map<string, unknown>(held.map((value: unknown): [string, unknown] => [Signature.value(value), value])).values()]
             : held;
-
-        return values.map((value: unknown): number => Number(value));
     }
 
     /**
-     * Get the value at one end of a column's range.
+     * Get the numeric values of a column across the records matching the query, each value once when the query is distinct.
      */
-    async extreme(column: string, direction: IDBCursorDirection): Promise<number | null> {
+    async numbers(column: string): Promise<number[]> {
+        return (await this.values(column)).map((value: unknown): number => Number(value));
+    }
+
+    /**
+     * Get the value at one end of a column's range as the column holds it, in the order orderBy sorts by.
+     */
+    async extreme(column: string, direction: IDBCursorDirection): Promise<unknown> {
         const schema: TableSchema = await this.#connection.schema(this.#query.table);
         const index: IndexSchema | null = this.#sole(schema, column);
 
@@ -174,26 +179,27 @@ export class Executor<T> {
 
             // An index is already sorted, and IndexedDB omits records with no value for its key path,
             // which is exactly what SQL does with nulls. So the answer is its first entry.
-            if (await this.#typed(store, schema, index.name)) {
+            if (await this.#typed(store, schema, index.name) && (!this.#loose(schema, column) || await this.#complete(store, index.name))) {
                 const started: number = performance.now();
                 const cursor: IDBCursorWithValue | null = await Request.settle(store.index(index.name).openCursor(null, direction));
 
                 this.#emit(`index:${index.name}`, started, cursor === null ? 0 : 1);
 
-                return cursor === null ? null : Number(cursor.key);
+                return cursor === null ? null : cursor.key;
             }
         }
 
-        const values: number[] = await this.numbers(column);
+        const values: unknown[] = await this.values(column);
 
         if (values.length === 0) {
             return null;
         }
 
-        // Reduced rather than spread, since Math.min(...values) throws past roughly 100k arguments.
-        return values.reduce((carry: number, value: number): number => direction === 'next'
-            ? Math.min(carry, value)
-            : Math.max(carry, value));
+        return values.reduce((carry: unknown, value: unknown): unknown => {
+            const compared: number = Comparator.compare(value, carry);
+
+            return (direction === 'next' ? compared < 0 : compared > 0) ? value : carry;
+        });
     }
 
     /**
@@ -571,6 +577,15 @@ export class Executor<T> {
             default:
                 return false;
         }
+    }
+
+    /**
+     * Determine whether a column may hold a value of any kind, as a JSON or an undeclared column may, so its index leaves out the values that are not keys.
+     */
+    #loose(schema: TableSchema, column: string): boolean {
+        const type: ColumnType | undefined = schema.columns.find((candidate: ColumnSchema): boolean => candidate.name === column)?.type;
+
+        return type === undefined || type === 'json';
     }
 
     /**

@@ -30,13 +30,20 @@ Because the alias is an object key rather than a string inside an expression, th
 inferred rather than cast. That row is typed `{ role: string; total: number; oldest: number | null }`,
 and reading a column you did not group or aggregate is a compile error.
 
-| Aggregate                                 | Meaning                                               |
-|-------------------------------------------|-------------------------------------------------------|
-| `{ count: '*' }`                          | The number of records in the group, always a `number` |
-| `{ count: 'column' }`                     | The number of records whose column is not null        |
-| `{ sum: 'column' }`                       | The total, `0` for a group with no values             |
-| `{ avg: 'column' }`                       | The mean, `null` for a group with no values           |
-| `{ min: 'column' }` / `{ max: 'column' }` | The extreme, `null` for a group with no values        |
+`min` and `max` return the value as the column holds it and compare values as `orderBy` does, as
+[Querying](querying.md#terminals) describes, so `{ max: 'created_at' }` gives a `Date` and
+`{ min: 'name' }` a string. Each is typed by its column, `User['age'] | null` for `{ max: 'age' }`,
+and `unknown` for a qualified column or a path. `having` and `orderBy` compare them as they hold
+them, so `having('latest', '>', new Date('2026-01-01'))` keeps the groups whose latest date is later.
+Before 11.0.0 they read every value as a number. `sum` and `avg` still do.
+
+| Aggregate                                 | Meaning                                                               |
+|-------------------------------------------|-----------------------------------------------------------------------|
+| `{ count: '*' }`                          | The number of records in the group, always a `number`                 |
+| `{ count: 'column' }`                     | The number of records whose column is not null                        |
+| `{ sum: 'column' }`                       | The total, `0` for a group with no values                             |
+| `{ avg: 'column' }`                       | The mean, `null` for a group with no values                           |
+| `{ min: 'column' }` / `{ max: 'column' }` | The extreme as the column holds it, `null` for a group with no values |
 
 Group by several columns by passing several names:
 

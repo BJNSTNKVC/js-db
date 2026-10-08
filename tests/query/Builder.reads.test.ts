@@ -54,6 +54,18 @@ class CreateUsersTable extends Migration {
             table.datetime('at').nullable().index();
         });
 
+        await Schema.create('moments', (table: Blueprint): void => {
+            table.id();
+            table.string('label').nullable().index();
+            table.string('title').nullable();
+            table.integer('rank').nullable().index();
+            table.integer('tally').nullable();
+            table.decimal('price').nullable().index();
+            table.decimal('cost').nullable();
+            table.datetime('at').nullable().index();
+            table.datetime('noted').nullable();
+        });
+
         await Schema.create('tallies', (table: Blueprint): void => {
             table.integer('count');
         });
@@ -187,6 +199,25 @@ const visits: Omit<Visit, 'id'>[] = [
     { label: 'garbled', at: 'not a date' },
 ];
 
+interface Moment {
+    id: number;
+    label: string | null;
+    title: string | null;
+    rank: number | null;
+    tally: number | null;
+    price: number | null;
+    cost: number | null;
+    at: Date | null;
+    noted: Date | null;
+}
+
+const moments: Omit<Moment, 'id'>[] = [
+    { label: 'pear', title: 'pear', rank: 3, tally: 3, price: 1999, cost: 1999, at: new Date('2026-02-01T00:00:00.000Z'), noted: new Date('2026-02-01T00:00:00.000Z') },
+    { label: 'apple', title: 'apple', rank: 10, tally: 10, price: 12000, cost: 12000, at: new Date('2026-03-01T00:00:00.000Z'), noted: new Date('2026-03-01T00:00:00.000Z') },
+    { label: 'fig', title: 'fig', rank: 2, tally: 2, price: 250, cost: 250, at: new Date('2026-01-15T00:00:00.000Z'), noted: new Date('2026-01-15T00:00:00.000Z') },
+    { label: null, title: null, rank: null, tally: null, price: null, cost: null, at: null, noted: null },
+];
+
 const seed: Omit<User, 'id'>[] = [
     { name: 'Alice', email: 'alice@example.com', age: 30, role: 'admin' },
     { name: 'Bob', email: 'bob@example.com', age: 25, role: 'member' },
@@ -212,6 +243,26 @@ async function names(query: Builder<User>): Promise<string[]> {
 }
 
 /**
+ * Run a query, collecting the plans it announces.
+ */
+async function planned(run: () => Promise<unknown>): Promise<string[]> {
+    const plans: string[] = [];
+    const listener: (event: Event) => void = ((event: QueryExecuted): void => {
+        plans.push(event.plan);
+    }) as (event: Event) => void;
+
+    Dispatcher.listen('db:query', listener);
+
+    try {
+        await run();
+    } finally {
+        Dispatcher.forget('db:query', listener);
+    }
+
+    return plans;
+}
+
+/**
  * Fail a walk that keeps fetching pages long after the seeded table has run out.
  */
 function bound(): void {
@@ -233,7 +284,7 @@ beforeAll(async (): Promise<void> => {
     await connection.migrate();
 
     const database: IDBDatabase = await connection.open();
-    const transaction: IDBTransaction = database.transaction(['users', 'logs', 'visits'], 'readwrite');
+    const transaction: IDBTransaction = database.transaction(['users', 'logs', 'visits', 'moments'], 'readwrite');
 
     for (const user of seed) {
         transaction.objectStore('users').add(user);
@@ -245,6 +296,10 @@ beforeAll(async (): Promise<void> => {
 
     for (const visit of visits) {
         transaction.objectStore('visits').add(visit);
+    }
+
+    for (const moment of moments) {
+        transaction.objectStore('moments').add(moment);
     }
 
     await new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
@@ -770,6 +825,48 @@ describe('Builder terminals', (): void => {
         expect(await users().where('name', 'Nobody').max('age')).toBeNull();
     });
 
+    test.each([
+        ['label', 'title', 'apple', 'pear'],
+        ['rank', 'tally', 2, 10],
+        ['price', 'cost', 250, 12000],
+        ['at', 'noted', new Date('2026-01-15T00:00:00.000Z'), new Date('2026-03-01T00:00:00.000Z')],
+    ])('takes min and max of %s through its index and of %s from the records, in the column\'s own type', async (indexed: string, plain: string, least: unknown, most: unknown): Promise<void> => {
+        const table: () => Builder<Moment> = (): Builder<Moment> => connection.table<Moment>('moments');
+
+        expect(await planned(async (): Promise<void> => {
+            expect([await table().min(indexed), await table().max(indexed)]).toEqual([least, most]);
+        })).toEqual([`index:moments_${indexed}_index`, `index:moments_${indexed}_index`]);
+
+        expect(await planned(async (): Promise<void> => {
+            expect([await table().min(plain), await table().max(plain)]).toEqual([least, most]);
+        })).toEqual(['scan', 'scan']);
+
+        expect([await table().distinct().min(plain), await table().distinct().max(plain)]).toEqual([least, most]);
+        expect([await table().where('id', '>', 0).min(indexed), await table().where('id', '>', 0).max(indexed)]).toEqual([least, most]);
+    });
+
+    test('takes min and max of a decimal as a read returns it, a whole number of its smallest unit', async (): Promise<void> => {
+        const table: () => Builder<Moment> = (): Builder<Moment> => connection.table<Moment>('moments');
+
+        expect(await table().orderBy('cost').pluck('cost')).toEqual([null, 250, 1999, 12000]);
+        expect([await table().min('cost'), await table().max('price')]).toEqual([250, 12000]);
+    });
+
+    test('takes min and max of a string column through its index and from the records', async (): Promise<void> => {
+        expect([await users().min('name'), await users().max('name')]).toEqual(['Alice', 'Erin']);
+        expect([await users().min('role'), await users().max('role')]).toEqual(['admin', 'owner']);
+        expect([await users().where('role', 'member').min('name'), await users().where('role', 'member').max('name')]).toEqual(['Bob', 'Erin']);
+    });
+
+    test('takes min and max of a date column holding a string as orderBy orders them, every date before the string', async (): Promise<void> => {
+        const visited: () => Builder<Visit> = (): Builder<Visit> => connection.table<Visit>('visits');
+
+        expect(await visited().orderBy('at', 'desc').value('at')).toEqual('not a date');
+        expect(await visited().min('at')).toEqual(new Date(Date.UTC(2026, 0, 5, 9, 30, 0)));
+        expect(await visited().max('at')).toEqual('not a date');
+        expect(await visited().where('label', '!=', 'garbled').max('at')).toEqual(new Date(Date.UTC(2026, 2, 1, 18, 45, 0)));
+    });
+
     test('aggregates a query in random order without shuffling it', async (): Promise<void> => {
         const random: MockInstance = vi.spyOn(Math, 'random').mockReturnValue(0);
         const members: () => Builder<User> = (): Builder<User> => users().where('role', 'member').inRandomOrder().limit(1);
@@ -1009,26 +1106,6 @@ describe('Builder ordering through an index that leaves records out', (): void =
         return loose.table<Named>(name);
     }
 
-    /**
-     * Run a query, collecting the plans it announces.
-     */
-    async function planned(run: () => Promise<unknown>): Promise<string[]> {
-        const plans: string[] = [];
-        const listener: (event: Event) => void = ((event: QueryExecuted): void => {
-            plans.push(event.plan);
-        }) as (event: Event) => void;
-
-        Dispatcher.listen('db:query', listener);
-
-        try {
-            await run();
-        } finally {
-            Dispatcher.forget('db:query', listener);
-        }
-
-        return plans;
-    }
-
     beforeAll(async (): Promise<void> => {
         loose = new Connection('app', { database: 'builder-reads-ranks', migrations: [CreateRanksTables], strict: false });
 
@@ -1100,7 +1177,7 @@ describe('Builder ordering through an index that leaves records out', (): void =
 
     test('takes min and max over a grandfathered boolean index from the records', async (): Promise<void> => {
         expect(await planned(async (): Promise<void> => {
-            expect([await table('flags').min('active'), await table('flags').max('active')]).toEqual([0, 1]);
+            expect([await table('flags').min('active'), await table('flags').max('active')]).toEqual([false, true]);
         })).toEqual(['scan', 'scan']);
     });
 
