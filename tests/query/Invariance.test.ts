@@ -10,6 +10,7 @@ import { UniqueConstraintViolationException } from '../../src/exceptions';
 import { Dispatcher } from '../../src/events/Dispatcher';
 import type { Builder } from '../../src/query/Builder';
 import type { MigrationContext } from '../../src/migrations/Migrator';
+import type { MigrationConstructor } from '../../src/migrations/types';
 import type { TableSchema } from '../../src/schema/types';
 import type { Transaction } from '../../src/database/Transaction';
 import type { QueryExecuted } from '../../src/events';
@@ -45,6 +46,10 @@ interface Weighed extends Item {
 
 interface Tagged extends Item {
     tags?: unknown;
+}
+
+interface Documented extends Item {
+    doc?: unknown;
 }
 
 interface Totals {
@@ -96,6 +101,12 @@ type Scope = [string, (query: Builder<Weighed>) => Builder<Weighed>, (row: Weigh
 type Listing = [string, (query: Builder<Tagged>) => Builder<Tagged>, (row: Tagged) => Truth];
 
 type Retag = [string, (query: Builder<Tagged>) => Promise<number>, (row: Tagged) => Tagged | null];
+
+type Documenting = [string, (query: Builder<Documented>) => Builder<Documented>, (row: Documented) => Truth];
+
+type Holding = [string, Documented[]];
+
+type Indexing = [string, MigrationConstructor, boolean];
 
 const OPERATORS: Operator[] = ['=', '==', '===', '!=', '<>', '!==', '<', '>', '<=', '>='];
 
@@ -344,6 +355,57 @@ const REMIXES: Write[] = [
     ['a delete', (query: Builder<Item>): Promise<number> => query.delete(), (): null => null],
 ];
 
+const DOCUMENTS: Record<number, unknown> = {
+    1 : [9],
+    2 : [10],
+    3 : [9, 1],
+    4 : 'x',
+    5 : 7,
+    6 : [],
+    7 : [[1], 'y'],
+    8 : ['x'],
+    9 : 'y',
+    10: [day('2024-01-15')],
+    11: { a: 1, b: [1] },
+    12: { b: [1], a: 1 },
+    13: {},
+    14: [true],
+    15: [1, { a: 1 }],
+    16: null,
+    17: undefined,
+};
+
+const KEYED: number = 10;
+
+const DOCUMENTED: Documented[] = Object.entries(DOCUMENTS).map(([id, doc]: [string, unknown]): Documented => {
+    const row: Documented = { ...ROWS[Number(id) % ROWS.length] as Item, id: Number(id) };
+
+    return doc === undefined ? row : { ...row, doc };
+});
+
+const HOLDINGS: Holding[] = [
+    ['keys only', DOCUMENTED.slice(0, KEYED)],
+    ['values that are not keys too', DOCUMENTED],
+];
+
+const GIVENS: unknown[] = ['x', 'y', 7, '9', '1,y', '[object Object]', [9], [10], ['x'], [], [[1], 'y'], [day('2024-01-15')], { a: 1, b: [1] }, { b: [1], a: 1 }, {}, [true]];
+
+const DOCUMENTINGS: Documenting[] = [
+    ...GIVENS.flatMap((given: unknown): Documenting[] => OPERATORS.map((operator: Operator): Documenting => [
+        `where('doc', '${operator}', ${shown(given)})`,
+        (query: Builder<Documented>): Builder<Documented> => query.where('doc', operator, given),
+        (row: Documented): Truth => compare(row.doc, operator, given),
+    ])),
+    ...[['x', [9]], [['x']], ['x'], [{ b: [1], a: 1 }, 7], [[10], 'y', []], [[9], null]].flatMap((values: unknown[]): Documenting[] => [
+        [`whereIn('doc', ${shown(values)})`, (query: Builder<Documented>): Builder<Documented> => query.whereIn('doc', values), (row: Documented): Truth => within(row.doc, values)],
+        [`whereNotIn('doc', ${shown(values)})`, (query: Builder<Documented>): Builder<Documented> => query.whereNotIn('doc', values), (row: Documented): Truth => not(within(row.doc, values))],
+    ]),
+    ...[[[9], [10]], ['a', 'z'], [5, [9]], [[], [9, 5]], [1, 8], [{ a: 1 }, [9]], [[9], { a: 1 }]].flatMap(([from, to]: unknown[]): Documenting[] => [
+        [`whereBetween('doc', ${shown([from, to])})`, (query: Builder<Documented>): Builder<Documented> => query.whereBetween('doc', [from, to]), (row: Documented): Truth => between(row.doc, from, to)],
+        [`whereNotBetween('doc', ${shown([from, to])})`, (query: Builder<Documented>): Builder<Documented> => query.whereNotBetween('doc', [from, to]), (row: Documented): Truth => not(between(row.doc, from, to))],
+    ]),
+];
+
 /**
  * Give a table an index over one column past the blueprint, as a database migrated before 6.0.0 can hold over a boolean column.
  */
@@ -462,6 +524,41 @@ class AddTagsToItemsTables extends Migration {
     }
 }
 
+class AddDocToItemsTables extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        await Schema.table('indexed', (table: Blueprint): void => {
+            table.json('doc').index();
+        });
+
+        await Schema.table('plain', (table: Blueprint): void => {
+            table.json('doc');
+        });
+    }
+}
+
+class AddListedDocToItemsTables extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        await Schema.table('indexed', (table: Blueprint): void => {
+            table.json('doc').multiEntry();
+        });
+
+        await Schema.table('plain', (table: Blueprint): void => {
+            table.json('doc');
+        });
+    }
+}
+
+const INDEXINGS: Indexing[] = [
+    ['a plain index', AddDocToItemsTables, true],
+    ['a multi-entry index', AddListedDocToItemsTables, false],
+];
+
 class CreateNotesTable extends Migration {
     /**
      * Run the migration.
@@ -506,6 +603,63 @@ function absent(value: unknown): boolean {
 }
 
 /**
+ * Determine whether a value is an array or an object built from a literal, which compare by content and kind.
+ */
+function structured(value: unknown): boolean {
+    if (Array.isArray(value)) {
+        return true;
+    }
+
+    if (typeof value !== 'object' || value === null) {
+        return false;
+    }
+
+    const prototype: unknown = Object.getPrototypeOf(value);
+
+    return prototype === Object.prototype || prototype === null;
+}
+
+/**
+ * Determine whether IndexedDB accepts a value as a key.
+ */
+function keyed(value: unknown): boolean {
+    try {
+        indexedDB.cmp(value, value);
+
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Determine whether two values hold the same content, of the same kinds at every depth.
+ */
+function same(a: unknown, b: unknown): boolean {
+    if (Array.isArray(a) || Array.isArray(b)) {
+        return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((element: unknown, index: number): boolean => same(element, b[index]));
+    }
+
+    if (structured(a) || structured(b)) {
+        if (!structured(a) || !structured(b)) {
+            return false;
+        }
+
+        const left: Record<string, unknown> = a as Record<string, unknown>;
+        const right: Record<string, unknown> = b as Record<string, unknown>;
+        const keys: string[] = Object.keys(left).sort();
+
+        return same(keys, Object.keys(right).sort()) && keys.every((key: string): boolean => same(left[key], right[key]));
+    }
+
+    if (a instanceof Date && b instanceof Date) {
+        return a.getTime() === b.getTime();
+    }
+
+    return a === b || Object.is(a, b);
+}
+
+/**
  * Get the form of a value that compares by content.
  */
 function comparable(value: unknown): unknown {
@@ -544,6 +698,10 @@ function compare(held: unknown, operator: Operator, given: unknown): Truth {
         return null;
     }
 
+    if (structured(held) || structured(given)) {
+        return structural(held, operator, given);
+    }
+
     const a: unknown = comparable(held);
     const b: unknown = comparable(given);
 
@@ -577,6 +735,25 @@ function compare(held: unknown, operator: Operator, given: unknown): Truth {
 }
 
 /**
+ * Apply the documented semantics of an operator when either side is an array or an object, three-valued, which orders only two arrays that are keys.
+ */
+function structural(held: unknown, operator: Operator, given: unknown): Truth {
+    if (operator === '<' || operator === '>' || operator === '<=' || operator === '>=') {
+        if (!Array.isArray(held) || !Array.isArray(given) || !keyed(held) || !keyed(given)) {
+            return null;
+        }
+
+        const order: number = indexedDB.cmp(held, given);
+
+        return { '<': order < 0, '>': order > 0, '<=': order <= 0, '>=': order >= 0 }[operator];
+    }
+
+    const equal: boolean = structured(held) && structured(given) && same(held, given);
+
+    return operator === '=' || operator === '==' || operator === '===' ? equal : !equal;
+}
+
+/**
  * Apply the documented semantics of whereBetween to one value, three-valued.
  */
 function between(held: unknown, from: unknown, to: unknown): Truth {
@@ -601,7 +778,7 @@ function within(held: unknown, values: unknown[]): Truth {
         return null;
     }
 
-    const found: boolean = values.some((value: unknown): boolean => !absent(value) && comparable(held) == comparable(value));
+    const found: boolean = values.some((value: unknown): boolean => !absent(value) && compare(held, '==', value) === true);
 
     return found ? true : (values.some(absent) ? null : false);
 }
@@ -670,18 +847,67 @@ function dated(held: unknown, operator: DateOperator, given: Date | string): Tru
 }
 
 /**
- * Apply the documented order to rows by their tags, which compares arrays as the strings they join into.
+ * Rank the kind of a value in the documented order: keys, then booleans, then arrays that are not keys, then everything else.
  */
-function listed(rows: Tagged[], direction: Direction): Tagged[] {
+function kind(value: unknown): number {
+    if (keyed(value)) {
+        return 0;
+    }
+
+    if (typeof value === 'boolean') {
+        return 1;
+    }
+
+    return Array.isArray(value) ? 2 : 3;
+}
+
+/**
+ * Apply the documented order to two values: null or missing first, keys as IndexedDB orders them, false before true, arrays that are not keys element by element, and every other value tied.
+ */
+function precedes(a: unknown, b: unknown): number {
+    if (absent(a) || absent(b)) {
+        return Number(!absent(a)) - Number(!absent(b));
+    }
+
+    if (kind(a) !== kind(b)) {
+        return kind(a) - kind(b);
+    }
+
+    if (kind(a) === 0) {
+        return indexedDB.cmp(a, b);
+    }
+
+    if (kind(a) === 1) {
+        return Number(a) - Number(b);
+    }
+
+    if (kind(a) === 2) {
+        const left: unknown[] = a as unknown[];
+        const right: unknown[] = b as unknown[];
+        const differing: number = left.findIndex((element: unknown, index: number): boolean => index < right.length && precedes(element, right[index]) !== 0);
+
+        return differing === -1 ? left.length - right.length : precedes(left[differing], right[differing]);
+    }
+
+    return 0;
+}
+
+/**
+ * Apply the documented order to rows by the value they hold, reversing it descending and leaving tied rows in id order.
+ */
+function ranked<R extends Item>(rows: R[], read: (row: R) => unknown, direction: Direction): R[] {
     const sign: number = direction === 'desc' ? -1 : 1;
 
-    return [...rows].sort((a: Tagged, b: Tagged): number => {
-        if (absent(a.tags) || absent(b.tags)) {
-            return sign * (Number(!absent(a.tags)) - Number(!absent(b.tags)));
-        }
+    return [...rows]
+        .sort((a: R, b: R): number => a.id - b.id)
+        .sort((a: R, b: R): number => sign * precedes(read(a), read(b)));
+}
 
-        return sign * (String(a.tags) < String(b.tags) ? -1 : 1);
-    });
+/**
+ * Apply the documented order to rows by their tags.
+ */
+function listed(rows: Tagged[], direction: Direction): Tagged[] {
+    return ranked(rows, (row: Tagged): unknown => row.tags, direction);
 }
 
 /**
@@ -703,12 +929,10 @@ function ordered(rows: Ranked[], column: Ranking, direction: Direction): Ranked[
 }
 
 /**
- * Apply the documented order to rows by their visits, which compares values of different types as JavaScript does.
+ * Apply the documented order to rows by their visits, which ranks every number before every string.
  */
 function visited(rows: Item[], direction: Direction): Item[] {
-    const sign: number = direction === 'desc' ? -1 : 1;
-
-    return [...rows].sort((a: Item, b: Item): number => sign * (a.visits < b.visits ? -1 : 1));
+    return ranked(rows, (row: Item): unknown => row.visits, direction);
 }
 
 /**
@@ -1071,6 +1295,84 @@ describe('a column holding arrays under a multi-entry index', (): void => {
         expect(affected).toEqual({ indexed: changed, plain: changed });
         expect({ indexed: await raw('indexed'), plain: await raw('plain') }).toEqual({ indexed: sorted(left), plain: sorted(left) });
     }, 2000);
+});
+
+describe.each(INDEXINGS)('a JSON column under %s on one copy', (_: string, migration: MigrationConstructor, plain: boolean): void => {
+    /**
+     * Migrate a fresh database and write the rows into both copies.
+     */
+    async function hold(rows: Documented[]): Promise<void> {
+        connection = new Connection('app', { database: `invariance-documented-${++sequence}`, migrations: [CreateItemsTables, migration] });
+
+        await connection.migrate();
+        await planted('indexed', rows);
+        await planted('plain', rows);
+    }
+
+    describe.each(DOCUMENTINGS)('%s', (_: string, constrain: (query: Builder<Documented>) => Builder<Documented>, holds: (row: Documented) => Truth): void => {
+        const expected: number[] = ids(DOCUMENTED.filter((row: Documented): boolean => holds(row) === true));
+        const refused: number[] = ids(DOCUMENTED.filter((row: Documented): boolean => holds(row) === false));
+
+        beforeEach(async (): Promise<void> => {
+            await hold(DOCUMENTED);
+        });
+
+        test('gives the same answer, and the same answer to its negation, through an index, through a scan and from the model', async (): Promise<void> => {
+            const answers: Record<Copy, unknown> = await both(async (query: Builder<Documented>): Promise<unknown> => ({
+                rows     : ids(await constrain(query.clone()).get()),
+                count    : await constrain(query.clone()).count(),
+                first    : (await constrain(query.clone()).orderBy('id').first())?.id ?? null,
+                paginated: await constrain(query.clone()).orderBy('id').paginate(1, 2).then((page: Paginated<Documented>): unknown => ({ rows: ids(page.data), total: page.total })),
+                negated  : ids(await query.clone().whereNot((nested: Builder<Documented>): void => {
+                    constrain(nested);
+                }).get()),
+            }));
+
+            const modeled: unknown = { rows: expected, count: expected.length, first: expected[0] ?? null, paginated: { rows: expected.slice(0, 2), total: expected.length }, negated: refused };
+
+            expect(answers).toEqual({ indexed: modeled, plain: modeled });
+        });
+    });
+
+    describe.each(HOLDINGS)('holding %s', (holding: string, rows: Documented[]): void => {
+        beforeEach(async (): Promise<void> => {
+            await hold(rows);
+        });
+
+        test.each(['asc', 'desc'] as Direction[])('orderBy(\'doc\', %s) gives the same rows, alone, with a limit and paged, through an index, through a scan and from the model', async (direction: Direction): Promise<void> => {
+            const expected: number[] = ranked(rows, (row: Documented): unknown => row.doc, direction).map((row: Documented): number => row.id);
+
+            const answers: Record<Copy, unknown> = await both(async (query: Builder<Documented>): Promise<unknown> => ({
+                rows     : (await query.clone().orderBy('doc', direction).get()).map((row: Documented): number => row.id),
+                limited  : await query.clone().orderBy('doc', direction).limit(3).pluck('id'),
+                first    : (await query.clone().orderBy('doc', direction).first())?.id,
+                paginated: await query.clone().orderBy('doc', direction).paginate(2, 3).then((page: Paginated<Documented>): number[] => page.data.map((row: Documented): number => row.id)),
+            }));
+
+            const modeled: unknown = { rows: expected, limited: expected.slice(0, 3), first: expected[0], paginated: expected.slice(3, 6) };
+
+            expect(answers).toEqual({ indexed: modeled, plain: modeled });
+        });
+
+        test('walks the index for the order only when it holds every record', async (): Promise<void> => {
+            const walked: boolean = plain && holding === 'keys only';
+
+            expect(await connection.table<Documented>('indexed').orderBy('doc').explain()).toEqual(walked ? 'index:indexed_doc_index' : 'scan');
+        });
+    });
+
+    test('drives equality and ranges through the index when it is not multi-entry', async (): Promise<void> => {
+        await hold(DOCUMENTED);
+
+        const indexed: () => Builder<Documented> = (): Builder<Documented> => connection.table<Documented>('indexed');
+        const source: string = plain ? 'index:indexed_doc_index' : 'scan';
+
+        expect(await indexed().where('doc', [9]).explain()).toEqual(source);
+        expect(await indexed().where('doc', '>=', [9]).explain()).toEqual(source);
+        expect(await indexed().where('doc', '<', 'x').explain()).toEqual(source);
+        expect(await indexed().whereBetween('doc', [5, [9]]).explain()).toEqual(source);
+        expect(await indexed().whereIn('doc', ['x', [9]]).explain()).toEqual(source);
+    });
 });
 
 describe('counting through a join', (): void => {

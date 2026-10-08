@@ -5,6 +5,8 @@ import type { Constraint, Operator, Order, Plan } from './types';
 
 const RANGEABLE: ReadonlySet<Operator> = new Set<Operator>(['=', '==', '===', '>', '>=', '<', '<=']);
 
+const EQUALITY: ReadonlySet<Operator> = new Set<Operator>(['=', '==', '===']);
+
 const CONVERTED: ReadonlySet<Operator> = new Set<Operator>(['=', '==', '!=', '<>', '<', '>', '<=', '>=']);
 
 const FALSY: ReadonlySet<string> = new Set<string>(['false', '0']);
@@ -175,6 +177,9 @@ export class Planner {
         }
 
         const type: ColumnType | undefined = schema.columns.find((candidate: ColumnSchema): boolean => candidate.name === constraint.column)?.type;
+        // An index orders keys of every kind together, arrays above all, so a range over a column that
+        // can hold several kinds collects keys a scan finds false or unknown, and each is checked again.
+        const mixed: boolean = type === 'json' || type === undefined;
 
         if (constraint.type === 'in') {
             if (constraint.values.length === 0 || !constraint.values.every((value: unknown): boolean => this.#fits(value, type))) {
@@ -193,14 +198,14 @@ export class Planner {
                 return { constraint, ...target, range: null, values: [], rechecked: false };
             }
 
-            return { constraint, ...target, range: IDBKeyRange.bound(constraint.from as IDBValidKey, constraint.to as IDBValidKey, false, false), values: null, rechecked: false };
+            return { constraint, ...target, range: IDBKeyRange.bound(constraint.from as IDBValidKey, constraint.to as IDBValidKey, false, false), values: null, rechecked: mixed };
         }
 
         if (!RANGEABLE.has(constraint.operator) || !this.#fits(constraint.value, type)) {
             return null;
         }
 
-        return { constraint, ...target, range: this.#range(constraint.operator, constraint.value as IDBValidKey), values: null, rechecked: false };
+        return { constraint, ...target, range: this.#range(constraint.operator, constraint.value as IDBValidKey), values: null, rechecked: mixed && !EQUALITY.has(constraint.operator) };
     }
 
     /**

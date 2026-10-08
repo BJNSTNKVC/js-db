@@ -134,6 +134,10 @@ await DB.transaction(async (transaction: Transaction): Promise<void> => {
 - **Joins and grouping run in memory**, writes through a join reach the base table only, and
   aggregates are named in a typed object rather than raw SQL. See [Joins](docs/joins.md) and
   [Grouping](docs/grouping.md).
+- **An array or an object compares as a whole.** Laravel's `where` binds only the first element of an
+  array value. Here `where('tags', ['php'])` compares the whole array by content, an array or an
+  object never equals a scalar, and `whereJsonContains` asks about an element.
+  See [Querying](docs/querying.md#constraints).
 - **A query uses at most one index.** `explain()` shows which. See [Query plans](docs/query-plans.md).
 - **The browser adds its own failure modes**: storage quota, eviction and other tabs holding the
   database open. See [Storage quota](docs/storage.md) and [Multiple tabs](docs/multiple-tabs.md).

@@ -106,6 +106,23 @@ matches none of them, under `!=` as under any other operator. None of them has a
 Operators: `=`, `==`, `===`, `!=`, `<>`, `!==`, `<`, `>`, `<=`, `>=`, `like`, `not like`. `==` is
 loose and `===` is strict.
 
+Loose and strict apply to scalars. An array or an object compares by content and kind, as
+`distinct()` compares JSON values (see [Shaping](#shaping)), and never equals a scalar. So under `=`,
+`==`, `===`, `!=`, `<>`, `!==`, `whereIn` and `whereNotIn`, `where('tags', ['php', 'js'])` matches
+only `['php', 'js']`, while `where('tags', 'php')` never matches `['php']`, nor
+`where('tags', 'php,js')` the array `['php', 'js']`. To ask whether an array holds an element, use
+`whereJsonContains`. Under `<`, `>`, `<=`, `>=`, `whereBetween` and `whereNotBetween`, an array
+compares only with another array, element by element as IndexedDB orders keys, so `[9]` comes
+before `[9, 1]` and `[10]`. Any other pairing with an array or an object is unknown, as a comparison
+with `null` is below, so `where('tags', '>', 'a')` and its `whereNot` both leave every array out. So
+is an array holding a boolean or an object, which IndexedDB cannot use as a key. A date, binary data
+and every other value keep the rules above.
+
+Before 10.0.0 an array compared as the string its elements join into and an object as
+`'[object Object]'`, so `where('tags', 'php')` matched `['php']`, two arrays were never equal, an
+array against a scalar under `<` or `>` could match, and `[10]` came before `[9]`. A query that
+relied on matching an element should use `whereJsonContains('tags', 'php')` instead.
+
 A value compared with a declared column is first converted to that column's type, so a value that
 arrives as a string from a form, a URL or storage matches what the typed value would. This applies
 to `where` and its `or` and `not` forms with every operator except `===`, `!==`, `like` and
@@ -246,8 +263,8 @@ The one exception is `whereJsonContains` with a single string or number on a col
 It reads only the records whose array holds the value, through the index, and returns the same
 records a scan would, each once. An array of values, any other kind of value, a path, a negation and
 an `or` form are checked against every record instead. A multi-entry index serves nothing else: a
-`where`, `whereIn`, `whereBetween` or `orderBy` on the column compares the whole value, as it would
-with no index.
+`where`, `whereIn`, `whereBetween` or `orderBy` on the column compares the whole value by content and
+kind, as [Constraints](#constraints) describes, as it would with no index.
 
 `select`, `pluck`, `value` and the aggregates read a path too. Left unaliased, a selected path is
 named after its last step, the way `select('users.name')` is named `name`:
@@ -312,6 +329,15 @@ await DB.table<User>('users').select('settings').distinct().get();
 A `Map`, a `Set`, an `ArrayBuffer` and a `RegExp` hold no keys of their own, so each compares as an
 empty object, and a typed array compares as an object keyed by its indexes. A value that contains
 itself cannot be compared, and `distinct()` throws a `TypeError` on it.
+
+`orderBy` places `null` and a missing value first ascending, then orders values as IndexedDB orders
+keys: numbers, dates, strings, binary data, then arrays element by element, a shorter array first
+when it starts the longer. A value IndexedDB cannot use as a key comes after every key: `false`,
+then `true`, then arrays holding one, element by element, then objects and anything else, tied in
+the order the query reads them. Descending reverses the whole order. So a column holding several
+kinds sorts the same through an index as without one, and a number sorts before a string whatever
+the string reads as. Before 10.0.0 values of different kinds compared as JavaScript compares them,
+so `[10]` came before `[9]`, and `'2'` sorted between 1 and 3.
 
 `limit` and `offset` read their values as Laravel does. `limit` ignores a negative or non-finite
 value and keeps any limit set before it, `offset` treats one as 0, and both truncate a fraction. So

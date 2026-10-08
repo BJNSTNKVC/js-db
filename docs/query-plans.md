@@ -48,11 +48,15 @@ Each resolves to a description of the plan chosen:
   or decimal column, a number for a float, a valid date for a date or datetime, a string for a
   string or enum, and any valid key for a JSON column. Anything else, including every boolean, an
   object, an invalid date or a value that did not convert, is checked against every record the
-  query reads instead, so an index never changes which rows come back.
+  query reads instead, so an index never changes which rows come back. An index orders keys of
+  every kind together, arrays above all, so a range or a `whereBetween` over a JSON column, or over
+  an indexed column no blueprint declares, also collects keys of other kinds, which a scan finds
+  false or unknown. Each record such a range reaches is checked against the constraint again.
+  Equality and `whereIn` find exactly what a scan finds, an array value included, and need no check.
 - An index, and the key path, serves a query only while every entry it holds is of its column's
   type. IndexedDB orders keys by type first, numbers before dates before strings, while a scan
-  compares values as JavaScript does, so an integer index holding `'2'` would miss it in
-  `where('visits', 2)` and place it above every number in a range or an order. A column can hold
+  compares two scalars as JavaScript does, so an integer index holding `'2'` would miss it in
+  `where('visits', 2)` and in a range over numbers. A column can hold
   another type when a default was stored unconverted before 6.0.0, a row was written before 5.0.0,
   or a row was written past the package. Before walking an index or the key path, the query reads
   its first and last keys, two key-cursor requests run alongside the count check above, and when

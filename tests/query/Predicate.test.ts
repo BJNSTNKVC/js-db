@@ -766,6 +766,201 @@ describe('Predicate JSON length', (): void => {
     });
 });
 
+describe('Predicate comparing arrays and objects', (): void => {
+    /**
+     * Test a value against a basic constraint and against its negation.
+     */
+    function both(held: unknown, operator: Operator, given: unknown): [boolean, boolean] {
+        return [matches([basic('value', operator, given)], { value: held }), matches([basic('value', operator, given, 'and', true)], { value: held })];
+    }
+
+    /**
+     * Build a where in constraint.
+     */
+    function within(values: unknown[], not: boolean = false): Constraint {
+        return { type: 'in', column: 'value', values, conjunction: 'and', not };
+    }
+
+    /**
+     * Build a between constraint.
+     */
+    function between(from: unknown, to: unknown, not: boolean = false): Constraint {
+        return { type: 'between', column: 'value', from, to, conjunction: 'and', not };
+    }
+
+    test.each([
+        [['x'], 'x'],
+        [['x', 'z'], 'x,z'],
+        [[9], 9],
+        [[9], '9'],
+        [[], ''],
+        [{ a: 1 }, '[object Object]'],
+        [{}, '[object Object]'],
+        [[true], true],
+        [[new Date(1)], new Date(1)],
+    ])('never finds %o equal to the scalar %o, in either order', (structure: unknown, scalar: unknown): void => {
+        for (const operator of ['=', '==', '==='] as Operator[]) {
+            expect(both(structure, operator, scalar)).toEqual([false, true]);
+            expect(both(scalar, operator, structure)).toEqual([false, true]);
+        }
+
+        for (const operator of ['!=', '<>', '!=='] as Operator[]) {
+            expect(both(structure, operator, scalar)).toEqual([true, false]);
+            expect(both(scalar, operator, structure)).toEqual([true, false]);
+        }
+    });
+
+    test.each([
+        [[9], [9]],
+        [[], []],
+        [{}, {}],
+        [{ a: 1, b: [2] }, { b: [2], a: 1 }],
+        [[[1, [2]], 'y'], [[1, [2]], 'y']],
+        [[true, { a: null }], [true, { a: null }]],
+        [[new Date(1)], [new Date(1)]],
+    ])('finds %o equal to %o by content', (held: unknown, given: unknown): void => {
+        for (const operator of ['=', '==', '==='] as Operator[]) {
+            expect(both(held, operator, given)).toEqual([true, false]);
+        }
+
+        for (const operator of ['!=', '<>', '!=='] as Operator[]) {
+            expect(both(held, operator, given)).toEqual([false, true]);
+        }
+    });
+
+    test.each([
+        [[1], ['1']],
+        [[9], [9, 1]],
+        [[1, 2], [2, 1]],
+        [[], {}],
+        [['a', 'x'], { a: 'x' }],
+        [{ a: 1 }, { a: '1' }],
+        [{ a: 1 }, { a: 1, b: undefined }],
+        [[true], [1]],
+    ])('finds %o and %o different, by kind at every depth', (held: unknown, given: unknown): void => {
+        expect(both(held, '=', given)).toEqual([false, true]);
+        expect(both(held, '==', given)).toEqual([false, true]);
+        expect(both(held, '!=', given)).toEqual([true, false]);
+    });
+
+    test.each([
+        [[9], '<', [10], true],
+        [[10], '>', [9], true],
+        [[9], '<', [9, 1], true],
+        [[], '<', [0], true],
+        [[9], '<=', [9], true],
+        [[9], '>=', [9], true],
+        [[9, 1], '>=', [10], false],
+        [['b'], '>', ['a', 'z'], true],
+        [[1], '<', ['0'], true],
+        [[new Date(5)], '>', [new Date(1)], true],
+        [[[1]], '>', ['z'], true],
+    ] as [unknown[], Operator, unknown[], boolean][])('orders %j %s %j as IndexedDB orders keys', (held: unknown[], operator: Operator, given: unknown[], expected: boolean): void => {
+        expect(both(held, operator, given)).toEqual([expected, !expected]);
+    });
+
+    test.each([
+        [['x'], 'x'],
+        [['x'], 'a'],
+        [[9], 9],
+        [[], ''],
+        [{ a: 1 }, 'z'],
+        [{ a: 1 }, { a: 1 }],
+        [{ a: 1 }, [1]],
+        [[true], [false]],
+        [[1, { a: 1 }], [2]],
+        [[new Date(1)], new Date(0)],
+    ])('treats ordering %o against %o as unknown, satisfying neither a comparison nor its negation, in either order', (first: unknown, second: unknown): void => {
+        for (const operator of ['<', '>', '<=', '>='] as Operator[]) {
+            expect(both(first, operator, second)).toEqual([false, false]);
+            expect(both(second, operator, first)).toEqual([false, false]);
+            expect(matches([nested([basic('value', operator, second)], true)], { value: first })).toEqual(false);
+        }
+    });
+
+    test('finds an array or an object in a where in list only by content', (): void => {
+        expect(matches([within(['x'])], { value: ['x'] })).toEqual(false);
+        expect(matches([within(['x'], true)], { value: ['x'] })).toEqual(true);
+        expect(matches([within(['x,z'])], { value: ['x', 'z'] })).toEqual(false);
+        expect(matches([within(['[object Object]'])], { value: { a: 1 } })).toEqual(false);
+        expect(matches([within([['x'], 'y'])], { value: ['x'] })).toEqual(true);
+        expect(matches([within([['x'], 'y'], true)], { value: ['x'] })).toEqual(false);
+        expect(matches([within([{ b: 2, a: 1 }])], { value: { a: 1, b: 2 } })).toEqual(true);
+        expect(matches([within([['x']])], { value: 'x' })).toEqual(false);
+        expect(matches([within([['x']], true)], { value: 'x' })).toEqual(true);
+    });
+
+    test('leaves a where in that finds no array unknown when the list holds null', (): void => {
+        expect(matches([within(['x', null])], { value: ['x'] })).toEqual(false);
+        expect(matches([within(['x', null], true)], { value: ['x'] })).toEqual(false);
+    });
+
+    test('bounds an array between two arrays as IndexedDB orders keys', (): void => {
+        expect(matches([between([1], [10])], { value: [5] })).toEqual(true);
+        expect(matches([between([1], [10])], { value: [10, 0] })).toEqual(false);
+        expect(matches([between([1], [10], true)], { value: [10, 0] })).toEqual(true);
+        expect(matches([between([1], [10], true)], { value: [5] })).toEqual(false);
+    });
+
+    test.each([
+        [['m'], 'a', 'z'],
+        ['m', ['a'], ['z']],
+        [{ a: 1 }, 'a', 'z'],
+        [{ a: 1 }, { a: 0 }, { a: 2 }],
+        [[true], [false], [true, true]],
+    ])('treats %o between %o and %o as unknown, satisfying neither between nor not between', (held: unknown, from: unknown, to: unknown): void => {
+        expect(matches([between(from, to)], { value: held })).toEqual(false);
+        expect(matches([between(from, to, true)], { value: held })).toEqual(false);
+    });
+
+    test('is false rather than unknown between bounds where one comparison is false', (): void => {
+        expect(matches([between(5, [9])], { value: 1 })).toEqual(false);
+        expect(matches([between(5, [9], true)], { value: 1 })).toEqual(true);
+        expect(matches([between([1], 'z')], { value: [0] })).toEqual(false);
+        expect(matches([between([1], 'z', true)], { value: [0] })).toEqual(true);
+    });
+
+    test('compares two columns holding arrays or objects by content', (): void => {
+        const column: (operator: Operator, not?: boolean) => Constraint = (operator: Operator, not: boolean = false): Constraint => ({ type: 'column', column: 'a', operator, other: 'b', conjunction: 'and', not });
+
+        expect(matches([column('=')], { a: [1, 'x'], b: [1, 'x'] })).toEqual(true);
+        expect(matches([column('=')], { a: { x: [1] }, b: { x: [1] } })).toEqual(true);
+        expect(matches([column('=')], { a: ['x'], b: 'x' })).toEqual(false);
+        expect(matches([column('!=')], { a: ['x'], b: 'x' })).toEqual(true);
+        expect(matches([column('<')], { a: [9], b: [10] })).toEqual(true);
+        expect(matches([column('<')], { a: [9], b: 10 })).toEqual(false);
+        expect(matches([column('<', true)], { a: [9], b: 10 })).toEqual(false);
+    });
+
+    test('compares a value a path reaches by content', (): void => {
+        expect(matches([basic('doc->list', '=', [1, 2])], { doc: { list: [1, 2] } })).toEqual(true);
+        expect(matches([basic('doc->list', '=', '1,2')], { doc: { list: [1, 2] } })).toEqual(false);
+    });
+
+    test('keeps the loose rules between scalars', (): void => {
+        expect(both(30, '=', '30')).toEqual([true, false]);
+        expect(both(30, '===', '30')).toEqual([false, true]);
+        expect(both('10', '<', 9)).toEqual([false, true]);
+        expect(matches([within(['30'])], { value: 30 })).toEqual(true);
+    });
+
+    test('keeps the rules for a date, which is not a plain object', (): void => {
+        expect(both(new Date(1000), '=', 1000)).toEqual([true, false]);
+        expect(both(new Date(1000), '<', 2000)).toEqual([true, false]);
+    });
+
+    test('keeps the rules for binary values, which are not plain objects', (): void => {
+        expect(both(new Uint8Array([1, 2]), '=', '1,2')).toEqual([true, false]);
+        expect(both(new Uint8Array([1]), '=', new Uint8Array([1]))).toEqual([false, true]);
+    });
+
+    test('treats a comparison of an array against null as unknown', (): void => {
+        expect(both(['x'], '=', null)).toEqual([false, false]);
+        expect(both(['x'], '!=', undefined)).toEqual([false, false]);
+        expect(both(null, '=', ['x'])).toEqual([false, false]);
+    });
+});
+
 
 describe('Predicate date parts in the constraint\'s timezone', (): void => {
     const zone: string = Intl.DateTimeFormat().resolvedOptions().timeZone;

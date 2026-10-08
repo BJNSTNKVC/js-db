@@ -1,6 +1,8 @@
 import { Calendar } from '../schema/Calendar';
 import type { Parts } from '../schema/Calendar';
 import { Columns } from './Columns';
+import { Comparator } from './Comparator';
+import { Signature } from './Signature';
 import type { Constraint, DatePart, Operator } from './types';
 
 type Truth = boolean | null;
@@ -228,7 +230,7 @@ export class Predicate {
     }
 
     /**
-     * Compare a held value against a given one, where a pattern against anything but a string is unknown.
+     * Compare a held value against a given one, where a pattern against anything but a string is unknown, as is ordering an array or an object against anything but an array.
      */
     static #compare(held: unknown, operator: Operator, given: unknown): Truth {
         if (operator === 'like' || operator === 'not like') {
@@ -239,6 +241,10 @@ export class Predicate {
             const matched: boolean = this.#like(String(given), held);
 
             return operator === 'like' ? matched : !matched;
+        }
+
+        if (this.#structured(held) || this.#structured(given)) {
+            return this.#structural(held, operator, given);
         }
 
         const a: unknown = this.#comparable(held);
@@ -271,6 +277,49 @@ export class Predicate {
             default:
                 return (a as number) >= (b as number);
         }
+    }
+
+    /**
+     * Compare two values when either is an array or an object: equal only to the same content of the same kinds, and ordered only as two arrays that are keys.
+     */
+    static #structural(held: unknown, operator: Operator, given: unknown): Truth {
+        if (operator === '<' || operator === '>' || operator === '<=' || operator === '>=') {
+            if (!Array.isArray(held) || !Array.isArray(given) || !Comparator.key(held) || !Comparator.key(given)) {
+                return null;
+            }
+
+            return this.#ordered(indexedDB.cmp(held, given), operator);
+        }
+
+        const equal: boolean = this.#structured(held) && this.#structured(given) && Signature.value(held) === Signature.value(given);
+
+        return operator === '=' || operator === '==' || operator === '===' ? equal : !equal;
+    }
+
+    /**
+     * Read the result of an ordering comparison from the sign of a comparison.
+     */
+    static #ordered(order: number, operator: '<' | '>' | '<=' | '>='): boolean {
+        switch (operator) {
+            case '<':
+                return order < 0;
+
+            case '>':
+                return order > 0;
+
+            case '<=':
+                return order <= 0;
+
+            default:
+                return order >= 0;
+        }
+    }
+
+    /**
+     * Determine whether a value is an array or a plain object, which compare by content and kind, unlike a date or binary data.
+     */
+    static #structured(value: unknown): boolean {
+        return Array.isArray(value) || Object.prototype.toString.call(value) === '[object Object]';
     }
 
     /**

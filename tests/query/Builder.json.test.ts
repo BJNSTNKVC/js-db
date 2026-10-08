@@ -587,6 +587,50 @@ describe('Builder.distinct over JSON values', (): void => {
     });
 });
 
+describe('Builder comparing whole JSON values', (): void => {
+    beforeEach(async (): Promise<void> => {
+        await connection.table<Layout>('layouts').truncate();
+        await connection.table<Layout>('layouts').insert([
+            { owner_id: 1, meta: ['php', 'js'] },
+            { owner_id: 2, meta: ['js', 'php'] },
+            { owner_id: 3, meta: ['js'] },
+            { owner_id: 4, meta: '"js"' },
+        ]);
+    });
+
+    test('finds an array or an object equal only to the same content', async (): Promise<void> => {
+        expect(await names(profiles().where('tags', ['js']))).toEqual(['Bob']);
+        expect(await names(profiles().where('tags', 'js'))).toEqual([]);
+        expect(await names(profiles().whereNot('tags', 'js'))).toEqual(['Alice', 'Bob', 'Carol', 'Erin']);
+        expect(await names(profiles().where('settings', { theme: 'dark' }))).toEqual(['Carol']);
+        expect(await names(profiles().whereIn('tags', [['js'], [], 'go']))).toEqual(['Bob', 'Carol']);
+    });
+
+    test('orders an array only against an array', async (): Promise<void> => {
+        expect(await names(profiles().where('tags', '>', ['a']))).toEqual(['Alice', 'Bob', 'Erin']);
+        expect(await names(profiles().where('tags', '>', 'a'))).toEqual([]);
+        expect(await names(profiles().whereNot('tags', '>', 'a'))).toEqual([]);
+    });
+
+    test('sorts arrays element by element', async (): Promise<void> => {
+        expect(await names(profiles().orderBy('tags'))).toEqual(['Dave', 'Carol', 'Erin', 'Bob', 'Alice']);
+        expect(await names(profiles().orderBy('tags', 'desc'))).toEqual(['Alice', 'Bob', 'Erin', 'Carol', 'Dave']);
+    });
+
+    test('joins on two JSON columns by content', async (): Promise<void> => {
+        expect(await names(profiles().join<Profile & Layout>('layouts', 'profiles.tags', '=', 'layouts.meta').orderBy('owner_id'))).toEqual(['Alice', 'Bob']);
+        expect(await names(profiles().join<Profile & Layout>('layouts', 'profiles.tags', '<', 'layouts.meta').orderBy('owner_id').orderBy('name'))).toEqual(['Bob', 'Carol', 'Erin', 'Bob', 'Carol', 'Erin', 'Carol', 'Erin']);
+    });
+
+    test('compares two JSON columns of a joined row by content', async (): Promise<void> => {
+        const joined: () => Builder<Profile & Layout> = (): Builder<Profile & Layout> => profiles().join<Profile & Layout>('layouts', 'profiles.id', '=', 'layouts.owner_id');
+
+        expect(await names(joined().whereColumn('profiles.tags', 'layouts.meta'))).toEqual(['Alice']);
+        expect(await names(joined().whereColumn('profiles.tags', '<', 'layouts.meta'))).toEqual(['Bob', 'Carol']);
+        expect(await names(joined().whereColumn('profiles.tags', '!=', 'layouts.meta'))).toEqual(['Bob', 'Carol']);
+    });
+});
+
 describe('Builder aggregates over a JSON path', (): void => {
     /**
      * Begin a query against the readings table.

@@ -178,6 +178,62 @@ describe('Planner key ranges', (): void => {
     });
 });
 
+describe('Planner ranges over a column that can hold any kind', (): void => {
+    const loose: TableSchema = {
+        ...users,
+        indexes: [...users.indexes, { name: 'users_extra_index', columns: ['extra'], unique: false, multiEntry: false }],
+    };
+
+    test.each([
+        ['<', 'x'],
+        ['<=', 5],
+        ['>', 'x'],
+        ['>=', [9]],
+        ['<', [9]],
+    ] as [Operator, unknown][])('walks the index for %s %j on a JSON column, checking each record again', (operator: Operator, value: unknown): void => {
+        const plan: Plan = Planner.plan([basic('tags', operator, value)], [], users);
+
+        expect(plan.index).toEqual('users_tags_index');
+        expect(plan.residual).toEqual([basic('tags', operator, value)]);
+    });
+
+    test.each([
+        ['a', 'z'],
+        [5, [9]],
+        [[1], [9]],
+    ])('walks the index for a between %j and %j on a JSON column, checking each record again', (from: unknown, to: unknown): void => {
+        const constraint: Constraint = { type: 'between', column: 'tags', from, to, conjunction: 'and', not: false };
+        const plan: Plan = Planner.plan([constraint], [], users);
+
+        expect(plan.index).toEqual('users_tags_index');
+        expect(plan.residual).toEqual([constraint]);
+    });
+
+    test('checks each record again for a range on an indexed column no blueprint declares', (): void => {
+        const plan: Plan = Planner.plan([basic('extra', '>=', 'x')], [], loose);
+
+        expect(plan.index).toEqual('users_extra_index');
+        expect(plan.residual).toEqual([basic('extra', '>=', 'x')]);
+    });
+
+    test.each([
+        ['x'],
+        [[9]],
+        [[1, 'a', new Date(1)]],
+    ])('trusts the index for equality with %j on a JSON column', (value: unknown): void => {
+        const plan: Plan = Planner.plan([basic('tags', '=', value)], [], users);
+
+        expect(plan.range).toEqual(IDBKeyRange.only(value));
+        expect(plan.residual).toEqual([]);
+        expect(Planner.plan([{ type: 'in', column: 'tags', values: [value], conjunction: 'and', not: false }], [], users).residual).toEqual([]);
+    });
+
+    test('trusts the index for a range on a column of one type', (): void => {
+        expect(Planner.plan([basic('age', '>=', 18)], [], users).residual).toEqual([]);
+        expect(Planner.plan([{ type: 'between', column: 'name', from: 'a', to: 'm', conjunction: 'and', not: false }], [], users).residual).toEqual([]);
+    });
+});
+
 describe('Planner fallbacks to a scan', (): void => {
     test('scans for an unindexed column', (): void => {
         const constraints: Constraint[] = [basic('score', '=', 1)];
