@@ -31,14 +31,14 @@ export class Migrator {
     }
 
     /**
-     * Get the version a database with the given migrations should be opened at.
+     * Get the version a database with these migrations opens at.
      */
     static version(migrations: MigrationConstructor[]): number {
         return migrations.length + 1;
     }
 
     /**
-     * Get the index of the first migration still pending at the given version.
+     * Get the index of the first migration pending at a version.
      */
     static pending(version: number): number {
         return Math.max(0, version - 1);
@@ -83,7 +83,7 @@ export class Migrator {
     }
 
     /**
-     * Run the migrations still pending inside the version change transaction, coercing as strictly as the migrating connection and reading dates in its timezone.
+     * Run the pending migrations inside the version change transaction.
      */
     static async run(connection: string, strict: boolean, timezone: string, database: IDBDatabase, transaction: IDBTransaction, migrations: MigrationConstructor[], from: number, at: Date): Promise<string[]> {
         Repository.create(database);

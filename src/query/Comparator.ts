@@ -31,13 +31,16 @@ export class Comparator {
     }
 
     /**
-     * Compare two column values: null first, then keys as IndexedDB orders them, then false and true, then arrays that are not keys element by element, then every other value, tied.
+     * Compare two column values in the order orderBy sorts by.
      */
     static compare(a: unknown, b: unknown): number {
         if (this.#missing(a) || this.#missing(b)) {
             return this.#missing(a) && this.#missing(b) ? 0 : (this.#missing(a) ? -1 : 1);
         }
 
+        // Null sorts first, then keys as IndexedDB orders them,
+        // then false and true, then arrays that are not keys,
+        // element by element. Every other value ties.
         const rank: number = this.#rank(a);
         const other: number = this.#rank(b);
 
@@ -109,7 +112,7 @@ export class Comparator {
     }
 
     /**
-     * Compare two arrays element by element, a shorter one first when it starts the longer.
+     * Compare two arrays element by element, the shorter first on a tie.
      */
     static #elements(a: unknown[], b: unknown[]): number {
         for (let index: number = 0; index < Math.min(a.length, b.length); index++) {

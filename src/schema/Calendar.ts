@@ -19,7 +19,7 @@ export class Calendar {
     static #formatters: Map<string, Intl.DateTimeFormat> = new Map<string, Intl.DateTimeFormat>();
 
     /**
-     * Resolve a timezone to the name the calendar reads it by, 'UTC', 'local' or a canonical IANA name, throwing the RangeError Intl throws for one it does not know.
+     * Resolve a timezone to the name the calendar reads it by.
      */
     static zone(timezone: string): string {
         if (timezone === 'UTC' || timezone === 'local') {
@@ -30,7 +30,7 @@ export class Calendar {
     }
 
     /**
-     * Read a value as the valid moment it names, a date as it is, a number as a timestamp and a string only in the ISO 8601 forms a write accepts, a YYYY-MM-DD day alone or with a time, one without Z or an offset as that wall clock in the timezone, or null for anything else.
+     * Read a value as the moment it names, or null.
      */
     static moment(value: unknown, timezone: string): Date | null {
         if (value instanceof Date || typeof value === 'number') {
@@ -39,6 +39,8 @@ export class Calendar {
             return Number.isNaN(date.getTime()) ? null : date;
         }
 
+        // A string is read only in the ISO 8601 forms a write accepts,
+        // a YYYY-MM-DD day alone or with a time.
         const parts: RegExpExecArray | null = typeof value === 'string' ? MOMENT.exec(value) : null;
 
         if (parts === null) {
@@ -54,6 +56,7 @@ export class Calendar {
 
         const wall: Parts = { year, month: month - 1, day, hour, minute, second, millisecond };
 
+        // Without Z or an offset, the string names a wall clock in the timezone.
         if (parts[8] === undefined && parts[9] === undefined) {
             return this.#instant(wall, timezone);
         }
@@ -62,14 +65,14 @@ export class Calendar {
     }
 
     /**
-     * Get the first moment of a calendar day in the timezone, with the month numbered from zero and a year below 100 kept as given, or the first moment after a skipped midnight.
+     * Get the first moment of a calendar day in the timezone.
      */
     static midnight(year: number, month: number, day: number, timezone: string): Date {
         return this.#instant({ year, month, day, hour: 0, minute: 0, second: 0, millisecond: 0 }, timezone);
     }
 
     /**
-     * Read the wall clock an instant shows in the timezone, with the month numbered from zero.
+     * Read the wall clock an instant shows in the timezone.
      */
     static parts(date: Date, timezone: string): Parts {
         if (Number.isNaN(date.getTime())) {
@@ -90,14 +93,15 @@ export class Calendar {
             read[part.type] = part.value;
         }
 
-        // Intl numbers the years before year 1 backwards from 1 BC, which is the year 0.
+        // Intl numbers the years before year 1 backwards
+        // from 1 BC, which is the year 0.
         const year: number = read['era'] === 'BC' ? 1 - Number(read['year']) : Number(read['year']);
 
         return { year, month: Number(read['month']) - 1, day: Number(read['day']), hour: Number(read['hour']), minute: Number(read['minute']), second: Number(read['second']), millisecond: date.getUTCMilliseconds() };
     }
 
     /**
-     * Turn a wall clock in the timezone into an instant, taking the earlier of a repeated one and moving a skipped one forward by the gap, as a local Date does.
+     * Turn a wall clock in the timezone into an instant.
      */
     static #instant(parts: Parts, timezone: string): Date {
         if (timezone === 'local') {
@@ -115,6 +119,8 @@ export class Calendar {
             return new Date(wall);
         }
 
+        // As a local Date does, a repeated wall clock takes the earlier instant,
+        // and a skipped one moves forward by the gap.
         const before: number = this.#offset(wall - DAY, timezone);
         const after: number = this.#offset(wall + DAY, timezone);
         const shown: number[] = [wall - before, wall - after].filter((moment: number): boolean => moment + this.#offset(moment, timezone) === wall);
@@ -123,7 +129,7 @@ export class Calendar {
     }
 
     /**
-     * Get how far the timezone's wall clock runs ahead of UTC at an instant.
+     * Get how far the timezone runs ahead of UTC at an instant.
      */
     static #offset(moment: number, timezone: string): number {
         const whole: number = moment - (((moment % 1000) + 1000) % 1000);
@@ -132,11 +138,13 @@ export class Calendar {
     }
 
     /**
-     * Get the instant a wall clock names in UTC, keeping a year below 100 as given and rolling overflowing parts over.
+     * Get the instant a wall clock names in UTC.
      */
     static #utc(parts: Parts): number {
         const date: Date = new Date(0);
 
+        // Unlike Date.UTC, setUTCFullYear keeps a year below 100 as given
+        // rather than reading it as 19xx.
         date.setUTCFullYear(parts.year, parts.month, parts.day);
 
         return date.setUTCHours(parts.hour, parts.minute, parts.second, parts.millisecond);
@@ -152,7 +160,7 @@ export class Calendar {
     }
 
     /**
-     * Get the formatter that reads a wall clock in a named timezone, made once per timezone.
+     * Get the cached formatter that reads a wall clock in a timezone.
      */
     static #formatter(timezone: string): Intl.DateTimeFormat {
         let formatter: Intl.DateTimeFormat | undefined = this.#formatters.get(timezone);

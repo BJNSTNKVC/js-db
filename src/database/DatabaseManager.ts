@@ -74,8 +74,9 @@ export class DatabaseManager {
             throw new ConnectionNotConfiguredException(name ?? 'default');
         }
 
-        // An explicit name always wins. Otherwise a seeding run may stand in for the configured
-        // default, so a seeder reaching for `DB` writes to the connection being seeded.
+        // An explicit name always wins. Otherwise a seeding run may
+        // stand in for the configured default, so a seeder reaching
+        // for `DB` writes to the connection being seeded.
         const resolved: string = name ?? Resolver.override() ?? config.default;
         const cached: Connection | undefined = this.#connections.get(resolved);
 
@@ -114,9 +115,10 @@ export class DatabaseManager {
      * Run any pending migrations, returning the names of those this call ran.
      */
     static migrate(name: string): Promise<string[]> {
-        // Every method whose subject is the connection itself names it, rather than falling back to
-        // the default. A silent fallback here would migrate, seed or delete the wrong database. The
-        // table-level helpers below still default, since there the subject is the table.
+        // Every method whose subject is the connection itself names it, rather than
+        // falling back to the default. A silent fallback here would migrate,
+        // seed or delete the wrong database. The table-level helpers below
+        // still default, since there the subject is the table.
         return this.connection(name).migrate();
     }
 
@@ -184,7 +186,7 @@ export class DatabaseManager {
     }
 
     /**
-     * Close a connection and drop it, so the next resolve rebuilds it from configuration.
+     * Close and forget a connection, so the next resolve rebuilds it.
      */
     static purge(name: string): void {
         const connection: Connection = this.connection(name);
@@ -195,7 +197,7 @@ export class DatabaseManager {
     }
 
     /**
-     * Get how much storage this origin is using, and how much it may use.
+     * Get this origin's storage usage and quota.
      */
     static async estimate(): Promise<StorageEstimate> {
         const storage: StorageManager | undefined = globalThis.navigator?.storage;
@@ -237,8 +239,9 @@ export class DatabaseManager {
      * Register an event listener.
      */
     static listen<K extends keyof DatabaseEvent>(event: K, listener: DatabaseEventListener<K>, options: ListenOptions = {}): void {
-        // Listeners are persistent unless told otherwise. This is a deliberate departure from the
-        // storage packages, where listen() registers with once and so fires exactly one time.
+        // Listeners are persistent unless told otherwise. This is a deliberate
+        // departure from the storage packages, where listen()
+        // registers with once and so fires exactly one time.
         Dispatcher.listen(`db:${event}`, listener as (event: Event) => void, options.once ?? false);
     }
 

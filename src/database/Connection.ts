@@ -39,7 +39,7 @@ export class Connection {
     readonly #config: ConnectionConfig;
 
     /**
-     * The timezone every calendar day and time of day is read and stored in.
+     * The timezone dates and times are read and stored in.
      */
     readonly #timezone: string;
 
@@ -99,7 +99,7 @@ export class Connection {
     }
 
     /**
-     * Get the timezone every calendar day and time of day is read and stored in, 'UTC', 'local' or a canonical IANA name.
+     * Get the timezone dates and times are read and stored in.
      */
     get timezone(): string {
         return this.#timezone;
@@ -144,8 +144,8 @@ export class Connection {
     async migrate(): Promise<string[]> {
         await this.open();
 
-        // Consumed, so a second call on a live connection reports nothing rather than repeating
-        // what the first one ran.
+        // Consumed, so a second call on a live connection reports
+        // nothing rather than repeating what the first one ran.
         const migrated: string[] = this.#migrated;
 
         this.#migrated = [];
@@ -169,9 +169,10 @@ export class Connection {
 
         Dispatcher.dispatch(new SeedingStarted(this.#name, names));
 
-        // This connection stands in as the default for the duration, so a seeder reaching for
-        // DB.table() writes to the connection being seeded rather than the configured default.
-        // Laravel's SeedCommand does the same, swapping the default and restoring it afterwards.
+        // This connection stands in as the default for the duration, so a seeder
+        // reaching for DB.table() writes to the connection being seeded rather
+        // than the configured default. Laravel's SeedCommand does the same,
+        // swapping the default and restoring it afterwards.
         await Resolver.during(this.#name, async (): Promise<void> => {
             for (const constructor of seeders) {
                 const seeder: Seeder = new constructor();
@@ -179,9 +180,10 @@ export class Connection {
 
                 Dispatcher.dispatch(new SeederStarted(name));
 
-                // Seeders run one after another outside the version change transaction, and are
-                // deliberately not wrapped in a transaction of their own. That is what lets them
-                // await a fetch, and leaves each free to open a transaction if it wants atomicity.
+                // Seeders run one after another outside the version change transaction,
+                // and are deliberately not wrapped in a transaction of their own.
+                // That is what lets them await a fetch, and leaves each
+                // free to open a transaction if it wants atomicity.
                 await seeder.run();
 
                 Dispatcher.dispatch(new SeederEnded(name));
@@ -237,19 +239,19 @@ export class Connection {
     }
 
     /**
-     * Begin a query against a table, inside the migration running on this connection when there is one.
+     * Begin a query against a table, joining any running migration.
      */
     table<T = Record<string, unknown>>(table: string, transaction: IDBTransaction | null = null): Builder<T> {
         return new Builder<T>(this, table, transaction ?? this.#migration()?.transaction ?? null);
     }
 
     /**
-     * Run the callback inside a transaction, committing when it resolves, or inside the migration running on this connection when there is one.
+     * Run the callback inside a transaction, committing when it resolves.
      */
     async transaction<R>(callback: (transaction: Transaction) => R | Promise<R>, options: TransactionOptions = {}): Promise<R> {
-        // A nested call joins the transaction already running rather than opening a second one.
-        // IndexedDB has no savepoints, so there is no way to roll back only part of one, and two
-        // overlapping transactions over the same stores would deadlock.
+        // A nested call joins the transaction already running rather than opening a second
+        // one. IndexedDB has no savepoints, so there is no way to roll back only part of
+        // one, and two overlapping transactions over the same stores would deadlock.
         if (this.#active !== null) {
             return callback(this.#active);
         }
@@ -271,8 +273,9 @@ export class Connection {
         let aborted: boolean = false;
         let aborting: boolean = false;
 
-        // An untolerated request failure bubbles here and takes the transaction down with it, which
-        // happens before our own catch runs. Aborting again would then throw.
+        // An untolerated request failure bubbles here and takes the transaction
+        // down with it, which happens before our own catch runs.
+        // Aborting again would then throw.
         handle.onerror = (): void => {
             aborting = true;
         };
@@ -294,7 +297,8 @@ export class Connection {
         });
 
         const finished: Promise<void> = settled.catch((): void => {
-            // A deliberate abort rejects this too, and the original failure is the one worth throwing.
+            // A deliberate abort rejects this too, and the
+            // original failure is the one worth throwing.
         });
 
         this.#active = transaction;
@@ -302,8 +306,8 @@ export class Connection {
         Dispatcher.dispatch(new TransactionBeginning(this.#name));
 
         try {
-            // IndexedDB commits a transaction the moment its request queue drains, so the callback
-            // may only await operations from this package.
+            // IndexedDB commits a transaction the moment its request queue drains,
+            // so the callback may only await operations from this package.
             const result: R = await callback(transaction);
 
             if (!committed && !aborted && !aborting && Handles.inactive(handle)) {
@@ -328,7 +332,8 @@ export class Connection {
                 try {
                     handle.abort();
                 } catch {
-                    // A browser refuses to abort a transaction it is still committing, then completes it.
+                    // A browser refuses to abort a transaction it is still committing,
+                    // and completes it instead of rolling it back.
                     await finished;
                 }
             }
@@ -404,7 +409,7 @@ export class Connection {
     }
 
     /**
-     * Get the schema of every table, as the migration running on this connection has left them so far when there is one.
+     * Get the schema of every table, as any running migration left them.
      */
     async #tables(): Promise<Map<string, TableSchema>> {
         const migration: MigrationContext | null = this.#migration();
@@ -430,7 +435,7 @@ export class Connection {
     }
 
     /**
-     * Get the migration running on this connection's database, refusing one whose transaction has closed, or null when there is none.
+     * Get the migration running on this connection's database, if any.
      */
     #migration(): MigrationContext | null {
         const context: MigrationContext | null = Migrator.context();
@@ -453,8 +458,8 @@ export class Connection {
             request.onupgradeneeded = (event: IDBVersionChangeEvent): void => {
                 const transaction: IDBTransaction = request.transaction as IDBTransaction;
 
-                // The request keeps hold of the transaction for a tick after it finishes, so the
-                // handle alone does not say whether there is still anything to abort.
+                // The request keeps hold of the transaction for a tick after it finishes, so
+                // the handle alone does not say whether there is still anything to abort.
                 let live: boolean = true;
 
                 const closed: () => void = (): void => {
@@ -475,9 +480,9 @@ export class Connection {
                     new Date(),
                 );
 
-                // Aborting is what rolls the schema back, and a finished transaction
-                // cannot be aborted. A migration that failed after the commit has
-                // nothing left to roll back.
+                // Aborting is what rolls the schema back, and a finished
+                // transaction cannot be aborted. A migration that failed
+                // after the commit has nothing left to roll back.
                 runner.catch((error: unknown): void => {
                     failure = error;
 
@@ -500,8 +505,9 @@ export class Connection {
                     return;
                 }
 
-                // A stored version above the one the registered migrations ask for can only mean
-                // migrations were removed, so report that rather than the raw platform error.
+                // A stored version above the one the registered migrations
+                // ask for can only mean migrations were removed, so
+                // report that rather than the raw platform error.
                 if (request.error?.name === 'VersionError') {
                     this.#recorded().then(
                         (ran: MigrationRecord[]): void => reject(new MigrationMismatchException(ran.map((record: MigrationRecord): string => record.migration), Migrator.names(migrations))),

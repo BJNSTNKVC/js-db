@@ -159,7 +159,7 @@ export class ColumnDefinition {
     }
 
     /**
-     * Index each element of the column's array value, requesting an index when none was.
+     * Index each element of the column's array value.
      */
     multiEntry(): this {
         if (this.#requested.length === 0) {
@@ -174,7 +174,7 @@ export class ColumnDefinition {
     }
 
     /**
-     * Change the existing column of the same name to this definition, instead of adding one.
+     * Change the existing column of the same name instead of adding one.
      */
     change(): this {
         this.#changed = true;

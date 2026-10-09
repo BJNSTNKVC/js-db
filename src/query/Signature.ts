@@ -62,11 +62,12 @@ export class Signature {
     }
 
     /**
-     * Encode every key of an object with its value, in an order that ignores how the keys were written.
+     * Encode every key of an object with its value, in sorted order.
      */
     static #entries(record: Record<string, unknown>, ancestors: Set<object>): string {
-        // Compared by code unit rather than localeCompare, which can rank distinct keys as equal and
-        // leave them in insertion order. The keys of an object are unique, so none ever tie.
+        // Compared by code unit rather than localeCompare, which can rank
+        // distinct keys as equal and leave them in insertion order.
+        // The keys of an object are unique, so none ever tie.
         return Object.keys(record)
             .sort((a: string, b: string): number => a < b ? -1 : 1)
             .map((key: string): string => this.#segment(key) + this.#segment(this.#encode(record[key], ancestors)))
@@ -74,19 +75,20 @@ export class Signature {
     }
 
     /**
-     * Encode every element of an array in order, a hole as an empty part.
+     * Encode every element of an array in order.
      */
     static #elements(values: unknown[], ancestors: Set<object>): string {
         return Array.from(values.keys(), (index: number): string => this.#segment(index in values ? this.#encode(values[index], ancestors) : '')).join('');
     }
 
     /**
-     * Encode one part of a signature so that its own content cannot be read as a boundary.
+     * Encode one part of a signature so it cannot forge a boundary.
      */
     static #segment(part: string): string {
-        // Joining on a separator alone let a value containing that separator forge a boundary, so two
-        // different group keys could encode identically and their groups would silently merge. The
-        // length says how far the part reaches, which leaves no way to fake the end of one.
+        // Joining on a separator alone let a value containing that separator forge
+        // a boundary, so two different group keys could encode identically and
+        // their groups would silently merge. The length says how far the part
+        // reaches, which leaves no way to fake the end of one.
         return `${part.length}${SEPARATOR}${part}`;
     }
 }

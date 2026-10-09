@@ -6,7 +6,7 @@ import type { IndexSchema, TableSchema } from '../schema/types';
 
 export class Writer {
     /**
-     * Add a record to the store, reading its dates in the timezone and reporting a violated constraint by its index.
+     * Add a record to the store, naming any unique index it violates.
      */
     static async add(store: IDBObjectStore, schema: TableSchema, strict: boolean, timezone: string, record: Record<string, unknown>): Promise<IDBValidKey> {
         const prepared: Record<string, unknown> = Enforcer.insertable(record, schema, strict, timezone, new Date());
@@ -19,7 +19,7 @@ export class Writer {
     }
 
     /**
-     * Get the error a failed write reports, naming the unique index the record collided with when it can be found.
+     * Get the error a failed write reports, naming the violated unique index.
      */
     static async attributed(store: IDBObjectStore, schema: TableSchema, record: Record<string, unknown>, previous: Record<string, unknown> | null, error: unknown): Promise<unknown> {
         if (error instanceof DOMException && error.name === 'ConstraintError') {
@@ -34,7 +34,7 @@ export class Writer {
     }
 
     /**
-     * Get the error a failed write reports, rolling back the transaction when the write opened it.
+     * Get the error a failed write reports, rolling back when told to.
      */
     static async failed(store: IDBObjectStore, schema: TableSchema, record: Record<string, unknown>, previous: Record<string, unknown> | null, error: unknown, rollback: boolean): Promise<unknown> {
         try {
@@ -47,7 +47,7 @@ export class Writer {
     }
 
     /**
-     * Prepare the changes an update writes, reading their dates in the timezone and refusing any that touch the key path.
+     * Prepare the changes an update writes, refusing any to the key path.
      */
     static changes(values: Record<string, unknown>, schema: TableSchema, strict: boolean, timezone: string): Record<string, unknown> {
         const prepared: Record<string, unknown> = Enforcer.updatable(values, schema, strict, timezone, new Date());
@@ -60,7 +60,7 @@ export class Writer {
     }
 
     /**
-     * Resolve the conflict target of an upsert, or fail when it cannot be enforced.
+     * Resolve the conflict target of an upsert, or fail.
      */
     static conflict(schema: TableSchema, columns: string[]): IndexSchema | null {
         if (columns.length === 1 && columns[0] === schema.key) {
@@ -79,7 +79,7 @@ export class Writer {
     }
 
     /**
-     * Insert a record, or merge it into the one already holding its conflict key, reading its dates in the timezone.
+     * Insert a record, or merge it into the one it conflicts with.
      */
     static async merge(store: IDBObjectStore, schema: TableSchema, strict: boolean, timezone: string, columns: string[], target: IndexSchema | null, value: Record<string, unknown>, update: string[] | undefined, rollback: boolean): Promise<void> {
         if (target === null) {
@@ -141,7 +141,7 @@ export class Writer {
     }
 
     /**
-     * Get the one record holding any of the entries in a multi-entry index, failing when several do.
+     * Get the one record holding any of the multi-entry index entries.
      */
     static async #holder(store: IDBObjectStore, schema: TableSchema, index: IndexSchema, entries: IDBValidKey[], rollback: boolean): Promise<Record<string, unknown> | undefined> {
         const keys: IDBValidKey[] = [];
@@ -166,10 +166,11 @@ export class Writer {
     }
 
     /**
-     * Find the unique index the record collides with, or null when it cannot be attributed.
+     * Find the unique index the record collides with, if any.
      */
     static async #violated(store: IDBObjectStore, schema: TableSchema, record: Record<string, unknown>, previous: Record<string, unknown> | null): Promise<string | null> {
-        // A generated key is absent from the record, and an absent value is not a valid range.
+        // A generated key is absent from the record,
+        // and an absent value is not a valid range.
         if (previous === null && schema.key !== null && this.#keyable(record[schema.key])) {
             if (await Request.settle(store.count(IDBKeyRange.only(record[schema.key] as IDBValidKey))) > 0) {
                 return schema.key;
@@ -189,7 +190,8 @@ export class Writer {
                 continue;
             }
 
-            // The record a failed write would have replaced still holds its own entry in the index.
+            // The record a failed write would have replaced
+            // still holds its own entry in the index.
             if (previous !== null && this.#unchanged(index.columns, record, previous)) {
                 continue;
             }
@@ -205,7 +207,7 @@ export class Writer {
     }
 
     /**
-     * Determine whether another record holds any entry the record adds to a multi-entry index.
+     * Determine whether another record holds an entry this record adds.
      */
     static async #collides(store: IDBObjectStore, index: IndexSchema, record: Record<string, unknown>, previous: Record<string, unknown> | null): Promise<boolean> {
         const column: string = index.columns[0] as string;
@@ -225,7 +227,7 @@ export class Writer {
     }
 
     /**
-     * Get the distinct entries a value adds to a multi-entry index, an array by its elements and any other value as itself.
+     * Get the distinct entries a value adds to a multi-entry index.
      */
     static #entries(value: unknown): IDBValidKey[] {
         const entries: IDBValidKey[] = [];
@@ -240,7 +242,7 @@ export class Writer {
     }
 
     /**
-     * Determine whether the record holds the same values as the previous one in the given columns.
+     * Determine whether the record keeps the previous values in the columns.
      */
     static #unchanged(columns: string[], record: Record<string, unknown>, previous: Record<string, unknown>): boolean {
         return Signature.ofValues(columns.map((column: string): unknown => record[column]))

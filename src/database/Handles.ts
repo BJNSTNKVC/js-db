@@ -2,7 +2,7 @@ import { TransactionClosedException } from '../exceptions';
 
 export class Handles {
     /**
-     * The transactions a connection's transaction call has opened, each under the name of its connection.
+     * The transactions that transaction calls opened, under their connection's name.
      */
     static readonly #opened: WeakMap<IDBTransaction, string> = new WeakMap<IDBTransaction, string>();
 
@@ -26,7 +26,7 @@ export class Handles {
     }
 
     /**
-     * Get the transaction, refusing one that has already committed, or one a transaction call opened that no longer accepts requests.
+     * Get the transaction, refusing one that no longer accepts requests.
      */
     static alive(transaction: IDBTransaction): IDBTransaction {
         const closed: string | undefined = this.#closed.get(transaction);
@@ -45,14 +45,16 @@ export class Handles {
     }
 
     /**
-     * Determine whether the transaction has stopped accepting requests, which a browser does once control returns to the event loop, though it completes only when its requests drain.
+     * Determine whether the transaction has stopped accepting requests.
      */
     static inactive(transaction: IDBTransaction): boolean {
+        // A browser deactivates a transaction once control returns to the
+        // event loop, though it completes only when its requests drain.
         let error: unknown = null;
 
-        // IndexedDB checks that the transaction is active before it reads the key, so a get with no
-        // key throws TransactionInactiveError on an inactive one, and on an active one throws a
-        // DataError without making a request.
+        // IndexedDB checks that the transaction is active before it reads the key,
+        // so a get with no key throws TransactionInactiveError on an inactive one,
+        // and on an active one throws a DataError without making a request.
         try {
             transaction.objectStore(transaction.objectStoreNames[0] as string).get(undefined as unknown as IDBValidKey);
         } catch (thrown: unknown) {

@@ -1,6 +1,6 @@
 export class Binding {
     /**
-     * Get the value Laravel binds for a comparison: the first value an array or an object holds at any depth, false when it holds none, or the value itself.
+     * Get the scalar value a comparison binds.
      */
     static scalar(value: unknown): unknown {
         if (!this.structured(value)) {
@@ -13,7 +13,7 @@ export class Binding {
     }
 
     /**
-     * Flatten arrays and objects into the values they hold, at every depth, as Laravel's Arr::flatten does.
+     * Flatten arrays and objects into the values they hold, at every depth.
      */
     static flatten(value: unknown): unknown[] {
         return this.structured(value)
@@ -22,7 +22,7 @@ export class Binding {
     }
 
     /**
-     * Determine whether a value is an array or a plain object, which compare by content and kind, unlike a date or binary data.
+     * Determine whether a value is an array or a plain object.
      */
     static structured(value: unknown): boolean {
         return Array.isArray(value) || Object.prototype.toString.call(value) === '[object Object]';

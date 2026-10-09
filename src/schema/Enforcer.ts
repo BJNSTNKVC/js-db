@@ -8,7 +8,7 @@ const NUMERIC: RegExp = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
 
 export class Enforcer {
     /**
-     * Coerce a value into its declared column type, reading a calendar day or a time of day in the timezone.
+     * Coerce a value into its declared column type.
      */
     static coerce(value: unknown, type: ColumnType, strict: boolean, timezone: string): unknown {
         if (value === null || value === undefined) {
@@ -84,7 +84,7 @@ export class Enforcer {
     }
 
     /**
-     * Coerce the value a write gives one column, enforcing nullability, or pass it through when the column is undeclared.
+     * Coerce the value a write gives one column.
      */
     static field(value: unknown, name: string, schema: TableSchema, strict: boolean, timezone: string): unknown {
         const column: ColumnSchema | undefined = schema.columns.find((candidate: ColumnSchema): boolean => candidate.name === name);
@@ -125,7 +125,8 @@ export class Enforcer {
             throw new CheckConstraintViolationException(schema.table, column.name, value, column.values);
         }
 
-        // Loose, an unacceptable value is treated as absent, so the nullability rules decide from here.
+        // Loose, an unacceptable value is treated as absent,
+        // so the nullability rules decide from here.
         return null;
     }
 
@@ -154,7 +155,7 @@ export class Enforcer {
     }
 
     /**
-     * Coerce a value into a string, keeping a date as its ISO string.
+     * Coerce a value into a string.
      */
     static #text(value: unknown, strict: boolean): string | null {
         if (typeof value === 'string') {
@@ -177,7 +178,7 @@ export class Enforcer {
     }
 
     /**
-     * Coerce a value into a whole number, refusing a fraction under strict and rounding it when loose.
+     * Coerce a value into a whole number.
      */
     static #whole(value: unknown, strict: boolean, type: 'integer' | 'decimal'): number | null {
         const number: number | null = this.#numeric(value, strict);
@@ -196,7 +197,7 @@ export class Enforcer {
     }
 
     /**
-     * Coerce a value into a finite number, reading a blank string as null.
+     * Coerce a value into a finite number.
      */
     static #numeric(value: unknown, strict: boolean): number | null {
         if (typeof value === 'string' && value.trim() === '') {
@@ -217,7 +218,7 @@ export class Enforcer {
     }
 
     /**
-     * Read a number, a bigint within the safe integer range or a string in decimal notation, or NaN for anything else.
+     * Read a value as a number, or NaN when it names none.
      */
     static #number(value: unknown): number {
         if (typeof value === 'number') {
@@ -232,7 +233,7 @@ export class Enforcer {
     }
 
     /**
-     * Coerce a value into a date, a whole timestamp or a string in an ISO 8601 form naming a real moment, reading a blank string as null.
+     * Coerce a value into a date.
      */
     static #temporal(value: unknown, strict: boolean, timezone: string): Date | null {
         if (typeof value === 'string' && value.trim() === '') {
@@ -253,7 +254,7 @@ export class Enforcer {
     }
 
     /**
-     * Coerce a value into a structure, parsing it when it arrives as a string.
+     * Coerce a value into a structure, parsing a string.
      */
     static #structured(value: unknown, strict: boolean): unknown {
         if (typeof value !== 'string') {

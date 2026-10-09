@@ -44,7 +44,7 @@ export class Blueprint {
     readonly #names: Map<ColumnDefinition, string> = new Map<ColumnDefinition, string>();
 
     /**
-     * The declared columns whose name the table already held when they were declared.
+     * The declared columns whose name the table already held.
      */
     readonly #clashing: Set<ColumnDefinition> = new Set<ColumnDefinition>();
 
@@ -143,7 +143,7 @@ export class Blueprint {
     }
 
     /**
-     * Add a fixed point column, stored as an integer number of its smallest unit.
+     * Add a fixed point column stored in its smallest unit.
      */
     decimal(column: string, places: number = 2): ColumnDefinition {
         const definition: ColumnDefinition = this.#add(column, 'decimal');
@@ -313,7 +313,7 @@ export class Blueprint {
     }
 
     /**
-     * Refuse a column name that is blank, or that a key path, a join, a JSON path or a select would read as more than a name.
+     * Refuse a column name that would read as more than a name.
      */
     #named(column: string): void {
         const named: string = `Column [${column}] of table [${this.#table}]`;
@@ -336,7 +336,7 @@ export class Blueprint {
     }
 
     /**
-     * Refuse a declared column whose key path or default IndexedDB and the enforcer cannot honor.
+     * Refuse a column whose key path or default cannot be honored.
      */
     #storable(definition: ColumnDefinition): void {
         const column: ColumnSchema = this.#schemaOf(definition);
@@ -366,7 +366,7 @@ export class Blueprint {
     }
 
     /**
-     * Refuse a default a strict connection would not store, or would store as null in a column that is not nullable.
+     * Refuse a default a strict connection would not store.
      */
     #defaulted(column: ColumnSchema, named: string): void {
         let stored: unknown;
@@ -393,7 +393,7 @@ export class Blueprint {
     }
 
     /**
-     * Refuse an index that would cover nothing, hold nothing, or that IndexedDB cannot create over its column names.
+     * Refuse an index IndexedDB cannot create or would leave empty.
      */
     #indexable(columns: ColumnSchema[]): void {
         const types: Map<string, ColumnType> = new Map(columns.map((column: ColumnSchema): [string, ColumnType] => [column.name, column.type]));
@@ -424,15 +424,18 @@ export class Blueprint {
     }
 
     /**
-     * Reduce a list, an enum or a constant object to the values a column accepts.
+     * Reduce a list, enum or constant object to its accepted values.
      */
     #enumerated(column: string, values: Enumerable): string[] {
-        // A TypeScript string enum and an `as const` object are both plain objects at runtime, so
-        // their values are what the column stores and their keys are only source-level names.
+        // A TypeScript string enum and an `as const` object are both plain
+        // objects at runtime, so their values are what the column
+        // stores and their keys are only source-level names.
         const listed: (string | number)[] = Array.isArray(values) ? [...values] : Object.values(values);
 
-        // A numeric enum also carries a reverse mapping, so its values hold both the names and the
-        // numbers. There is no string form of it worth storing, and picking one would be a guess.
+        // A numeric enum also carries a reverse mapping, so
+        // its values hold both the names and the numbers.
+        // There is no string form of it worth storing,
+        // and picking one would be a guess.
         if (listed.some((value: string | number): boolean => typeof value !== 'string')) {
             throw new SchemaException(`Column [${column}] of table [${this.#table}] is enumerated over a numeric enum, which has no string form to store. Give the enum string values, or use integer() instead.`);
         }
@@ -487,14 +490,14 @@ export class Blueprint {
     }
 
     /**
-     * Get the column the blueprint last declared under the given name and still adds, if any.
+     * Get the last addition declared under the given name, if any.
      */
     #declared(column: string): ColumnDefinition | undefined {
         return this.#additions().filter((definition: ColumnDefinition): boolean => (this.#names.get(definition) ?? definition.name) === column).at(-1);
     }
 
     /**
-     * Determine whether the table holds the column at this point of the blueprint, as a create statement would hold every declaration.
+     * Determine whether the table holds the column at this point.
      */
     #holds(column: string): boolean {
         if (this.#existing === null) {
@@ -505,7 +508,7 @@ export class Blueprint {
     }
 
     /**
-     * Get the schema of a declared column under the name the blueprint gives it.
+     * Get a declared column's schema under the name the blueprint gives it.
      */
     #schemaOf(definition: ColumnDefinition): ColumnSchema {
         const column: ColumnSchema = definition.toSchema();
@@ -542,7 +545,7 @@ export class Blueprint {
     }
 
     /**
-     * Get the existing columns the blueprint keeps, under the names it gives them.
+     * Get the existing columns the blueprint keeps, under their new names.
      */
     #kept(): ColumnSchema[] {
         const renamed: Map<string, string> = new Map(this.#renamed.map((rename: RenamedColumn): [string, string] => [rename.from, rename.to]));
@@ -571,7 +574,7 @@ export class Blueprint {
     }
 
     /**
-     * Get each column the blueprint changes, before and after, refusing a change it cannot apply.
+     * Get each changed column before and after, refusing an impossible change.
      */
     #changes(): ChangedColumn[] {
         const kept: ColumnSchema[] = this.#kept();
@@ -603,14 +606,16 @@ export class Blueprint {
     #changeable(from: ColumnSchema, to: ColumnSchema): void {
         const column: string = `Column [${to.name}] of table [${this.#table}]`;
 
-        // Every pair of types would need its own conversion rules. Until they exist, a new column
-        // with the values copied across does the same job without guessing.
+        // Every pair of types would need its own conversion rules.
+        // Until they exist, a new column with the values copied
+        // across does the same job without guessing.
         if (from.type !== to.type) {
             throw new SchemaException(`${column} may not change type from [${from.type}] to [${to.type}]. Add a new column, copy the values across and drop the old one.`);
         }
 
-        // A decimal holds a whole number of its smallest unit, so 1999 at two places would read
-        // as 1.999 at three. Nothing would fail, and every stored value would be wrong.
+        // A decimal holds a whole number of its smallest unit, so 1999
+        // at two places would read as 1.999 at three. Nothing would
+        // fail, and every stored value would be wrong.
         if (from.places !== to.places) {
             throw new SchemaException(`${column} may not change scale from [${from.places}] to [${to.places}], because every stored value would be read at the wrong scale.`);
         }
@@ -621,7 +626,7 @@ export class Blueprint {
     }
 
     /**
-     * Get the indexes declared by this blueprint, at table level and on columns.
+     * Get the indexes this blueprint declares, on the table and columns.
      */
     #declaredIndexes(): IndexSchema[] {
         const indexes: IndexSchema[] = [...this.#indexes];
@@ -666,7 +671,7 @@ export class Blueprint {
     }
 
     /**
-     * Work out the indexes of the table once the blueprint is applied, those to create and the names of those to delete.
+     * Work out the indexes to create and the names to delete.
      */
     #indexChanges(): IndexChanges {
         const renamed: Map<string, string> = new Map(this.#renamed.map((rename: RenamedColumn): [string, string] => [rename.from, rename.to]));
@@ -706,8 +711,9 @@ export class Blueprint {
                     continue;
                 }
 
-                // Each carried index stands in for one declaration only, so declaring it twice is
-                // still reported as a duplicate rather than quietly collapsing.
+                // Each carried index stands in for one declaration only,
+                // so declaring it twice is still reported as a
+                // duplicate rather than quietly collapsing.
                 declared.splice(position, 1);
             }
 

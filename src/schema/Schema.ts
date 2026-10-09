@@ -120,8 +120,9 @@ export class Schema {
 
         await this.#check(store, schema, operations, context.timezone);
 
-        // Indexes are removed before the rewrite and created after it, so neither an index on its
-        // way out nor one still to be built can reject a row the rewrite writes.
+        // Indexes are removed before the rewrite and created after it,
+        // so neither an index on its way out nor one still
+        // to be built can reject a row the rewrite writes.
         for (const name of operations.unindexed) {
             store.deleteIndex(name);
         }
@@ -196,7 +197,7 @@ export class Schema {
     }
 
     /**
-     * Rewrite every row of a table so each declared column it holds, or each one named, holds what a write would store, as strictly as the migrating connection writes and reading dates in its timezone.
+     * Rewrite every row so its columns hold what a write would store.
      */
     static async coerce(table: string, columns?: string[]): Promise<void> {
         const context: MigrationContext = this.#context('coerce');
@@ -290,7 +291,7 @@ export class Schema {
     }
 
     /**
-     * Refuse the operations when a record, once rewritten with dates read in the timezone, would break an added column, a changed column or a unique index.
+     * Refuse the operations when a rewritten record would break them.
      */
     static async #check(store: IDBObjectStore, schema: TableSchema, operations: BlueprintOperations, timezone: string): Promise<void> {
         const filled: string[] = operations.changed
@@ -309,8 +310,8 @@ export class Schema {
             .filter((change: ChangedColumn): boolean => this.#lost(change).length > 0)
             .map((change: ChangedColumn): Tally => ({ change, count: 0 }));
 
-        // A new unique index has never seen the records, and one kept over a changed column may be
-        // handed defaults it has not seen either.
+        // A new unique index has never seen the records, and one kept over
+        // a changed column may be handed defaults it has not seen either.
         const unique: IndexSchema[] = schema.indexes.filter((index: IndexSchema): boolean => index.unique
             && (operations.indexed.some((created: IndexSchema): boolean => created.name === index.name)
                 || index.columns.some((column: string): boolean => filled.includes(column))));
@@ -403,7 +404,7 @@ export class Schema {
     }
 
     /**
-     * Get the keys a record holds in an index, leaving out any IndexedDB would not index.
+     * Get the keys a record holds in an index.
      */
     static #keysOf(index: IndexSchema, record: Record<string, unknown>): IDBValidKey[] {
         const value: unknown = index.columns.length === 1
@@ -448,8 +449,9 @@ export class Schema {
             previous = entry.key;
         }
 
-        // A multi entry index may list one row twice under the same key, which is no conflict, so
-        // a run of equal keys counts only when it spans more than one row.
+        // A multi entry index may list one row twice under the same key,
+        // which is no conflict, so a run of equal keys
+        // counts only when it spans more than one row.
         const repeated: Set<number> = new Set<number>();
 
         for (const rows of runs.filter((candidate: Set<number>): boolean => candidate.size > 1)) {
@@ -469,7 +471,7 @@ export class Schema {
     }
 
     /**
-     * Rewrite every record of a store to match the applied operations, reading dates in the timezone.
+     * Rewrite every record of a store to match the operations.
      */
     static async #rewrite(store: IDBObjectStore, operations: BlueprintOperations, timezone: string): Promise<void> {
         const rewrites: boolean = operations.added.some((column: ColumnSchema): boolean => column.hasDefault)
@@ -487,7 +489,7 @@ export class Schema {
     }
 
     /**
-     * Apply the operations to a copy of a record, reading the dates a default names in the timezone.
+     * Apply the operations to a copy of a record.
      */
     static #rewritten(value: unknown, operations: BlueprintOperations, timezone: string): Record<string, unknown> {
         const record: Record<string, unknown> = { ...value as Record<string, unknown> };
@@ -513,8 +515,9 @@ export class Schema {
                 continue;
             }
 
-            // A missing value takes the default, as it would for an added column. Null is a value
-            // in its own right and is kept, unless the column is becoming required.
+            // A missing value takes the default, as it would for an added column.
+            // Null is a value in its own right and is kept,
+            // unless the column is becoming required.
             const required: boolean = change.from.nullable && !change.to.nullable;
 
             if (!Object.hasOwn(record, change.to.name) || (required && this.#empty(record[change.to.name]))) {
@@ -526,7 +529,7 @@ export class Schema {
     }
 
     /**
-     * Get the declared columns to coerce, every one when none are named, leaving out the key path and JSON columns, every value of which a write can store.
+     * Get the declared columns to coerce, every one when none are named.
      */
     static #coercible(schema: TableSchema, columns: string[] | undefined): ColumnSchema[] {
         const named: Set<string> = new Set<string>();
@@ -555,7 +558,7 @@ export class Schema {
     }
 
     /**
-     * Refuse the coercion when a record holds a value a strict write would refuse in any of the columns, or would leave a required one without a value.
+     * Refuse the coercion when a strict write would refuse a record.
      */
     static async #refusals(store: IDBObjectStore, schema: TableSchema, columns: ColumnSchema[], timezone: string): Promise<void> {
         const tallies: Refusal[] = columns.map((column: ColumnSchema): Refusal => ({ column: column.name, refused: 0, empty: 0, sample: undefined }));
@@ -596,7 +599,7 @@ export class Schema {
     }
 
     /**
-     * Write every record holding a value in the columns that a write would store differently, reporting a unique collision by its index.
+     * Write every record whose columns a write would store differently.
      */
     static async #coerced(store: IDBObjectStore, schema: TableSchema, columns: ColumnSchema[], strict: boolean, timezone: string): Promise<void> {
         const writes: Writes = { last: Promise.resolve(), failure: null };
@@ -628,7 +631,7 @@ export class Schema {
     }
 
     /**
-     * Record the schema of a table, in the registry and the context cache.
+     * Record a table's schema in the registry and the context cache.
      */
     static #record(context: MigrationContext, schema: TableSchema): void {
         Registry.put(context.transaction, schema);

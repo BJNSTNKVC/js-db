@@ -104,8 +104,9 @@ export class Predicate {
             return this.#negate(constraint.not, this.#absent(held));
         }
 
-        // SQL three valued logic: comparing against null is unknown, and negating unknown leaves it
-        // unknown, so a null value satisfies neither a constraint nor its negation.
+        // SQL three valued logic: comparing against null is unknown,
+        // and negating unknown leaves it unknown, so a null value
+        // satisfies neither a constraint nor its negation.
         if (this.#absent(held)) {
             return null;
         }
@@ -126,7 +127,8 @@ export class Predicate {
             return time === null ? null : this.#negate(constraint.not, this.#compare(time, constraint.operator, constraint.value));
         }
 
-        // Only an array can contain a value or have a length, so any other target is unknown.
+        // Only an array can contain a value or have a length,
+        // so any other target is unknown.
         if (constraint.type === 'json-contains') {
             return Array.isArray(held) ? this.#negate(constraint.not, this.#contains(held, constraint.value)) : null;
         }
@@ -156,7 +158,7 @@ export class Predicate {
     }
 
     /**
-     * Determine whether an array holds a value, or every element when the value is an array itself.
+     * Determine whether an array holds a value, or every given value.
      */
     static #contains(held: unknown[], value: unknown): boolean {
         const wanted: unknown[] = Array.isArray(value) ? value : [value];
@@ -165,7 +167,7 @@ export class Predicate {
     }
 
     /**
-     * Read one part of a value that should hold a date, in the timezone.
+     * Read one part of a date value in the timezone.
      */
     static #part(held: unknown, part: DatePart, timezone: string): number | null {
         const date: Date | null = Calendar.moment(held, timezone);
@@ -184,7 +186,7 @@ export class Predicate {
     }
 
     /**
-     * Read the time of day of a value that should hold a date in the timezone, as a zero padded HH:MM:SS string.
+     * Read the time of day of a date value as HH:MM:SS.
      */
     static #time(held: unknown, timezone: string): string | null {
         const date: Date | null = Calendar.moment(held, timezone);
@@ -215,14 +217,14 @@ export class Predicate {
     }
 
     /**
-     * Compare a held value against a given one, which is unknown when the given one is null.
+     * Compare a held value against a given one, unknown against null.
      */
     static #compared(held: unknown, operator: Operator, given: unknown): Truth {
         return this.#absent(given) ? null : this.#compare(held, operator, given);
     }
 
     /**
-     * Compare a held value against a given one, where a pattern against anything but a string is unknown, as is ordering an array or an object against anything but an array.
+     * Compare a held value against a given one.
      */
     static #compare(held: unknown, operator: Operator, given: unknown): Truth {
         if (operator === 'like' || operator === 'not like') {
@@ -272,10 +274,12 @@ export class Predicate {
     }
 
     /**
-     * Compare two values when either is an array or an object: equal only to the same content of the same kinds, and ordered only as two keys, an array above every scalar.
+     * Compare two values when either is an array or an object.
      */
     static #structural(held: unknown, operator: Operator, given: unknown): Truth {
         if (operator === '<' || operator === '>' || operator === '<=' || operator === '>=') {
+            // Structures order only as two keys, where IndexedDB
+            // ranks an array above every scalar.
             if (!Comparator.key(held) || !Comparator.key(given)) {
                 return null;
             }
@@ -289,7 +293,7 @@ export class Predicate {
     }
 
     /**
-     * Read the result of an ordering comparison from the sign of a comparison.
+     * Read an ordering comparison's result from a comparison's sign.
      */
     static #ordered(order: number, operator: '<' | '>' | '<=' | '>='): boolean {
         switch (operator) {
@@ -325,9 +329,10 @@ export class Predicate {
         let wildcard: number = -1;
         let resume: number = 0;
 
-        // A greedy walk carrying a single backtrack point. The regular expression this replaces
-        // compiled `%%%%%` into `.*.*.*.*.*`, and adjacent unbounded stars made the engine retry
-        // every division of the subject between them, which is exponential in the number of stars.
+        // A greedy walk carrying a single backtrack point. The regular expression this
+        // replaces compiled `%%%%%` into `.*.*.*.*.*`, and adjacent unbounded stars
+        // made the engine retry every division of the subject between
+        // them, which is exponential in the number of stars.
         while (index < subject.length) {
             const current: LikeToken | undefined = tokens[token];
 
@@ -339,8 +344,9 @@ export class Predicate {
                 continue;
             }
 
-            // Lowercasing one character at a time rather than the whole subject, because a character
-            // whose lower case is longer than itself would otherwise shift every index after it.
+            // Lowercasing one character at a time rather than the whole subject,
+            // because a character whose lower case is longer than
+            // itself would otherwise shift every index after it.
             if (current?.kind === 'one' || current?.value === (subject[index] as string).toLowerCase()) {
                 token++;
                 index++;
@@ -357,7 +363,8 @@ export class Predicate {
             index = resume;
         }
 
-        // Only trailing wildcards may be left over, since they match an empty remainder.
+        // Only trailing wildcards may be left over,
+        // since they match an empty remainder.
         while (tokens[token]?.kind === 'any') {
             token++;
         }

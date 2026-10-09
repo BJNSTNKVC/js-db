@@ -10,9 +10,9 @@ export class Request {
 
             request.onerror = (event: Event): void => {
                 // A tolerated failure keeps the surrounding transaction alive, so the caller may go
-                // on reading from it. That is how a violated constraint is traced back to the index
-                // that raised it. Preventing the default stops the abort, and stopping propagation
-                // keeps the error from reaching the transaction at all.
+                // on reading from it. That is how a violated constraint is traced back to the
+                // index that raised it. Preventing the default stops the abort, and stopping
+                // propagation keeps the error from reaching the transaction at all.
                 if (tolerate) {
                     event.preventDefault();
                     event.stopPropagation();
@@ -24,7 +24,7 @@ export class Request {
     }
 
     /**
-     * Walk a cursor, invoking the callback for each record until it asks to stop.
+     * Walk a cursor, calling back for each record until told to stop.
      */
     static walk<T extends IDBCursor>(request: IDBRequest<T | null>, callback: (cursor: T) => boolean | void): Promise<void> {
         return new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
@@ -51,11 +51,12 @@ export class Request {
     }
 
     /**
-     * Name the failure, where the platform reports one this package can say more about.
+     * Name the failure, where this package can say more about it.
      */
     static translate(error: DOMException | null): unknown {
-        // A full origin is the likeliest failure a browser database hits, and the platform reports
-        // it with no hint that the fix is freeing space rather than changing the query.
+        // A full origin is the likeliest failure a browser database hits,
+        // and the platform reports it with no hint that the fix
+        // is freeing space rather than changing the query.
         if (error?.name === 'QuotaExceededError') {
             return new QuotaExceededException();
         }

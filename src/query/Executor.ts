@@ -74,14 +74,15 @@ export class Executor<T> {
     }
 
     /**
-     * Get the records held under the given keys, skipping any deleted or no longer matching since.
+     * Get the records under the given keys that still match.
      */
     async fetch(keys: IDBValidKey[]): Promise<T[]> {
         const schema: TableSchema = await this.#connection.schema(this.#query.table);
         const store: IDBObjectStore = await this.#store('readonly');
 
-        // Every constraint is checked rather than only the residual, since the one that drove the
-        // scan is exactly what a record changed after the keys were taken may no longer meet.
+        // Every constraint is checked rather than only the residual,
+        // since the one that drove the scan is exactly what a record
+        // changed after the keys were taken may no longer meet.
         const matches: (record: Record<string, unknown>) => boolean = Predicate.compile(this.#prepared(schema));
 
         const records: (T | undefined)[] = await Promise.all(
@@ -94,7 +95,7 @@ export class Executor<T> {
     }
 
     /**
-     * Get the record with the given key when the query matches it, shaped as the query returns it.
+     * Get the record with the given key, if the query matches it.
      */
     async find(key: IDBValidKey | null | undefined): Promise<T | null> {
         const schema: TableSchema = await this.#connection.schema(this.#query.table);
@@ -146,7 +147,7 @@ export class Executor<T> {
     }
 
     /**
-     * Get the values a column holds across the records matching the query, passing over null and undefined, each value once when the query is distinct.
+     * Get the non-null values a column holds across matching records.
      */
     async values(column: string): Promise<unknown[]> {
         const records: Record<string, unknown>[] = (await this.#matched(false)).records as Record<string, unknown>[];
@@ -161,14 +162,14 @@ export class Executor<T> {
     }
 
     /**
-     * Get the numeric values of a column across the records matching the query, each value once when the query is distinct.
+     * Get a column's values across matching records as numbers.
      */
     async numbers(column: string): Promise<number[]> {
         return (await this.values(column)).map((value: unknown): number => Number(value));
     }
 
     /**
-     * Get the value at one end of a column's range as the column holds it, in the order orderBy sorts by.
+     * Get the value at one end of a column's range.
      */
     async extreme(column: string, direction: IDBCursorDirection): Promise<unknown> {
         const schema: TableSchema = await this.#connection.schema(this.#query.table);
@@ -177,8 +178,9 @@ export class Executor<T> {
         if (index !== null) {
             const store: IDBObjectStore = await this.#store('readonly');
 
-            // An index is already sorted, and IndexedDB omits records with no value for its key path,
-            // which is exactly what SQL does with nulls. So the answer is its first entry.
+            // An index is already sorted, and IndexedDB omits records with no value for
+            // its key path, which is exactly what SQL does with nulls.
+            // So the answer is its first entry.
             if (await this.#typed(store, schema, index.name) && (!this.#loose(schema, column) || await this.#complete(store, index.name))) {
                 const started: number = performance.now();
                 const cursor: IDBCursorWithValue | null = await Request.settle(store.index(index.name).openCursor(null, direction));
@@ -203,7 +205,7 @@ export class Executor<T> {
     }
 
     /**
-     * Insert records into the table, skipping any the unique indexes reject when told to ignore them.
+     * Insert records, skipping unique collisions when told to ignore them.
      */
     async insert(rows: Partial<T>[], ignore: boolean = false): Promise<number> {
         this.writable(ignore ? 'insertOrIgnore' : 'insert');
@@ -268,7 +270,7 @@ export class Executor<T> {
     }
 
     /**
-     * Rewrite every record matching the query through the change, or delete it when there is none, in the order the query asks for.
+     * Rewrite or delete every matching record, in the query's order.
      */
     async modify(change: Change | null, changes: readonly string[] = []): Promise<number> {
         if (this.#query.joins.length > 0) {
@@ -391,7 +393,7 @@ export class Executor<T> {
     }
 
     /**
-     * Get a filter that, across every page it is given, lets each row of a distinct query through once.
+     * Get a filter letting each distinct row through once across pages.
      */
     async once(): Promise<(rows: T[]) => T[]> {
         if (!this.#deduplicates(await this.#connection.schema(this.#query.table), this.#query.distinct)) {
@@ -422,7 +424,8 @@ export class Executor<T> {
     #projected(record: T): T {
         const columns: readonly string[] | null = this.#query.columns;
 
-        // A joined query has already projected, since only there can a column need qualifying.
+        // A joined query has already projected, since
+        // only there can a column need qualifying.
         if (columns === null || this.#query.joins.length > 0) {
             return record;
         }
@@ -437,7 +440,7 @@ export class Executor<T> {
     }
 
     /**
-     * Get a check that passes the first row of each signature it is shown and fails every later one.
+     * Get a check that passes only the first row of each signature.
      */
     #fresh(): (row: Record<string, unknown>) => boolean {
         const seen: Set<string> = new Set<string>();
@@ -456,9 +459,11 @@ export class Executor<T> {
     }
 
     /**
-     * Determine whether a distinct read of this table can find two records alike, which it cannot when it projects nothing away from records that each hold their key.
+     * Determine whether a distinct read of this table must drop duplicates.
      */
     #deduplicates(schema: TableSchema, distinct: boolean): boolean {
+        // Records that each hold their key can never be
+        // alike unless a projection drops columns.
         return distinct && (this.#query.columns !== null || schema.key === null);
     }
 
@@ -480,7 +485,7 @@ export class Executor<T> {
     }
 
     /**
-     * Get the constraints with each value compared to a column of this table converted into its type.
+     * Get the constraints with each value converted to its column's type.
      */
     #prepared(schema: TableSchema): Constraint[] {
         const types: Map<string, ColumnType> = new Map<string, ColumnType>(
@@ -491,7 +496,7 @@ export class Executor<T> {
     }
 
     /**
-     * Plan the query, passing over a source that holds a value of another type than its column's, and setting the orders aside when the index they would walk leaves records out.
+     * Plan the query over a source that can answer it.
      */
     async #planned(schema: TableSchema, store: IDBObjectStore): Promise<Plan> {
         const constraints: Constraint[] = this.#prepared(schema);
@@ -524,7 +529,7 @@ export class Executor<T> {
     }
 
     /**
-     * Determine whether an index holds an entry for every record in the store.
+     * Determine whether an index holds an entry for every record.
      */
     async #complete(store: IDBObjectStore, index: string): Promise<boolean> {
         const [held, total]: [number, number] = await Promise.all([
@@ -536,7 +541,7 @@ export class Executor<T> {
     }
 
     /**
-     * Determine whether every entry of an index, or of the key path when given null, is of its column's type, which its first and last keys tell since IndexedDB orders keys by type first.
+     * Determine whether every key of an index is of its column's type.
      */
     async #typed(store: IDBObjectStore, schema: TableSchema, index: string | null): Promise<boolean> {
         const column: string | null | undefined = index === null
@@ -551,6 +556,8 @@ export class Executor<T> {
 
         const source: IDBObjectStore | IDBIndex = index === null ? store : store.index(index);
 
+        // IndexedDB orders keys by type first, so the first
+        // and last keys tell the type of every one.
         const [first, last]: [IDBCursor | null, IDBCursor | null] = await Promise.all([
             Request.settle(source.openKeyCursor(null, 'next')),
             Request.settle(source.openKeyCursor(null, 'prev')),
@@ -580,7 +587,7 @@ export class Executor<T> {
     }
 
     /**
-     * Determine whether a column may hold a value of any kind, as a JSON or an undeclared column may, so its index leaves out the values that are not keys.
+     * Determine whether a column may hold a value of any kind.
      */
     #loose(schema: TableSchema, column: string): boolean {
         const type: ColumnType | undefined = schema.columns.find((candidate: ColumnSchema): boolean => candidate.name === column)?.type;
@@ -589,7 +596,7 @@ export class Executor<T> {
     }
 
     /**
-     * Get the single column index that can answer an unconstrained extreme, if there is one, which is never one over a boolean column.
+     * Get the single column index that can answer an unconstrained extreme.
      */
     #sole(schema: TableSchema, column: string): IndexSchema | null {
         if (this.#query.joins.length > 0 || this.#query.constraints.length > 0) {
@@ -606,7 +613,7 @@ export class Executor<T> {
     }
 
     /**
-     * Run the query, collecting the matching records and their keys, only the first record of each distinct row when told to.
+     * Run the query, collecting the matching records and their keys.
      */
     async #matched(distinct: boolean = this.#query.distinct): Promise<{ records: T[]; keys: IDBValidKey[] }> {
         if (this.#query.joins.length > 0) {
@@ -652,7 +659,7 @@ export class Executor<T> {
     }
 
     /**
-     * Collect the primary keys the planned walk of an index reaches, in the order it reaches them.
+     * Collect the primary keys a planned index walk reaches, in order.
      */
     async #keys(index: IDBIndex, plan: Plan): Promise<IDBValidKey[]> {
         const keys: IDBValidKey[] = [];
@@ -674,7 +681,7 @@ export class Executor<T> {
     }
 
     /**
-     * Collect the records a cursor over the planned source yields, only those the fresh check passes when there is one.
+     * Collect the records a cursor over the planned source yields.
      */
     async #cursored(store: IDBObjectStore, plan: Plan, matches: (record: Record<string, unknown>) => boolean, fresh: ((record: T) => boolean) | null = null): Promise<Entry<T>[]> {
         const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index);
@@ -713,7 +720,7 @@ export class Executor<T> {
     }
 
     /**
-     * Sort the collected records by the requested orders, or shuffle them when the order is random.
+     * Sort the collected records by the orders, or shuffle them.
      */
     #sorted(collected: Entry<T>[]): Entry<T>[] {
         if (this.#query.random) {
@@ -743,7 +750,7 @@ export class Executor<T> {
     }
 
     /**
-     * Get the orders the query sorts by, which a random order sets aside.
+     * Get the orders the query sorts by, unless it is random.
      */
     #orders(): readonly Order[] {
         return this.#query.random ? [] : this.#query.orders;
@@ -773,7 +780,7 @@ export class Executor<T> {
     }
 
     /**
-     * Get the constraints qualified by table, each value converted into the type of the column it is compared with.
+     * Get the constraints qualified by table, values in their column's type.
      */
     async #qualified(tables: Map<string, string[]>): Promise<Constraint[]> {
         const types: Map<string, ColumnType> = new Map<string, ColumnType>();
@@ -804,7 +811,7 @@ export class Executor<T> {
     }
 
     /**
-     * Run the joins and keep the rows the constraints match, each carrying the key of its base record.
+     * Run the joins and keep the rows the constraints match.
      */
     async #combined(tables: Map<string, string[]>, constraints: Constraint[], stores: (table: string) => IDBObjectStore): Promise<Row[]> {
         const store: IDBObjectStore = stores(this.#query.table);
@@ -814,9 +821,10 @@ export class Executor<T> {
             Request.settle(store.getAllKeys()),
         ]);
 
-        // Held under a symbol, the key travels through every join as the rows are spread together,
-        // yet is never read as a column nor flattened into the result. A row a right join keeps for
-        // the other table alone has no base record, and so carries none.
+        // Held under a symbol, the key travels through every join as the
+        // rows are spread together, yet is never read as a column nor
+        // flattened into the result. A row a right join keeps for the
+        // other table alone has no base record, and so carries none.
         let rows: Row[] = Joiner.qualify(records, this.#query.table).map(
             (row: Record<string, unknown>, index: number): Row => ({ ...row, [KEY]: keys[index] as IDBValidKey }),
         );
@@ -832,7 +840,7 @@ export class Executor<T> {
     }
 
     /**
-     * Run the joins, returning flat rows, only the first of each distinct row when told to.
+     * Run the joins, returning flat rows.
      */
     async #joined(distinct: boolean): Promise<Record<string, unknown>[]> {
         const tables: Map<string, string[]> = await this.tables();
@@ -850,7 +858,7 @@ export class Executor<T> {
     }
 
     /**
-     * Get the first joined row, in the query's order, that holds the base record with the given key.
+     * Get the first joined row holding the record with the given key.
      */
     async #sought(key: IDBValidKey): Promise<T | null> {
         const tables: Map<string, string[]> = await this.tables();
@@ -870,7 +878,7 @@ export class Executor<T> {
     }
 
     /**
-     * Sort the joined rows in the query's order, or shuffle them when it asks for a random one.
+     * Sort the joined rows in the query's order, or shuffle them.
      */
     #arranged(rows: Row[], tables: Map<string, string[]>): Row[] {
         const orders: Order[] = this.#query.orders.map((order: Order): Order => ({ ...order, column: Columns.resolve(order.column, tables) }));
@@ -900,7 +908,7 @@ export class Executor<T> {
     }
 
     /**
-     * Rewrite each record of this table that the joined rows keep through the change, or delete it when there is none, once however many rows hold it.
+     * Rewrite or delete each record the joined rows keep, once each.
      */
     async #rewrite(change: Change | null): Promise<number> {
         if (this.#query.random || this.#query.orders.length > 0 || this.#query.limit !== null || this.#query.offset > 0) {
@@ -944,7 +952,7 @@ export class Executor<T> {
     }
 
     /**
-     * Get the write to apply under a cursor, noting in the writes the last one issued and the first that fails.
+     * Get the write to apply under a cursor.
      */
     #writer(change: Change | null, writes: Writes): (cursor: IDBCursorWithValue) => void {
         return (cursor: IDBCursorWithValue): void => {
@@ -973,11 +981,12 @@ export class Executor<T> {
     }
 
     /**
-     * Wait for the last write to land, then throw the error the first failed one reports.
+     * Wait for the writes to land, then throw the first failure.
      */
     async #landed(store: IDBObjectStore, schema: TableSchema, writes: Writes): Promise<void> {
-        // Requests on a transaction complete in the order they were made, so the last write landing
-        // means every earlier one has, including any the walk stopped short of waiting for.
+        // Requests on a transaction complete in the order they were made,
+        // so the last write landing means every earlier one has,
+        // including any the walk stopped short of waiting for.
         await writes.last;
 
         if (writes.failure !== null) {

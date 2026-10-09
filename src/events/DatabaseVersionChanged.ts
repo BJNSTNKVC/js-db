@@ -5,7 +5,7 @@ export class DatabaseVersionChanged extends Event {
     readonly #database: string;
 
     /**
-     * The version the other tab is opening, or null when it is deleting the database.
+     * The version the other tab opens, or null when deleting.
      */
     readonly #version: number | null;
 
@@ -27,7 +27,7 @@ export class DatabaseVersionChanged extends Event {
     }
 
     /**
-     * Get the version the other tab is opening, or null when it is deleting the database.
+     * Get the version the other tab opens, or null when deleting.
      */
     get version(): number | null {
         return this.#version;

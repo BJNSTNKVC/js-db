@@ -12,7 +12,7 @@ type Placing = () => Promise<(column: string) => string | null>;
 
 export class Grouping<T, G extends (keyof T & string)[], A extends Aggregations = Record<string, never>> {
     /**
-     * Fetch the records matching the query the grouping was opened from, each holding the given columns keyed as they were given.
+     * Fetch the matching records, holding the given columns as given.
      */
     readonly #records: Records;
 
@@ -27,7 +27,7 @@ export class Grouping<T, G extends (keyof T & string)[], A extends Aggregations 
     readonly #names: Map<string, string>;
 
     /**
-     * Get the name each group gives a column written other than as it was grouped by, or null for a column that is none of the grouped ones.
+     * Get a lookup from a column to the grouped name it matches.
      */
     readonly #placing: Placing;
 
@@ -168,7 +168,7 @@ export class Grouping<T, G extends (keyof T & string)[], A extends Aggregations 
     }
 
     /**
-     * Get every column the grouped columns and the aggregates read from the records.
+     * Get every column the groups and aggregates read.
      */
     #read(): string[] {
         const aggregated: string[] = Object.values(this.#aggregations).map((aggregation: Aggregation): string => Object.values(aggregation)[0] as string);
@@ -243,7 +243,7 @@ export class Grouping<T, G extends (keyof T & string)[], A extends Aggregations 
     }
 
     /**
-     * Get the least or the greatest of the values as orderBy orders them, or null when there are none.
+     * Get the least or greatest of the values, or null for none.
      */
     #extreme(values: unknown[], least: boolean): unknown {
         if (values.length === 0) {
@@ -258,7 +258,7 @@ export class Grouping<T, G extends (keyof T & string)[], A extends Aggregations 
     }
 
     /**
-     * Get the values a column holds across the members of a group, passing over null and undefined.
+     * Get the non-null values a column holds across a group.
      */
     #values(column: string, members: Record<string, unknown>[]): unknown[] {
         return members
@@ -270,8 +270,9 @@ export class Grouping<T, G extends (keyof T & string)[], A extends Aggregations 
      * Add a constraint on the groups the query returns.
      */
     #constrain(conjunction: Conjunction, column: string, parameters: unknown[]): this {
-        // Resolved by how many arguments were passed rather than by an undefined value, so an explicit
-        // operator is kept even when the value it compares against is undefined.
+        // Resolved by how many arguments were passed rather than
+        // by an undefined value, so an explicit operator is kept
+        // even when the value it compares against is undefined.
         const resolved: { operator: Operator; value: unknown } = parameters.length < 2
             ? { operator: '=', value: parameters[0] }
             : { operator: parameters[0] as Operator, value: parameters[1] };

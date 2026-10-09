@@ -9,7 +9,7 @@ interface Hash {
 
 export class Joiner {
     /**
-     * Prefix every key of the given records with the table that owns it.
+     * Prefix every key of the records with its owning table.
      */
     static qualify(records: Record<string, unknown>[], table: string): Record<string, unknown>[] {
         return records.map((record: Record<string, unknown>): Record<string, unknown> => {
@@ -24,7 +24,7 @@ export class Joiner {
     }
 
     /**
-     * Join two sets of qualified records, carrying unmatched rows through where the type asks for it.
+     * Join two sets of qualified records by the clause's type.
      */
     static join(left: Record<string, unknown>[], right: Record<string, unknown>[], clause: JoinClause, columns: string[]): Record<string, unknown>[] {
         if (clause.type === 'cross') {
@@ -32,8 +32,8 @@ export class Joiner {
                 right.map((match: Record<string, unknown>): Record<string, unknown> => ({ ...row, ...match })));
         }
 
-        // A right join is a left join with the sides swapped, so the unmatched rows it keeps are the
-        // ones the other form would have dropped.
+        // A right join is a left join with the sides swapped, so the unmatched
+        // rows it keeps are the ones the other form would have dropped.
         if (clause.type === 'right') {
             return this.#matched(right, left, clause, this.#columnsOf(left)).map(
                 (row: Record<string, unknown>): Record<string, unknown> => row,
@@ -59,7 +59,7 @@ export class Joiner {
     }
 
     /**
-     * Flatten qualified rows the way SQL does, letting later tables win a collision.
+     * Flatten qualified rows as SQL does, later tables winning a collision.
      */
     static flatten(rows: Record<string, unknown>[], tables: Map<string, string[]>, columns: readonly string[] | null): Record<string, unknown>[] {
         if (columns !== null) {
@@ -90,7 +90,7 @@ export class Joiner {
     }
 
     /**
-     * Pair each row of the driving side with the rows of the other that satisfy the conditions.
+     * Pair each driving row with the other rows the conditions match.
      */
     static #matched(driving: Record<string, unknown>[], other: Record<string, unknown>[], clause: JoinClause, columns: string[]): Record<string, unknown>[] {
         const hash: Hash | null = this.#hash(driving, other, clause);
@@ -121,7 +121,7 @@ export class Joiner {
     }
 
     /**
-     * Index the other side by its join column, when a lookup there finds every row the conditions match.
+     * Index the other side by its join column, when a lookup suffices.
      */
     static #hash(driving: Record<string, unknown>[], other: Record<string, unknown>[], clause: JoinClause): Hash | null {
         const sides: [string, string] | null = this.#sides(clause);
@@ -134,6 +134,8 @@ export class Joiner {
         const probes: unknown[] = driving.map((row: Record<string, unknown>): unknown => this.#key(Columns.read(row, probe)));
         const keys: unknown[] = other.map((record: Record<string, unknown>): unknown => this.#key(Columns.read(record, column)));
 
+        // A lookup finds only keys of the same kind, which the conditions may
+        // match across kinds, so mixed kinds fall back to checking every row.
         if (new Set([...probes, ...keys].filter((key: unknown): boolean => !this.#missing(key)).map((key: unknown): string => typeof key)).size > 1) {
             return null;
         }
@@ -162,7 +164,7 @@ export class Joiner {
     }
 
     /**
-     * Get the column the driving side looks up by and the one the other side is indexed by, when the conditions reduce to a single equality between the joined table and the rest.
+     * Get the lookup and indexed columns of a single equality join.
      */
     static #sides(clause: JoinClause): [string, string] | null {
         const condition: JoinCondition | undefined = clause.conditions[0];
@@ -183,7 +185,7 @@ export class Joiner {
     }
 
     /**
-     * Reduce a join value to the form the comparison sees, so a date becomes its time.
+     * Reduce a join value to the form the comparison sees.
      */
     static #key(value: unknown): unknown {
         return value instanceof Date ? value.getTime() : value;

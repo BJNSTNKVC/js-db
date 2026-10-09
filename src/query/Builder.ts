@@ -66,7 +66,7 @@ export class Builder<T = Record<string, unknown>> {
     #orders: Order[] = [];
 
     /**
-     * Whether the query returns its records in a random order, setting its orders aside.
+     * Whether the query returns its records in a random order.
      */
     #random: boolean = false;
 
@@ -254,7 +254,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Constrain a date column to fall on, before or after a given day.
+     * Constrain a date column by the day it falls on.
      */
     whereDate(column: Key<T>, value: Date | string): this;
     whereDate(column: Key<T>, operator: DateOperator, value: Date | string): this;
@@ -263,8 +263,8 @@ export class Builder<T = Record<string, unknown>> {
         const timezone: string = this.#connection.timezone;
         const day: Parts = Calendar.parts(Calendar.moment(resolved.value, timezone) ?? new Date(NaN), timezone);
 
-        // A day is expressed as the range it covers, so an indexed column can still drive the scan
-        // and a stored time of day does not have to match.
+        // A day is expressed as the range it covers, so an indexed column can still
+        // drive the scan and a stored time of day does not have to match.
         const from: Date = Calendar.midnight(day.year, day.month, day.day, timezone);
         const to: Date = new Date(Calendar.midnight(day.year, day.month, day.day + 1, timezone).getTime() - 1);
 
@@ -314,7 +314,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Constrain the time of day of a date column, given as HH:MM:SS or HH:MM.
+     * Constrain a date column's time of day, as HH:MM:SS or HH:MM.
      */
     whereTime(column: Key<T>, value: string): this;
     whereTime(column: Key<T>, operator: DateOperator, value: string): this;
@@ -322,14 +322,15 @@ export class Builder<T = Record<string, unknown>> {
         const resolved: { operator: DateOperator; value: unknown } = this.#dated(value === undefined ? [operator] : [operator, value]);
         const given: string = resolved.value as string;
 
-        // Times compare as strings, so one given without seconds is padded to the stored shape.
+        // Times compare as strings, so one given without
+        // seconds is padded to the stored shape.
         const time: string = /^\d{2}:\d{2}$/.test(given) ? `${given}:00` : given;
 
         return this.#push({ type: 'time', column, operator: resolved.operator, value: time, timezone: this.#connection.timezone, conjunction: 'and', not: false });
     }
 
     /**
-     * Constrain the query to records where any of the columns meets the comparison.
+     * Constrain the query to records where any column matches.
      */
     whereAny(columns: Key<T>[], value: unknown): this;
     whereAny(columns: Key<T>[], operator: Operator, value: unknown): this;
@@ -338,7 +339,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Constrain the query to records where every one of the columns meets the comparison.
+     * Constrain the query to records where every column matches.
      */
     whereAll(columns: Key<T>[], value: unknown): this;
     whereAll(columns: Key<T>[], operator: Operator, value: unknown): this;
@@ -347,7 +348,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Constrain the query to records where none of the columns meets the comparison.
+     * Constrain the query to records where no column matches.
      */
     whereNone(columns: Key<T>[], value: unknown): this;
     whereNone(columns: Key<T>[], operator: Operator, value: unknown): this;
@@ -356,28 +357,28 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Constrain a JSON array to hold a value, or every one of an array of values.
+     * Constrain a JSON array to hold a value or values.
      */
     whereJsonContains(column: Key<T>, value: unknown): this {
         return this.#push({ type: 'json-contains', column, value, conjunction: 'and', not: false });
     }
 
     /**
-     * Constrain a JSON array to hold a value, or every one of an array of values, disjunctively.
+     * Constrain a JSON array to hold a value or values, disjunctively.
      */
     orWhereJsonContains(column: Key<T>, value: unknown): this {
         return this.#push({ type: 'json-contains', column, value, conjunction: 'or', not: false });
     }
 
     /**
-     * Constrain a JSON array to not hold a value, or not every one of an array of values.
+     * Constrain a JSON array to not hold a value or values.
      */
     whereJsonDoesntContain(column: Key<T>, value: unknown): this {
         return this.#push({ type: 'json-contains', column, value, conjunction: 'and', not: true });
     }
 
     /**
-     * Constrain a JSON array to not hold a value, or not every one of an array of values, disjunctively.
+     * Constrain a JSON array to not hold a value or values, disjunctively.
      */
     orWhereJsonDoesntContain(column: Key<T>, value: unknown): this {
         return this.#push({ type: 'json-contains', column, value, conjunction: 'or', not: true });
@@ -480,8 +481,10 @@ export class Builder<T = Record<string, unknown>> {
      * Group the matching records by one or more columns.
      */
     groupBy<G extends (keyof T & string)[]>(...columns: G): Grouping<T, G> {
-        // The grouping owns its own ordering and paging, so the fetch it is handed drops this
-        // query's, which would otherwise page records before they were ever grouped.
+        // The grouping owns its own ordering and paging,
+        // so the fetch it is handed drops this query's,
+        // which would otherwise page records
+        // before they were ever grouped.
         const records: Builder<T> = this.clone();
 
         records.#orders = [];
@@ -533,7 +536,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Return the records in a random order, setting aside any other order until reordered.
+     * Return the records in a random order.
      */
     inRandomOrder(): this {
         this.#random = true;
@@ -542,7 +545,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Clear every order, including a random one, and sort by a column when one is given.
+     * Clear every order, then sort by a column when one is given.
      */
     reorder(column?: Key<T>, direction: Direction = 'asc'): this {
         this.#orders = [];
@@ -685,7 +688,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Get the one record matching the query, failing when there is not exactly one.
+     * Get the only record matching the query, or fail.
      */
     async sole(): Promise<T> {
         const records: T[] = await this.clone().limit(2).get();
@@ -709,7 +712,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Get the record with the given key when the query matches it, or fail.
+     * Get the record with the given key, or fail.
      */
     async findOrFail(key: IDBValidKey | null | undefined): Promise<T> {
         const record: T | null = await this.find(key);
@@ -812,7 +815,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Get the smallest value of a column across the records matching the query, as the column holds it.
+     * Get the smallest value of a column, as the column holds it.
      */
     async min<K extends Key<T>>(column: K): Promise<Held<T, K> | null> {
         const [query, read]: [Builder<T>, string] = this.#over(column);
@@ -821,7 +824,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Get the largest value of a column across the records matching the query, as the column holds it.
+     * Get the largest value of a column, as the column holds it.
      */
     async max<K extends Key<T>>(column: K): Promise<Held<T, K> | null> {
         const [query, read]: [Builder<T>, string] = this.#over(column);
@@ -857,8 +860,9 @@ export class Builder<T = Record<string, unknown>> {
 
         const executor: Executor<T> = this.#executor();
 
-        // A joined row is synthesised and has no key of its own, so its pages are sliced from the
-        // materialised result rather than fetched back by key.
+        // A joined row is synthesised and has no key of its own,
+        // so its pages are sliced from the materialised
+        // result rather than fetched back by key.
         if (this.#joins.length > 0) {
             const rows: T[] = await executor.records();
 
@@ -878,8 +882,9 @@ export class Builder<T = Record<string, unknown>> {
         for (let index: number = 0; index < keys.length; index += size) {
             const records: T[] = once(executor.shape(await executor.fetch(keys.slice(index, index + size))));
 
-            // Every record on a page may have stopped matching since the keys were taken. A callback
-            // never receives an empty page, so the page number counts only the pages delivered.
+            // Every record on a page may have stopped matching since the
+            // keys were taken. A callback never receives an empty page,
+            // so the page number counts only the pages delivered.
             if (records.length === 0) {
                 continue;
             }
@@ -900,8 +905,9 @@ export class Builder<T = Record<string, unknown>> {
 
         const executor: Executor<T> = this.#executor();
 
-        // A joined row is synthesised and has no key to fetch it back by, so there is nothing to
-        // page over and the materialised result is yielded as it stands.
+        // A joined row is synthesised and has no key to fetch it back by,
+        // so there is nothing to page over and the materialised
+        // result is yielded as it stands.
         if (this.#joins.length > 0) {
             yield* await executor.records();
 
@@ -911,8 +917,8 @@ export class Builder<T = Record<string, unknown>> {
         const keys: IDBValidKey[] = await executor.keys();
         const once: (rows: T[]) => T[] = await executor.once();
 
-        // Only the keys are held for the whole walk. Each page of records is fetched when the caller
-        // reaches it, and released once consumed.
+        // Only the keys are held for the whole walk. Each page of records is
+        // fetched when the caller reaches it, and released once consumed.
         for (let index: number = 0; index < keys.length; index += size) {
             yield* once(executor.shape(await executor.fetch(keys.slice(index, index + size))));
         }
@@ -986,14 +992,14 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Add the given amount to a column of every record matching the query, leaving a column that holds null as it is unless an extra names it.
+     * Add the given amount to a column of every matching record.
      */
     async increment(column: Key<T>, amount: number = 1, extra: Partial<T> = {} as Partial<T>): Promise<number> {
         return this.#step(column, amount, extra);
     }
 
     /**
-     * Subtract the given amount from a column of every record matching the query, leaving a column that holds null as it is unless an extra names it.
+     * Subtract the given amount from a column of every matching record.
      */
     async decrement(column: Key<T>, amount: number = 1, extra: Partial<T> = {} as Partial<T>): Promise<number> {
         return this.#step(column, -amount, extra);
@@ -1014,7 +1020,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Add the given amount to a column of every record matching the query, leaving a column that holds null or nothing as it is unless an extra names it.
+     * Step a column of every matching record by the given amount.
      */
     async #step(column: Key<T>, amount: number, extra: Partial<T>): Promise<number> {
         const own: string = await this.#own(column);
@@ -1044,7 +1050,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Prepare the changes an update writes, naming each column as this table stores it.
+     * Prepare the changes an update writes to this table.
      */
     async #changes(values: Partial<T>): Promise<Record<string, unknown>> {
         const schema: TableSchema = await this.#connection.schema(this.#table);
@@ -1058,7 +1064,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Name a column as this table stores it, refusing one that belongs to a table it joins.
+     * Name a column as this table stores it.
      */
     async #own(column: string): Promise<string> {
         if (this.#joins.length === 0) {
@@ -1079,7 +1085,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Determine whether a column belongs to a joined table rather than to this one.
+     * Determine whether a column belongs to a joined table.
      */
     async #joinedColumn(column: string): Promise<boolean> {
         const declares: (schema: TableSchema) => boolean = (schema: TableSchema): boolean => schema.columns.some((declared: ColumnSchema): boolean => declared.name === column);
@@ -1098,14 +1104,14 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Determine whether any of the given columns names its table on a joined query, where the flat row does not hold it.
+     * Determine whether a joined query names any column with its table.
      */
     #qualifies(columns: string[]): boolean {
         return this.#joins.length > 0 && columns.some((column: string): boolean => Columns.qualified(column));
     }
 
     /**
-     * Get a copy of the query an aggregate can run on, without its paging or its orders.
+     * Copy the query for an aggregate, without paging or orders.
      */
     #aggregated(): Builder<T> {
         const query: Builder<T> = this.clone();
@@ -1119,7 +1125,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Get a copy of the query an aggregate over a column can run on, and the column it reads there.
+     * Copy the query for an aggregate over a column it reads.
      */
     #over(column: string): [Builder<T>, string] {
         const query: Builder<T> = this.#aggregated();
@@ -1138,7 +1144,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Name a column of a plain query as its table stores it, refusing one qualified with another table.
+     * Name a column of a plain query as its table stores it.
      */
     #column(column: string): string {
         if (this.#joins.length > 0 || !Columns.qualified(column)) {
@@ -1153,7 +1159,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Name every column of a constraint as the plain query's table stores it.
+     * Name every column of a constraint as the table stores it.
      */
     #named(constraint: Constraint): Constraint {
         if (constraint.type === 'nested') {
@@ -1168,7 +1174,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Name the column a projection selects as the plain query's table stores it, keeping the name it comes back under.
+     * Name a projected column as the table stores it, keeping its alias.
      */
     #projected(expression: string): string {
         const projection: Projection = Columns.parse(expression);
@@ -1178,7 +1184,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Get the name a grouping by the given columns gives a column written other than as it was grouped by, or null for a column that is none of them.
+     * Get a lookup from a column to the grouped name it matches.
      */
     async #placing(grouped: string[]): Promise<(column: string) => string | null> {
         if (this.#joins.length === 0) {
@@ -1227,7 +1233,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Get the state of the query as a snapshot the executor can read, every column of a plain query named as its table stores it.
+     * Get the state of the query as the executor reads it.
      */
     #query(): Query {
         const state: Query = this.#state();
@@ -1252,7 +1258,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Refuse a size that is not a whole number of at least 1.
+     * Refuse a size that is not a positive whole number.
      */
     #size(name: string, size: number): void {
         if (!Number.isInteger(size) || size < 1) {
@@ -1280,8 +1286,9 @@ export class Builder<T = Record<string, unknown>> {
             return this.#push({ type: 'nested', constraints, conjunction, not });
         }
 
-        // Resolved by how many arguments were passed rather than by an undefined value, so an explicit
-        // operator is kept even when the value it compares against is undefined.
+        // Resolved by how many arguments were passed rather than
+        // by an undefined value, so an explicit operator is kept
+        // even when the value it compares against is undefined.
         const resolved: { operator: Operator; value: unknown } = parameters.length < 2
             ? { operator: '=', value: parameters[0] }
             : { operator: parameters[0] as Operator, value: parameters[1] };
@@ -1290,7 +1297,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Build a comparison, which Laravel turns into a null check when it tests equality or inequality with null, and otherwise compares against the value it binds.
+     * Build a comparison against a value.
      */
     #basic(conjunction: Conjunction, not: boolean, column: string, operator: Operator, value: unknown): Constraint {
         if ((value === null || value === undefined) && (EQUALITIES.has(operator) || INEQUALITIES.has(operator))) {
@@ -1301,7 +1308,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Build a range between the first two values the given ones flatten into, as Laravel binds them.
+     * Build a range between the first two flattened values.
      */
     #between(column: string, values: [unknown, unknown], conjunction: Conjunction, not: boolean): Constraint {
         const [from, to]: unknown[] = Binding.flatten(values);
@@ -1310,7 +1317,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Refuse a list holding an array or an object, as Laravel's whereIn does.
+     * Refuse a list holding an array or an object.
      */
     #listed(values: unknown[]): unknown[] {
         if (values.some((value: unknown): boolean => Binding.structured(value))) {
@@ -1321,7 +1328,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Add a nested group applying the same comparison to each of the columns.
+     * Add a nested group comparing each of the columns alike.
      */
     #across(joiner: Conjunction, not: boolean, columns: Key<T>[], parameters: unknown[]): this {
         const nested: Builder<T> = new Builder<T>(this.#connection, this.#table, this.#transaction);
@@ -1334,7 +1341,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Add a constraint on one part of a date column, reading a whole number written as a string as that number.
+     * Add a constraint on one part of a date column.
      */
     #part(conjunction: Conjunction, column: Key<T>, part: DatePart, parameters: unknown[]): this {
         const resolved: { operator: DateOperator; value: unknown } = this.#dated(parameters);
@@ -1349,7 +1356,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Resolve the operator and value of a date constraint by how many arguments were passed, refusing an operator a date does not take.
+     * Resolve the operator and value of a date constraint.
      */
     #dated(parameters: unknown[]): { operator: DateOperator; value: unknown } {
         const resolved: { operator: unknown; value: unknown } = parameters.length < 2
@@ -1364,7 +1371,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Add a constraint comparing two columns, allowing the operator to be left implicit.
+     * Add a constraint comparing two columns.
      */
     #compared(conjunction: Conjunction, column: Key<T>, operator: string, other?: string): this {
         const resolved: { operator: Operator; other: string } = other === undefined
@@ -1375,7 +1382,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Add a constraint on the length of a JSON array, allowing the operator to be left implicit.
+     * Add a constraint on the length of a JSON array.
      */
     #length(conjunction: Conjunction, column: Key<T>, operator: Operator | number, value?: number): this {
         const resolved: { operator: Operator; value: number } = value === undefined
@@ -1395,7 +1402,7 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Record a join, accepting either the column shorthand or a closure of conditions.
+     * Record a join, from column shorthand or a closure.
      */
     #join<R>(type: JoinType, table: string, first: string | Joining, operator?: string, second?: string): Builder<R> {
         const clause: Join = new Join();

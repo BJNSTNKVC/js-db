@@ -23,7 +23,7 @@ interface Candidate {
 
 export class Planner {
     /**
-     * Compile the constraints and orders into an execution plan, walking none of the excluded sources, each named by its index or null for the key path.
+     * Compile the constraints and orders into an execution plan.
      */
     static plan(constraints: readonly Constraint[], orders: readonly Order[], schema: TableSchema, excluded: ReadonlySet<string | null> = new Set<string | null>()): Plan {
         const candidate: Candidate | null = this.#disjunctive(constraints) ? null : this.#candidate(constraints, schema, excluded);
@@ -50,14 +50,14 @@ export class Planner {
     }
 
     /**
-     * Convert the values the constraints compare with declared columns into those columns' types, reading dates in the timezone.
+     * Convert the values constraints compare with into their columns' types.
      */
     static prepare(constraints: readonly Constraint[], types: ReadonlyMap<string, ColumnType>, timezone: string): Constraint[] {
         return constraints.map((constraint: Constraint): Constraint => this.#prepared(constraint, types, timezone));
     }
 
     /**
-     * Convert a value into the given column type, reading a date in the timezone, or leave it as given when it does not convert cleanly.
+     * Convert a value into a column type, or leave it as given.
      */
     static convert(value: unknown, type: ColumnType, timezone: string): unknown {
         if (value === null || value === undefined) {
@@ -161,7 +161,8 @@ export class Planner {
             return null;
         }
 
-        // A value a path reaches inside a JSON column is never indexed, so a path always runs as a residual.
+        // A value a path reaches inside a JSON column is never indexed,
+        // so a path always runs as a residual.
         if (constraint.type === 'json-length' || Columns.path(constraint.column).path.length > 0) {
             return null;
         }
@@ -177,8 +178,9 @@ export class Planner {
         }
 
         const type: ColumnType | undefined = schema.columns.find((candidate: ColumnSchema): boolean => candidate.name === constraint.column)?.type;
-        // An index orders keys of every kind together, arrays above all, so a range over a column that
-        // can hold several kinds collects keys a scan finds false or unknown, and each is checked again.
+        // An index orders keys of every kind together, arrays above all, so a
+        // range over a column that can hold several kinds collects keys
+        // a scan finds false or unknown, and each is checked again.
         const mixed: boolean = type === 'json' || type === undefined;
 
         if (constraint.type === 'in') {
@@ -209,7 +211,7 @@ export class Planner {
     }
 
     /**
-     * Assess whether a JSON contains can drive the scan through the multi entry index over its column.
+     * Assess whether a JSON contains can drive a multi entry index.
      */
     static #contained(constraint: Extract<Constraint, { type: 'json-contains' }>, schema: TableSchema, excluded: ReadonlySet<string | null>): Candidate | null {
         const index: IndexSchema | undefined = schema.indexes.find(
@@ -220,8 +222,9 @@ export class Planner {
             return null;
         }
 
-        // A multi entry index holds a value that is not an array as an entry of its own, though a
-        // scan finds no element in it, so the constraint is checked again against each record.
+        // A multi entry index holds a value that is not an array as an
+        // entry of its own, though a scan finds no element in it,
+        // so the constraint is checked again against each record.
         return {
             constraint,
             source   : 'index',
@@ -234,14 +237,14 @@ export class Planner {
     }
 
     /**
-     * Determine whether a value is an element the index finds exactly where a scan does, which compares elements strictly.
+     * Determine whether an index finds an element exactly where a scan does.
      */
     static #element(value: unknown): boolean {
         return typeof value === 'string' || (typeof value === 'number' && Number.isFinite(value));
     }
 
     /**
-     * Resolve the column to the key path or a single column index that holds one entry per record, unless that source is excluded.
+     * Resolve a column to the key path or its single column index.
      */
     static #target(column: string, schema: TableSchema, excluded: ReadonlySet<string | null>): { source: 'key' | 'index'; index: string | null; rank: number } | null {
         if (schema.key === column && !excluded.has(null)) {
@@ -358,7 +361,7 @@ export class Planner {
     }
 
     /**
-     * Read a value as a finite number, and a whole one unless fractions are allowed, or null when it is not one.
+     * Read a value as a finite number, or null.
      */
     static #number(value: unknown, fractional: boolean): number | null {
         const number: number = typeof value === 'number' ? value : (typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN);
@@ -367,7 +370,7 @@ export class Planner {
     }
 
     /**
-     * Determine whether a value is a key of the type its column stores, which an index compares as a scan does.
+     * Determine whether a value is a key of its column's type.
      */
     static #fits(value: unknown, type: ColumnType | undefined): boolean {
         switch (type) {

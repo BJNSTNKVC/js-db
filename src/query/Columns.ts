@@ -16,7 +16,7 @@ export class Columns {
     }
 
     /**
-     * Split a column into the column itself and the JSON path followed into it.
+     * Split a column into the column and its JSON path.
      */
     static path(column: string): { column: string; path: string[] } {
         const [name, ...path]: string[] = column.split('->');
@@ -25,13 +25,14 @@ export class Columns {
     }
 
     /**
-     * Read the value a record holds under a column, following its JSON path when it has one.
+     * Read the value a record holds under a column and its path.
      */
     static read(record: Record<string, unknown>, column: string): unknown {
         let value: unknown = record;
 
-        // Only own properties of plain objects are followed, so a segment such as __proto__ or
-        // constructor never reaches a prototype, and no segment indexes into an array or a string.
+        // Only own properties of plain objects are followed, so a segment
+        // such as __proto__ or constructor never reaches a prototype,
+        // and no segment indexes into an array or a string.
         for (const segment of column.split('->')) {
             if (typeof value !== 'object' || value === null || Array.isArray(value) || !Object.hasOwn(value, segment)) {
                 return undefined;
@@ -44,7 +45,7 @@ export class Columns {
     }
 
     /**
-     * Qualify a column with the table that owns it, or fail when that is not decidable.
+     * Qualify a column with the table that owns it, or fail.
      */
     static resolve(column: string, tables: Map<string, string[]>): string {
         const { column: name, path }: { column: string; path: string[] } = this.path(column);
@@ -69,7 +70,7 @@ export class Columns {
     }
 
     /**
-     * Get the name a column comes back under when nothing aliases it: the last step of its path, or else the column without its table.
+     * Get the name a column comes back under when not aliased.
      */
     static named(column: string): string {
         const { column: name, path }: { column: string; path: string[] } = this.path(column);
@@ -85,7 +86,7 @@ export class Columns {
     }
 
     /**
-     * Qualify a column that carries no JSON path with the table that owns it.
+     * Qualify a column without a JSON path by its owning table.
      */
     static #owned(column: string, tables: Map<string, string[]>): string {
         const { table, name }: { table: string | null; name: string } = this.split(column);
@@ -102,8 +103,9 @@ export class Columns {
             .filter(([, columns]: [string, string[]]): boolean => columns.includes(name))
             .map(([owner]: [string, string[]]): string => owner);
 
-        // Left unqualified, a column shared by two joined tables would silently resolve to whichever
-        // one happened to win the flat merge, so it is rejected rather than guessed at.
+        // Left unqualified, a column shared by two joined tables would silently
+        // resolve to whichever one happened to win the flat merge,
+        // so it is rejected rather than guessed at.
         if (owners.length > 1) {
             throw new SchemaException(`Column [${name}] is ambiguous across tables [${owners.join(', ')}]. Qualify it, as in [${owners[0]}.${name}].`);
         }
