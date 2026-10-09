@@ -440,6 +440,7 @@ writes, reading a date-only string in its timezone, as
 | `'0x10'`, `true`, `'abc'` | integer                  | Fails                                  | `null` |
 | `1.5`                     | integer                  | Fails                                  | `2`    |
 | `'2024-01-15'`            | date                     | Midnight in the connection's timezone  | Same   |
+| `'Jan 15 2024'`           | date                     | Fails                                  | `null` |
 | `7`                       | string                   | `'7'`                                  | `'7'`  |
 | `'owner'`                 | enum not accepting it    | Fails                                  | `null` |
 

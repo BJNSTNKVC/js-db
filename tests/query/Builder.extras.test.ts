@@ -65,6 +65,11 @@ class CreateMomentsTable extends Migration {
             table.datetime('indexed').index();
             table.datetime('plain');
         });
+
+        await Schema.create('days', (table: Blueprint): void => {
+            table.date('day').primary();
+            table.string('name');
+        });
     }
 }
 
@@ -685,6 +690,146 @@ describe('Builder.whereDate in the connection\'s timezone', (): void => {
                 expect(await named(moments(timezone).whereDate(column, '2024-01-15'))).toEqual(day);
                 expect(await named(moments(timezone).whereDay(column, 15))).toEqual(day);
                 expect(await named(moments(timezone).where(column, '2024-01-15'))).toEqual(equal);
+            });
+        });
+    });
+
+    describe('given a date only in the forms a write accepts', (): void => {
+        const WEEK: Record<string, () => Date> = {
+            monday : (): Date => '2024-01-15' as unknown as Date,
+            tuesday: (): Date => '2024-01-16' as unknown as Date,
+        };
+
+        const REFUSED: string[] = [
+            'Jan 15 2024',
+            '2024/01/15',
+            ' 2024-01-15 ',
+            '2024-01-15t00:00:00z',
+            '2024-01-15T00:00:00+0000',
+            'Mon, 15 Jan 2024 00:00:00 GMT',
+            '2024-02-30',
+        ];
+
+        const ACCEPTED: string[] = [
+            '2024-01-15',
+            '2024-01-15T10:30',
+            '2024-01-15 10:30',
+            '2024-01-15T10:30:15',
+            '2024-01-15 10:30:15.5',
+            '2024-01-15T10:30:15.123456',
+            '2024-01-15T10:30:15Z',
+            '2024-01-15 10:30:15.250Z',
+            '2024-01-15T10:30:15+02:00',
+            '2024-01-15T10:30-05:00',
+            '0050-01-15',
+        ];
+
+        /**
+         * Begin a query against the days table, keyed by a date, on the connection set to the given timezone.
+         */
+        function days(timezone: string): Builder<{ day: Date; name: string }> {
+            return (connections.get(timezone) as Connection).table<{ day: Date; name: string }>('days');
+        }
+
+        /**
+         * Begin a query joining each moment to the day of the same name, on the connection set to the given timezone.
+         */
+        function joined(timezone: string): Builder<Record<string, unknown>> {
+            return (connections.get(timezone) as Connection).table('moments').join('days', 'days.name', '=', 'moments.name');
+        }
+
+        /**
+         * Write records to the moments table past the package, as an old row holds them.
+         */
+        async function planted(timezone: string, records: Record<string, unknown>[]): Promise<void> {
+            const database: IDBDatabase = await (connections.get(timezone) as Connection).open();
+            const transaction: IDBTransaction = database.transaction('moments', 'readwrite');
+
+            for (const record of records) {
+                transaction.objectStore('moments').add(record);
+            }
+
+            await new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
+                transaction.oncomplete = (): void => resolve();
+                transaction.onerror = (): void => reject(transaction.error);
+            });
+        }
+
+        describe.each([
+            ['UTC', 'UTC', 'indexed'],
+            ['UTC', 'UTC', 'plain'],
+            ['America/New_York', 'UTC', 'indexed'],
+            ['America/New_York', 'UTC', 'plain'],
+            ['UTC', 'local', 'indexed'],
+            ['UTC', 'local', 'plain'],
+            ['America/New_York', 'local', 'indexed'],
+            ['America/New_York', 'local', 'plain'],
+        ] as [string, string, 'indexed' | 'plain'][])('with the process in %s on a connection set to %s through the %s column', (process: string, timezone: string, column: 'indexed' | 'plain'): void => {
+            test.each(REFUSED)('matches nothing for %o under where, whereIn, whereBetween and whereDate', async (value: string): Promise<void> => {
+                await store(process, WEEK, timezone);
+
+                expect(await named(moments(timezone).where(column, value))).toEqual([]);
+                expect(await named(moments(timezone).where(column, '>=', value))).toEqual([]);
+                expect(await named(moments(timezone).whereIn(column, [value]))).toEqual([]);
+                expect(await named(moments(timezone).whereBetween(column, [value, '2024-01-16']))).toEqual([]);
+                expect(await named(moments(timezone).whereDate(column, value))).toEqual([]);
+                expect(await named(moments(timezone).whereDate(column, '<=', value))).toEqual([]);
+            });
+
+            test.each(REFUSED)('refuses %o in a write, as since 5.0.0', async (value: string): Promise<void> => {
+                await store(process, WEEK, timezone);
+
+                await expect(moments(timezone).insert({ name: 'written', indexed: value as unknown as Date, plain: value as unknown as Date })).rejects.toThrow(TypeError);
+            });
+
+            test.each(ACCEPTED)('finds the row a write of %o stored, by the same string', async (value: string): Promise<void> => {
+                await store(process, { tuesday: WEEK['tuesday'] as () => Date, written: (): Date => value as unknown as Date }, timezone);
+
+                expect(await named(moments(timezone).where(column, value))).toEqual(['written']);
+                expect(await named(moments(timezone).whereIn(column, [value]))).toEqual(['written']);
+                expect(await named(moments(timezone).whereBetween(column, [value, value]))).toEqual(['written']);
+                expect(await named(moments(timezone).whereDate(column, value))).toContain('written');
+            });
+
+            test('reads a number as a timestamp and a date as it is, matching nothing for an invalid date', async (): Promise<void> => {
+                await store(process, WEEK, timezone);
+
+                const monday: Date = await moments(timezone).where('name', 'monday').value(column) as Date;
+
+                expect(await named(moments(timezone).where(column, monday.getTime()))).toEqual(['monday']);
+                expect(await named(moments(timezone).where(column, new Date(monday.getTime())))).toEqual(['monday']);
+                expect(await named(moments(timezone).where(column, new Date(NaN)))).toEqual([]);
+                expect(await named(moments(timezone).whereDate(column, new Date(NaN)))).toEqual([]);
+            });
+
+            test('reads a string an old row holds only in the forms a write accepts', async (): Promise<void> => {
+                await store(process, {}, timezone);
+                await planted(timezone, [
+                    { id: 1, name: 'iso', indexed: '2024-01-15', plain: '2024-01-15' },
+                    ...REFUSED.map((value: string, index: number): Record<string, unknown> => ({ id: index + 2, name: value, indexed: value, plain: value })),
+                ]);
+
+                expect(await named(moments(timezone).whereYear(column, 2024))).toEqual(['iso']);
+                expect(await named(moments(timezone).whereMonth(column, 1))).toEqual(['iso']);
+                expect(await named(moments(timezone).whereDay(column, 15))).toEqual(['iso']);
+                expect(await named(moments(timezone).whereTime(column, '00:00'))).toEqual(['iso']);
+            });
+
+            test('finds by a date key and joins on a date column only in the forms a write accepts', async (): Promise<void> => {
+                await store(process, WEEK, timezone);
+                await days(timezone).truncate();
+                await days(timezone).insert({ day: '2024-01-15' as unknown as Date, name: 'monday' });
+
+                expect(await days(timezone).find('2024-01-15')).toMatchObject({ name: 'monday' });
+                expect(await joined(timezone).where(`moments.${column}`, '2024-01-15').pluck('moments.name')).toEqual(['monday']);
+                expect(await joined(timezone).where('days.day', '2024-01-15').pluck('moments.name')).toEqual(['monday']);
+
+                for (const value of REFUSED) {
+                    expect(await days(timezone).find(value)).toBeNull();
+                    await expect(days(timezone).findOrFail(value)).rejects.toThrow(RecordsNotFoundException);
+                    expect(await joined(timezone).where(`moments.${column}`, value).pluck('moments.name')).toEqual([]);
+                    expect(await joined(timezone).where('days.day', value).pluck('moments.name')).toEqual([]);
+                }
             });
         });
     });

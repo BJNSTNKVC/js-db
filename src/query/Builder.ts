@@ -261,7 +261,7 @@ export class Builder<T = Record<string, unknown>> {
     whereDate(column: Key<T>, ...parameters: unknown[]): this {
         const resolved: { operator: DateOperator; value: unknown } = this.#dated(parameters);
         const timezone: string = this.#connection.timezone;
-        const day: Parts = Calendar.parts(Calendar.read(resolved.value as Date | string, timezone), timezone);
+        const day: Parts = Calendar.parts(Calendar.moment(resolved.value, timezone) ?? new Date(NaN), timezone);
 
         // A day is expressed as the range it covers, so an indexed column can still drive the scan
         // and a stored time of day does not have to match.

@@ -75,7 +75,9 @@ with `Z` or an offset, keep naming their own moment under every setting. `DB.con
 configuration before it in place. `DB.connection(name).timezone` gives the name the connection reads,
 as `Intl` spells it, so `'utc'` reads as `'UTC'`. [Dates and timezones](querying.md#dates-and-timezones)
 has the details. Before 8.0.0 the date parts, `whereTime` and `whereDate` read the device's timezone,
-as `'local'` still does.
+as `'local'` still does. Before 12.0.0 a query read a date string in a form a write refuses, such as
+`'Jan 15 2024'` or `'2024/01/15'`, in the device's timezone whatever the setting. It now matches
+nothing, so pass a `Date` or an ISO string such as `'2024-01-15'`.
 
 `DB.migrate(name)` is idempotent. It opens the database at the version your migrations ask for, and
 when that already matches, nothing runs. Calling it on every boot is the intended usage, and there

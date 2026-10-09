@@ -125,7 +125,7 @@ const SAMPLES: Sample[] = [
     ['visits', [2, '2', 0, '0', 3, '3', -1, 1.5, '1.5', ''], [['1', 2], ['5', '1']]],
     ['score', [1.5, '1.5', 0, '0', -1, '-3.25', 'x'], [['0', 2.5], [2.5, '0']]],
     ['active', [true, false, 1, 0, 'true', 'false', 'no'], [[false, 'true'], ['true', false]]],
-    ['seen', [day('2024-01-15'), day('2024-01-15').getTime(), '2024-01-15', '2024-01-15T00:00:00.000Z', day('2024-01-01'), 'garbage'], [['2024-01-01', day('2024-03-01')], [day('2024-03-01'), '2024-01-01']]],
+    ['seen', [day('2024-01-15'), day('2024-01-15').getTime(), '2024-01-15', '2024-01-15T00:00:00.000Z', '2024-01-14T19:00-05:00', day('2024-01-01'), 'garbage', 'Jan 15 2024', '2024/01/15', ' 2024-01-15 '], [['2024-01-01', day('2024-03-01')], [day('2024-03-01'), '2024-01-01']]],
     ['role', ['a', 'A', 'b', 'c'], [['a', 'b'], ['c', 'a']]],
 ];
 
@@ -184,7 +184,7 @@ const PARTS: Condition[] = [
             (row: Item): Truth => parted(row.seen, which, operator, Number(value)),
         ];
     }))),
-    ...([day('2024-01-15'), '2024-01-15', '2024-03-01', '2023-12-31', '', 'garbage'] as (Date | string)[]).flatMap((value: Date | string): Condition[] => DATE_OPERATORS.map((operator: DateOperator): Condition => [
+    ...([day('2024-01-15'), '2024-01-15', '2024-03-01', '2023-12-31', '', 'garbage', 'Jan 15 2024', '2024/01/15', ' 2024-01-15 '] as (Date | string)[]).flatMap((value: Date | string): Condition[] => DATE_OPERATORS.map((operator: DateOperator): Condition => [
         `whereDate('seen', '${operator}', ${shown(value)})`,
         (query: Builder<Item>): Builder<Item> => query.whereDate('seen', operator, value),
         (row: Item): Truth => dated(row.seen, operator, value),
@@ -699,15 +699,40 @@ function prepared(value: unknown, kind: Kind): unknown {
     }
 
     if (kind === 'datetime') {
-        const date: Date = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T00:00:00Z`) : new Date(value as string | number | Date);
-        const readable: boolean = typeof value === 'string' || typeof value === 'number' || value instanceof Date;
-
-        return readable && !Number.isNaN(date.getTime()) ? date : value;
+        return moment(value) ?? value;
     }
 
     const number: number = typeof value === 'number' ? value : (typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN);
 
     return Number.isFinite(number) && (kind === 'float' || Number.isInteger(number)) ? number : value;
+}
+
+/**
+ * Read a value as the moment it names: a date as it is, a number as a timestamp, and a string only in an ISO 8601 form a write accepts, a wall clock in UTC, or null for anything else.
+ */
+function moment(value: unknown): Date | null {
+    if (value instanceof Date || typeof value === 'number') {
+        const date: Date = new Date(value);
+
+        return Number.isNaN(date.getTime()) ? null : date;
+    }
+
+    const parts: RegExpExecArray | null = typeof value === 'string' ? /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3})\d*)?)?(?:Z|([+-])(\d{2}):(\d{2}))?)?$/.exec(value) : null;
+
+    if (parts === null) {
+        return null;
+    }
+
+    const [year, month, date, hour, minute, second, hours, minutes]: number[] = [1, 2, 3, 4, 5, 6, 9, 10].map((index: number): number => Number(parts[index] ?? 0)) as [number, number, number, number, number, number, number, number];
+    const midnight: Date = new Date(Date.UTC(year, month - 1, date));
+
+    if (midnight.getUTCMonth() !== month - 1 || midnight.getUTCDate() !== date || hour > 23 || minute > 59 || second > 59 || hours > 23 || minutes > 59) {
+        return null;
+    }
+
+    const offset: number = (parts[8] === '-' ? -1 : 1) * (hours * 60 + minutes) * 60_000;
+
+    return new Date(Date.UTC(year, month - 1, date, hour, minute, second, Number((parts[7] ?? '').padEnd(3, '0'))) - offset);
 }
 
 /**
@@ -831,9 +856,9 @@ function parted(held: unknown, which: DatePart, operator: DateOperator, given: n
  * Apply the documented semantics of whereDate to one value, three-valued, comparing it with the UTC day the given value names.
  */
 function dated(held: unknown, operator: DateOperator, given: Date | string): Truth {
-    const named: Date = typeof given === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(given) ? new Date(`${given}T00:00:00Z`) : new Date(given);
+    const named: Date | null = moment(given);
 
-    if (Number.isNaN(named.getTime())) {
+    if (named === null) {
         return false;
     }
 

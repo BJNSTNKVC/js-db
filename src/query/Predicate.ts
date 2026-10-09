@@ -168,7 +168,7 @@ export class Predicate {
      * Read one part of a value that should hold a date, in the timezone.
      */
     static #part(held: unknown, part: DatePart, timezone: string): number | null {
-        const date: Date | null = this.#date(held, timezone);
+        const date: Date | null = Calendar.moment(held, timezone);
 
         if (date === null) {
             return null;
@@ -187,7 +187,7 @@ export class Predicate {
      * Read the time of day of a value that should hold a date in the timezone, as a zero padded HH:MM:SS string.
      */
     static #time(held: unknown, timezone: string): string | null {
-        const date: Date | null = this.#date(held, timezone);
+        const date: Date | null = Calendar.moment(held, timezone);
 
         if (date === null) {
             return null;
@@ -198,15 +198,6 @@ export class Predicate {
         return [parts.hour, parts.minute, parts.second]
             .map((part: number): string => String(part).padStart(2, '0'))
             .join(':');
-    }
-
-    /**
-     * Read a value that should hold a date, a YYYY-MM-DD string, alone or with a time but no offset, in the timezone, or null when it does not.
-     */
-    static #date(held: unknown, timezone: string): Date | null {
-        const date: Date = held instanceof Date ? held : Calendar.read(held as string | number, timezone);
-
-        return Number.isNaN(date.getTime()) ? null : date;
     }
 
     /**

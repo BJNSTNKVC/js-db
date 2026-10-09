@@ -1,4 +1,4 @@
-const WALL: RegExp = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?)?$/;
+const MOMENT: RegExp = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?(?:(Z)|([+-])(\d{2}):(\d{2}))?)?$/;
 
 const DAY: number = 86_400_000;
 
@@ -30,23 +30,35 @@ export class Calendar {
     }
 
     /**
-     * Read a value as a date, a YYYY-MM-DD string, alone or followed by a time without an offset, as that wall clock in the timezone.
+     * Read a value as the valid moment it names, a date as it is, a number as a timestamp and a string only in the ISO 8601 forms a write accepts, a YYYY-MM-DD day alone or with a time, one without Z or an offset as that wall clock in the timezone, or null for anything else.
      */
-    static read(value: Date | string | number, timezone: string): Date {
-        const wall: RegExpExecArray | null = typeof value === 'string' ? WALL.exec(value) : null;
+    static moment(value: unknown, timezone: string): Date | null {
+        if (value instanceof Date || typeof value === 'number') {
+            const date: Date = value instanceof Date ? value : new Date(value);
 
-        if (wall === null) {
-            return new Date(value);
+            return Number.isNaN(date.getTime()) ? null : date;
         }
 
-        const [year, month, day, hour, minute, second]: number[] = wall.slice(1, 7).map((part: string | undefined): number => Number(part ?? 0)) as [number, number, number, number, number, number];
-        const millisecond: number = Number((wall[7] ?? '').padEnd(3, '0').slice(0, 3));
+        const parts: RegExpExecArray | null = typeof value === 'string' ? MOMENT.exec(value) : null;
 
-        if (!this.#exists(year, month - 1, day) || hour > 23 || minute > 59 || second > 59) {
-            return new Date(NaN);
+        if (parts === null) {
+            return null;
         }
 
-        return this.#instant({ year, month: month - 1, day, hour, minute, second, millisecond }, timezone);
+        const [year, month, day, hour, minute, second, hours, minutes]: number[] = [1, 2, 3, 4, 5, 6, 10, 11].map((index: number): number => Number(parts[index] ?? 0)) as [number, number, number, number, number, number, number, number];
+        const millisecond: number = Number((parts[7] ?? '').padEnd(3, '0').slice(0, 3));
+
+        if (!this.#exists(year, month - 1, day) || hour > 23 || minute > 59 || second > 59 || hours > 23 || minutes > 59) {
+            return null;
+        }
+
+        const wall: Parts = { year, month: month - 1, day, hour, minute, second, millisecond };
+
+        if (parts[8] === undefined && parts[9] === undefined) {
+            return this.#instant(wall, timezone);
+        }
+
+        return new Date(this.#utc(wall) - (parts[9] === '-' ? -1 : 1) * (hours * 60 + minutes) * 60_000);
     }
 
     /**

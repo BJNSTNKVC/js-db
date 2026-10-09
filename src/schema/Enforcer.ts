@@ -6,8 +6,6 @@ const FALSY: ReadonlySet<string> = new Set<string>(['false', '0']);
 
 const NUMERIC: RegExp = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
 
-const MOMENT: RegExp = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|[+-](\d{2}):(\d{2}))?)?$/;
-
 export class Enforcer {
     /**
      * Coerce a value into its declared column type, reading a calendar day or a time of day in the timezone.
@@ -234,16 +232,16 @@ export class Enforcer {
     }
 
     /**
-     * Coerce a value into a date, reading a blank string as null.
+     * Coerce a value into a date, a whole timestamp or a string in an ISO 8601 form naming a real moment, reading a blank string as null.
      */
     static #temporal(value: unknown, strict: boolean, timezone: string): Date | null {
         if (typeof value === 'string' && value.trim() === '') {
             return null;
         }
 
-        const date: Date = this.#moment(value, timezone);
+        const date: Date | null = typeof value === 'number' && !Number.isInteger(value) ? null : Calendar.moment(value, timezone);
 
-        if (!Number.isNaN(date.getTime())) {
+        if (date !== null) {
             return date;
         }
 
@@ -252,37 +250,6 @@ export class Enforcer {
         }
 
         return null;
-    }
-
-    /**
-     * Read a date, a whole timestamp or an ISO 8601 string naming a real moment, one without an offset as that wall clock in the timezone, or an invalid date for anything else.
-     */
-    static #moment(value: unknown, timezone: string): Date {
-        if (value instanceof Date) {
-            return value;
-        }
-
-        if (typeof value === 'number') {
-            return new Date(Number.isInteger(value) ? value : NaN);
-        }
-
-        const parts: RegExpExecArray | null = typeof value === 'string' ? MOMENT.exec(value) : null;
-
-        if (parts === null || !this.#survives(parts)) {
-            return new Date(NaN);
-        }
-
-        return parts[7] === undefined ? Calendar.read(value as string, timezone) : new Date((value as string).replace(' ', 'T'));
-    }
-
-    /**
-     * Determine whether the parts of an ISO 8601 string name a moment that exists, rather than one that rolls over.
-     */
-    static #survives(parts: RegExpExecArray): boolean {
-        const [year, month, day, hour, minute, second, , hours, minutes]: number[] = parts.slice(1).map((part: string | undefined): number => Number(part ?? 0)) as [number, number, number, number, number, number, number, number, number];
-        const date: Date = Calendar.midnight(year, month - 1, day, 'UTC');
-
-        return date.getUTCMonth() === month - 1 && date.getUTCDate() === day && hour <= 23 && minute <= 59 && second <= 59 && hours <= 23 && minutes <= 59;
     }
 
     /**

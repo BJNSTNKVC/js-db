@@ -77,7 +77,7 @@ export class Planner {
 
             case 'date':
             case 'datetime':
-                return this.#date(value, timezone) ?? value;
+                return Calendar.moment(value, timezone) ?? value;
 
             default:
                 return value;
@@ -364,19 +364,6 @@ export class Planner {
         const number: number = typeof value === 'number' ? value : (typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN);
 
         return Number.isFinite(number) && (fractional || Number.isInteger(number)) ? number : null;
-    }
-
-    /**
-     * Read a value as a valid date, a YYYY-MM-DD string, alone or with a time but no offset, in the timezone, or null when it is not one.
-     */
-    static #date(value: unknown, timezone: string): Date | null {
-        if (!(value instanceof Date) && typeof value !== 'string' && typeof value !== 'number') {
-            return null;
-        }
-
-        const date: Date = value instanceof Date ? value : Calendar.read(value, timezone);
-
-        return Number.isNaN(date.getTime()) ? null : date;
     }
 
     /**

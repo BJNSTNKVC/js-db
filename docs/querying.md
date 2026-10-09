@@ -92,9 +92,13 @@ on a connection left at `'UTC'` a post at 21:00 on 14 January in New York falls 
 `whereDate` reads a `YYYY-MM-DD` string as that calendar day in the connection's timezone, so
 `'2026-02-01'` matches 1 February wherever the code runs, and a day the calendar does not have,
 such as `'2026-02-30'`, matches nothing. It reads a date and time without an offset as that wall
-clock in the same timezone, any other string as `new Date` does, and a `Date` by the day it falls
-on in that timezone, and a value it cannot read as a date matches nothing under any operator. A
-column holding a date as a string is read the same way by every part. It compares whole days: `>`
+clock in the same timezone, one with `Z` or an offset as the moment it names, and a `Date` by the
+day it falls on in that timezone. It reads a string only in the ISO 8601 forms a write accepts, so
+`'Feb 1 2026'`, `'2026/02/01'` and `' 2026-02-01 '` match nothing, as any value it cannot read as a
+date does under every operator. A column holding a date as a string is read the same way by every
+part, so a row holding `'Feb 1 2026'` falls on no day. Before 12.0.0 any other string was read as
+`new Date` reads it, in the device's timezone, so the same call matched different rows on
+different devices. Pass a `Date` or an ISO string such as `'2026-02-01'`. It compares whole days: `>`
 matches from the start of the next day, `<=` up to the end of the day, and `!=` everything before
 or after it.
 
@@ -142,7 +146,7 @@ to `where` and its `or` and `not` forms with every operator except `===`, `!==`,
 |--------------------------|-------------------------------------------------------------|--------------------------------------------|
 | `integer`, `decimal`     | A whole number, or a non-blank string holding one           | `where('age', '>=', '18')` compares 18     |
 | `float`                  | A finite number, or a non-blank string holding one          | `where('price', '<', '9.5')` compares 9.5  |
-| `date`, `datetime`       | A date, a number or a date string, as a write reads it      | `where('published_at', '>', '2026-02-01')` |
+| `date`, `datetime`       | A date, a number or an ISO 8601 string, as a write reads it | `where('published_at', '>', '2026-02-01')` |
 | `boolean`                | Any value, read as an insert stores it                      | `where('active', 'true')` compares `true`  |
 | `string`, `enum`, `json` | Nothing, the value is compared as given                     |                                            |
 
@@ -151,8 +155,12 @@ boolean column matches the rows holding `true` or `false`. A date-only string su
 is the first moment of that day in the connection's timezone, the moment a write stores for it, so
 `where('born_on', '2026-02-01')` finds the row the same string wrote, through an index or a scan,
 and a date and time without an offset, such as `'2026-02-01 09:30'`, is that wall clock in the same
-timezone. A day the calendar does not have, such as `'2026-02-30'`, is compared as given, so `=`
-matches no date. Any other string is the moment `new Date` reads. To match every moment of a day in
+timezone. A string with `Z` or an offset is the moment it names. A day the calendar does not have,
+such as `'2026-02-30'`, is compared as given, so it matches no date, and so is a string in any form
+a write refuses, such as `'Feb 1 2026'`, `'2026/02/01'` or `' 2026-02-01 '`. `find` reads a date key
+the same way. Before 12.0.0 such a string was the moment `new Date` reads, in the device's timezone,
+so the same query could match on one device and not on another. Pass a `Date` or an ISO string such
+as `'2026-02-01'` instead. To match every moment of a day in
 a `datetime` column, use `whereDate`. A row written by an earlier release, or under another
 setting, can hold a different moment for the same string; see
 [Dates stored by earlier releases](#dates-stored-by-earlier-releases). A boolean column reads a
@@ -666,8 +674,10 @@ A date-only default is read when the row is written, in the timezone of the conn
 [Dates and timezones](#dates-and-timezones) shows what each setting stores.
 The date and time must exist, so `'2024-02-30'`, `'2023-02-29'` and `'24:00'` throw rather than
 roll over into the next day or month. Any other form `new Date` reads, such as `'01/15/2024'`,
-`'Jan 15 2024'`, `'2024'` or a `toUTCString()` string, throws, and so do `'1'` and `true`. A `date`
-column takes the same values as a `datetime` column, time of day included.
+`'Jan 15 2024'`, `'2024'` or a `toUTCString()` string, throws, and so do `'1'` and `true`. So does a
+lowercase `t` or `z`, an offset without its colon such as `+0200`, and surrounding whitespace. A
+`date` column takes the same values as a `datetime` column, time of day included. A query reads a
+date in exactly these forms too, and matches nothing for any other.
 
 `increment` and `decrement` throw `TypeError` on either connection for an amount that is not a
 finite number. The number they leave behind is coerced as an update coerces it, so
@@ -725,6 +735,9 @@ A row can also still hold the string itself, written before writes coerced dates
 `Schema.coerce` in a migration stores such a string as a write does today, as midnight in the
 connection's timezone, as [Coercing rows already stored](schema.md#coercing-rows-already-stored)
 describes. It leaves a stored `Date` as it is, so the moments 7.0.0 stored need the migration below.
+A string in a form a write refuses, such as `'Jan 15 2024'`, falls on no day and matches no date
+since 12.0.0, and `Schema.coerce` fails on it when strict and stores `null` when loose, so such a
+row needs rewriting as a `Date` or an ISO string by a migration of its own.
 
 Rows written before 7.0.0 read correctly again under the default `'UTC'`, with nothing to do. Rows
 written by 7.0.0 west of UTC still fall on their day there, but not on the moment the string now

@@ -149,7 +149,7 @@ describe.each(PROCESSES)('Calendar with the process in %s', (process: string): v
         });
     });
 
-    describe('read', (): void => {
+    describe('moment', (): void => {
         test.each([
             ['UTC', '2024-01-15T00:00:00.000Z'],
             ['America/New_York', '2024-01-15T05:00:00.000Z'],
@@ -157,13 +157,13 @@ describe.each(PROCESSES)('Calendar with the process in %s', (process: string): v
         ])('reads a date-only string as the first moment of that day in %s', (timezone: string, expected: string): void => {
             vi.stubEnv('TZ', process);
 
-            expect(Calendar.read('2024-01-15', timezone).toISOString()).toEqual(expected);
+            expect(Calendar.moment('2024-01-15', timezone)?.toISOString()).toEqual(expected);
         });
 
         test('reads a date-only string as the first moment of that local day', (): void => {
             vi.stubEnv('TZ', process);
 
-            expect(Calendar.read('2024-01-15', 'local')).toEqual(new Date(2024, 0, 15));
+            expect(Calendar.moment('2024-01-15', 'local')).toEqual(new Date(2024, 0, 15));
         });
 
         test.each([
@@ -176,13 +176,13 @@ describe.each(PROCESSES)('Calendar with the process in %s', (process: string): v
         ])('reads %o as that wall clock in %s', (value: string, timezone: string, expected: string): void => {
             vi.stubEnv('TZ', process);
 
-            expect(Calendar.read(value, timezone).toISOString()).toEqual(expected);
+            expect(Calendar.moment(value, timezone)?.toISOString()).toEqual(expected);
         });
 
         test('reads a date and time without an offset as that local wall clock', (): void => {
             vi.stubEnv('TZ', process);
 
-            expect(Calendar.read('2024-01-15 10:00:30.5', 'local')).toEqual(new Date(2024, 0, 15, 10, 0, 30, 500));
+            expect(Calendar.moment('2024-01-15 10:00:30.5', 'local')).toEqual(new Date(2024, 0, 15, 10, 0, 30, 500));
         });
 
         test.each([
@@ -191,11 +191,11 @@ describe.each(PROCESSES)('Calendar with the process in %s', (process: string): v
         ])('reads a repeated wall clock %o as its earlier moment in %s, as a local Date does', (value: string, timezone: string, expected: string): void => {
             vi.stubEnv('TZ', process);
 
-            expect(Calendar.read(value, timezone).toISOString()).toEqual(expected);
+            expect(Calendar.moment(value, timezone)?.toISOString()).toEqual(expected);
 
             vi.stubEnv('TZ', timezone);
 
-            expect(Calendar.read(value, 'local').toISOString()).toEqual(expected);
+            expect(Calendar.moment(value, 'local')?.toISOString()).toEqual(expected);
         });
 
         test.each([
@@ -204,47 +204,64 @@ describe.each(PROCESSES)('Calendar with the process in %s', (process: string): v
         ])('moves a skipped wall clock %o forward by the gap in %s, as a local Date does', (value: string, timezone: string, expected: string): void => {
             vi.stubEnv('TZ', process);
 
-            expect(Calendar.read(value, timezone).toISOString()).toEqual(expected);
+            expect(Calendar.moment(value, timezone)?.toISOString()).toEqual(expected);
 
             vi.stubEnv('TZ', timezone);
 
-            expect(Calendar.read(value, 'local').toISOString()).toEqual(expected);
+            expect(Calendar.moment(value, 'local')?.toISOString()).toEqual(expected);
         });
 
         test.each(['UTC', 'local', 'America/New_York'])('reads a year below 100 as given in %s', (timezone: string): void => {
             vi.stubEnv('TZ', process);
 
-            const read: Date = Calendar.read('0099-01-01', timezone);
+            const read: Date = Calendar.moment('0099-01-01', timezone) as Date;
 
             expect(listed(Calendar.parts(read, timezone))).toEqual([99, 0, 1, 0, 0, 0, 0]);
-            expect(Calendar.read('0099-01-01', 'UTC').toISOString()).toEqual('0099-01-01T00:00:00.000Z');
+            expect(Calendar.moment('0099-01-01', 'UTC')?.toISOString()).toEqual('0099-01-01T00:00:00.000Z');
         });
 
-        test.each(['UTC', 'local', 'America/New_York'])('reads a date or time the calendar does not have as an invalid date in %s', (timezone: string): void => {
+        test.each(['UTC', 'local', 'America/New_York'])('reads a date or time the calendar does not have as no moment in %s', (timezone: string): void => {
             vi.stubEnv('TZ', process);
 
             for (const value of ['2024-02-30', '2023-02-29', '2024-13-01', '2024-00-10', '2024-01-00', '2024-01-15 24:00', '2024-01-15 10:60', '2024-01-15 10:00:60']) {
-                expect(Calendar.read(value, timezone).getTime()).toBeNaN();
+                expect(Calendar.moment(value, timezone)).toBeNull();
             }
         });
 
         test.each(['UTC', 'local', 'America/New_York'])('reads a string with Z or an offset as the moment it names in %s', (timezone: string): void => {
             vi.stubEnv('TZ', process);
 
-            expect(Calendar.read('2024-01-15T10:00:00Z', timezone).toISOString()).toEqual('2024-01-15T10:00:00.000Z');
-            expect(Calendar.read('2024-01-15T10:00:00+02:00', timezone).toISOString()).toEqual('2024-01-15T08:00:00.000Z');
+            expect(Calendar.moment('2024-01-15T10:00:00Z', timezone)?.toISOString()).toEqual('2024-01-15T10:00:00.000Z');
+            expect(Calendar.moment('2024-01-15T10:00:00+02:00', timezone)?.toISOString()).toEqual('2024-01-15T08:00:00.000Z');
+            expect(Calendar.moment('2024-01-15 10:00Z', timezone)?.toISOString()).toEqual('2024-01-15T10:00:00.000Z');
+            expect(Calendar.moment('2024-01-15T10:00:30.123456-05:30', timezone)?.toISOString()).toEqual('2024-01-15T15:30:30.123Z');
+            expect(Calendar.moment('0099-01-01T00:00:00+01:00', timezone)?.toISOString()).toEqual('0098-12-31T23:00:00.000Z');
         });
 
-        test.each(['UTC', 'local', 'America/New_York'])('reads a date, a number and any other string as new Date does in %s', (timezone: string): void => {
+        test.each(['UTC', 'local', 'America/New_York'])('reads an offset the clock does not have as no moment in %s', (timezone: string): void => {
+            vi.stubEnv('TZ', process);
+
+            expect(Calendar.moment('2024-01-15T10:00:00+24:00', timezone)).toBeNull();
+            expect(Calendar.moment('2024-01-15T10:00:00+02:60', timezone)).toBeNull();
+        });
+
+        test.each(['UTC', 'local', 'America/New_York'])('reads a date as it is and a number as a timestamp in %s', (timezone: string): void => {
             vi.stubEnv('TZ', process);
 
             const date: Date = new Date('2024-01-15T10:00:00Z');
 
-            expect(Calendar.read(date, timezone)).toEqual(date);
-            expect(Calendar.read(date, timezone)).not.toBe(date);
-            expect(Calendar.read(0, timezone)).toEqual(new Date(0));
-            expect(Calendar.read('Jan 15 2024', timezone)).toEqual(new Date('Jan 15 2024'));
-            expect(Calendar.read('garbage', timezone).getTime()).toBeNaN();
+            expect(Calendar.moment(date, timezone)).toBe(date);
+            expect(Calendar.moment(0, timezone)).toEqual(new Date(0));
+            expect(Calendar.moment(new Date(NaN), timezone)).toBeNull();
+            expect(Calendar.moment(NaN, timezone)).toBeNull();
+        });
+
+        test.each(['UTC', 'local', 'America/New_York'])('reads a string in a form a write refuses, and any other value, as no moment in %s', (timezone: string): void => {
+            vi.stubEnv('TZ', process);
+
+            for (const value of ['Jan 15 2024', '2024/01/15', ' 2024-01-15 ', '2024-01-15t10:00:00z', '2024-01-15T10:00:00+0200', '2024-01-15Z', 'Mon, 15 Jan 2024 10:00:00 GMT', 'garbage', '', true, null, [2024]]) {
+                expect(Calendar.moment(value, timezone)).toBeNull();
+            }
         });
     });
 });
