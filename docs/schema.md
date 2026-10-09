@@ -41,17 +41,17 @@ await Schema.table('users', (table: Blueprint): void => {
 A definition IndexedDB would leave unenforced, or that would fail every insert relying on it, is
 refused with `SchemaException` when its migration runs, and the migration rolls back:
 
-| Definition                                                                                         | Why                                                                          |
-|----------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------|
-| An index over a column the table lacks: `table.index('missing')`, `table.unique(['a', 'missing'])` | It covers nothing, so a unique rule is never enforced                        |
-| An index over a boolean column: `.index()`, `.unique()` or `.multiEntry()`, alone or compound      | A boolean is not a valid key, so the index holds nothing                     |
-| A key path that is nullable or a boolean: `string('code').primary().nullable()`                    | IndexedDB stores no record without a valid key                               |
-| A `.primary()` column added by `Schema.table`                                                      | IndexedDB fixes the key path when the store is created                       |
-| A default the column cannot store: `integer('i').default('abc')`, `decimal('d', 2).default(19.99)` | Every insert relying on it would throw                                       |
-| An enum default outside its values, or a `null` or blank default on a column that is not nullable  | Every insert relying on it would throw                                       |
-| A scale that is not a whole number of at least 0: `decimal('d', -2)`, `decimal('d', 1.5)`          | A scale counts decimal places                                                |
-| A column name that is blank or holds a dot or an arrow: `''`, `' '`, `'a.b'`, `'a->b'`             | A dot separates key path steps and qualifies columns, an arrow starts a path |
-| An index or key path over a name that is not a JavaScript identifier: `'first name'`, `'e-mail'`   | IndexedDB cannot read the name as a key path                                 |
+| Definition                                                                                          | Why                                                                                                             |
+|-----------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------|
+| An index over a column the table lacks: `table.index('missing')`, `table.unique(['a', 'missing'])`  | It covers nothing, so a unique rule is never enforced                                                           |
+| An index over a boolean column: `.index()`, `.unique()` or `.multiEntry()`, alone or compound       | A boolean is not a valid key, so the index holds nothing                                                        |
+| A key path that is nullable or a boolean: `string('code').primary().nullable()`                     | IndexedDB stores no record without a valid key                                                                  |
+| A `.primary()` column added by `Schema.table`                                                       | IndexedDB fixes the key path when the store is created                                                          |
+| A default the column cannot store: `integer('i').default('abc')`, `decimal('d', 2).default(19.99)`  | Every insert relying on it would throw                                                                          |
+| An enum default outside its values, or a `null` or blank default on a column that is not nullable   | Every insert relying on it would throw                                                                          |
+| A scale that is not a whole number of at least 0: `decimal('d', -2)`, `decimal('d', 1.5)`           | A scale counts decimal places                                                                                   |
+| A column name that is blank or holds a dot, an arrow or ` as `: `''`, `'a.b'`, `'a->b'`, `'x as y'` | A dot separates key path steps and qualifies columns, an arrow starts a path, `select` reads ` as ` as an alias |
+| An index or key path over a name that is not a JavaScript identifier: `'first name'`, `'e-mail'`    | IndexedDB cannot read the name as a key path                                                                    |
 
 ```
 SchemaException: Index [users_admin_unique] of table [users] covers boolean column [admin], which
@@ -61,18 +61,23 @@ IndexedDB never indexes, so the index would hold nothing.
 A default is checked as a strict connection would write it, whichever connection runs the
 migration, since a loose connection would quietly write `null` or a rounded number into every row
 relying on it. So `decimal('price').default(19.99)` is refused, and `default(1999)` is what was
-meant. A name refused for a dot, an arrow or a blank is refused where it is declared, by the column
-method or by `renameColumn`. A name that is not an identifier, such as `'first name'`, stays
-allowed on a column nothing indexes. Indexes are checked against the table as the blueprint leaves
-it, so an index may be declared before its column in the same callback, while one over a column
-the same blueprint drops or renames away is refused. A compound index may include the key path.
+meant. A name refused for a dot, an arrow, ` as ` or a blank is refused where it is declared, by the
+column method or by `renameColumn`. ` as ` is refused in any case, `'x AS y'` too, while a name
+holding `as` without a space on each side, such as `'alias'` or `'base_as'`, is a plain name. A
+name that is not an identifier, such as `'first name'`, stays allowed on a column nothing indexes.
+Indexes are checked against the table as the blueprint leaves it, so an index may be declared
+before its column in the same callback, while one over a column the same blueprint drops or renames
+away is refused, a column it declares included. A compound index may include the key path.
 
 Only what a blueprint declares is checked. Columns and indexes a table already holds from an
 earlier migration are left as they are, so a database migrated before 6.0.0 keeps working, and a
-boolean index it holds is still carried through a rename of its column.
+boolean index it holds is still carried through a rename of its column. A column it holds under a
+name with ` as ` reads as before: `pluck` and `where` reach it, `select` cannot, and
+`renameColumn` or `dropColumn` can still name it.
 
-Before 6.0.0 these definitions were accepted. A migration never runs twice, so a device that
-already ran one keeps what it built, but a fresh install runs every migration and now fails on it.
+Before 6.0.0 these definitions were accepted, and before 13.0.0 a name holding ` as ` was. A
+migration never runs twice, so a device that already ran one keeps what it built, but a fresh
+install runs every migration and now fails on it.
 Edit that migration in place so it declares what it meant, keeping its class name, or `name()`,
 since migrations are recorded by name. The edit reaches only new installs. On devices that already
 ran the migration:
@@ -209,6 +214,47 @@ await Schema.table('users', (table: Blueprint): void => {
 ```
 
 `getIndexes()` lists what a table holds, so it shows whether a database needs the repair.
+
+## Dropping or renaming a column the same callback declares
+
+A blueprint applies its calls in order, so `dropColumn` and `renameColumn` on a column the same
+callback declares act on that declaration. A column declared and then dropped is never created, and
+one declared and then renamed is created under its new name only, keeping its type and modifiers:
+
+```ts
+await Schema.create('users', (table: Blueprint): void => {
+    table.id();
+    table.string('draft').nullable();
+    table.renameColumn('draft', 'title');
+    table.index('title');
+});
+```
+
+An index declared on the column itself, with `.index()` or `.unique()`, stays over the name the
+column was declared under, so once the column is dropped or renamed away the index covers a column
+the table does not have and is refused, as one naming the old name is. Declare the index over the
+name the column ends with, as `table.index('title')` does above.
+
+Inside `Schema.table`, declaring a column the table already holds is refused even when the same
+callback drops or renames it afterwards, while a column dropped or renamed away first may be
+declared again under its name. In `Schema.create` a name is declared once, even with a drop between.
+
+Before 13.0.0 both calls did nothing to a declared column: it was created under its declared name,
+with any index declared on it, and a rename inside `Schema.table` also wrote an empty value under
+the new name into every row. A migration never runs twice, so a device that already ran one keeps
+what it built, but a fresh install now builds what the migration says:
+
+- **A declared column dropped with an index on it** fails the migration with `SchemaException`.
+  Remove the declaration rather than dropping it, and the index with it. Devices that already ran
+  the migration keep the column and its index.
+- **A declared column dropped with no index** is no longer created. Remove the declaration and the
+  drop, so the migration reads as what a fresh install gets. Devices that already ran it keep the
+  column, which does no harm.
+- **A declared column renamed** is created under its new name on a fresh install, and stays under
+  its declared name on devices that already ran the migration. Declare it under the name you want
+  and remove the rename. The column name then differs between the two kinds of device, as
+  [Definitions IndexedDB cannot honor](#definitions-indexeddb-cannot-honor) describes for a name the
+  package refuses, and the same table copy repairs it.
 
 ## Changing columns
 

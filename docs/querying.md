@@ -322,7 +322,10 @@ DB.table<User>('users')
 ```
 
 `select()` projects in memory after the fetch. IndexedDB always returns whole records, so it shapes
-the result rather than saving any work.
+the result rather than saving any work. ` as ` in any case aliases a column, as in
+`select('email as address')`, so since 13.0.0 a column may not be declared under a name holding it.
+A column a table already holds under such a name stays out of `select`'s reach, while `pluck` and
+`where` still read it.
 
 `distinct()` drops a row when an earlier one holds the same value in every column it returns, and
 keeps the first, in the order the query asks for. It does so across the whole match before `limit`

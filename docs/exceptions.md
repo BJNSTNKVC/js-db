@@ -36,7 +36,8 @@ true. All of them are exported from the package root.
 - adding a required column with no default inside `Schema.table` while some row would hold no
   value in it
 - declaring an enumerated column over an empty list of values
-- naming a column with a blank name, a dot or an arrow, in a column method or in `renameColumn`
+- naming a column with a blank name, a dot, an arrow or ` as ` in any case, in a column method or
+  in `renameColumn`
 - declaring a decimal scale that is not a whole number of at least 0
 - declaring a default its column cannot store as a strict connection writes it, an enumerated
   default outside its values, or a `null` or blank default on a column that is not nullable

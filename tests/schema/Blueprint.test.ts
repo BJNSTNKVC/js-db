@@ -707,6 +707,215 @@ describe('Blueprint renamed and dropped columns', (): void => {
     });
 });
 
+describe('Blueprint columns the same blueprint declares, then drops or renames', (): void => {
+    const existing: TableSchema = {
+        table     : 'users',
+        key       : 'id',
+        increments: true,
+        timestamps: false,
+        columns   : [
+            { name: 'id', type: 'integer', nullable: false, default: undefined, hasDefault: false, primary: true, increments: true, places: null, values: null },
+            { name: 'note', type: 'string', nullable: true, default: undefined, hasDefault: false, primary: false, increments: false, places: null, values: null },
+        ],
+        indexes   : [],
+    };
+
+    /**
+     * Apply the callback to a blueprint, creating the users table or altering the existing one.
+     */
+    function blueprint(mode: string, callback: (table: Blueprint) => void): Blueprint {
+        const blueprint: Blueprint = new Blueprint('users', mode === 'create' ? null : existing);
+
+        callback(blueprint);
+
+        return blueprint;
+    }
+
+    /**
+     * Get the names of the columns a blueprint leaves the table with.
+     */
+    function columns(blueprint: Blueprint): string[] {
+        return blueprint.toSchema().columns.map((column: ColumnSchema): string => column.name);
+    }
+
+    /**
+     * Get the names of the columns a blueprint adds.
+     */
+    function added(blueprint: Blueprint): string[] {
+        return blueprint.operations().added.map((column: ColumnSchema): string => column.name);
+    }
+
+    test('never creates a column the same blueprint declares and drops when creating', (): void => {
+        const table: Blueprint = blueprint('create', (table: Blueprint): void => {
+            table.id();
+            table.string('nickname');
+            table.dropColumn('nickname');
+        });
+
+        expect(columns(table)).toEqual(['id']);
+        expect(added(table)).toEqual(['id']);
+        expect(table.operations().dropped).toEqual([]);
+    });
+
+    test('never adds a column the same blueprint declares and drops when altering', (): void => {
+        const table: Blueprint = blueprint('alter', (table: Blueprint): void => {
+            table.string('draft').nullable();
+            table.dropColumn('draft');
+        });
+
+        expect(columns(table)).toEqual(['id', 'note']);
+        expect(added(table)).toEqual([]);
+        expect(table.operations().dropped).toEqual([]);
+    });
+
+    test('drops a declared column alongside one the table already held', (): void => {
+        const table: Blueprint = blueprint('alter', (table: Blueprint): void => {
+            table.string('draft').nullable();
+            table.dropColumn('note', 'draft');
+        });
+
+        expect(columns(table)).toEqual(['id']);
+        expect(added(table)).toEqual([]);
+        expect(table.operations().dropped).toEqual(['note']);
+    });
+
+    test('drops only the declaration made after a column the table held was dropped', (): void => {
+        const table: Blueprint = blueprint('alter', (table: Blueprint): void => {
+            table.dropColumn('note');
+            table.string('note').nullable();
+            table.dropColumn('note');
+        });
+
+        expect(columns(table)).toEqual(['id']);
+        expect(added(table)).toEqual([]);
+        expect(table.operations().dropped).toEqual(['note']);
+    });
+
+    test('adds a column declared again after the same blueprint dropped its declaration when altering', (): void => {
+        const table: Blueprint = blueprint('alter', (table: Blueprint): void => {
+            table.string('draft').nullable();
+            table.dropColumn('draft');
+            table.integer('draft').nullable();
+        });
+
+        expect(table.toSchema().columns.map((column: ColumnSchema): string => `${column.name}:${column.type}`)).toEqual(['id:integer', 'note:string', 'draft:integer']);
+        expect(added(table)).toEqual(['draft']);
+    });
+
+    test.each([
+        ['creating', 'create'],
+        ['altering', 'alter'],
+    ])('renames a column the same blueprint declares when %s', (_name: string, mode: string): void => {
+        const table: Blueprint = blueprint(mode, (table: Blueprint): void => {
+            if (mode === 'create') {
+                table.id();
+            }
+
+            table.string('draft').nullable().default('none');
+            table.renameColumn('draft', 'final');
+        });
+
+        expect(columns(table)).toEqual(mode === 'create' ? ['id', 'final'] : ['id', 'note', 'final']);
+        expect(table.toSchema().columns.at(-1)).toMatchObject({ name: 'final', type: 'string', nullable: true, default: 'none' });
+        expect(added(table)).toEqual(mode === 'create' ? ['id', 'final'] : ['final']);
+        expect(table.operations().renamed).toEqual([]);
+    });
+
+    test('drops a declared column under the name a rename gave it', (): void => {
+        const table: Blueprint = blueprint('alter', (table: Blueprint): void => {
+            table.string('draft').nullable();
+            table.renameColumn('draft', 'final');
+            table.dropColumn('final');
+        });
+
+        expect(columns(table)).toEqual(['id', 'note']);
+        expect(added(table)).toEqual([]);
+    });
+
+    test('renames a declared column twice', (): void => {
+        const table: Blueprint = blueprint('alter', (table: Blueprint): void => {
+            table.string('draft').nullable();
+            table.renameColumn('draft', 'final');
+            table.renameColumn('final', 'last');
+        });
+
+        expect(columns(table)).toEqual(['id', 'note', 'last']);
+    });
+
+    test('indexes a declared column under the name a rename gave it', (): void => {
+        const table: Blueprint = blueprint('create', (table: Blueprint): void => {
+            table.id();
+            table.string('draft');
+            table.renameColumn('draft', 'final');
+            table.unique('final');
+        });
+
+        expect(table.toSchema().indexes.map((index: IndexSchema): string => `${index.name}(${index.columns.join(',')})`)).toEqual(['users_final_unique(final)']);
+    });
+
+    test.each([
+        ['a column it already dropped', (table: Blueprint): void => {
+            table.string('draft').nullable();
+            table.dropColumn('draft');
+            table.dropColumn('draft');
+        }, 'draft'],
+        ['a declared column under the name a rename took from it', (table: Blueprint): void => {
+            table.string('draft').nullable();
+            table.renameColumn('draft', 'final');
+            table.dropColumn('draft');
+        }, 'draft'],
+    ] as [string, (table: Blueprint) => void, string][])('rejects dropping %s', (_name: string, callback: (table: Blueprint) => void, column: string): void => {
+        expect((): Blueprint => blueprint('alter', callback)).toThrow(new SchemaException(`Column [${column}] does not exist on table [users].`));
+    });
+
+    test.each([
+        ['a unique column it drops', 'create', (table: Blueprint): void => {
+            table.id();
+            table.string('nickname').unique();
+            table.dropColumn('nickname');
+        }, 'Index [users_nickname_unique] of table [users] covers column [nickname], which the table does not have.'],
+        ['an indexed column it drops', 'alter', (table: Blueprint): void => {
+            table.string('nickname').nullable().index();
+            table.dropColumn('nickname');
+        }, 'Index [users_nickname_index] of table [users] covers column [nickname], which the table does not have.'],
+        ['an index naming a column it declares and drops', 'create', (table: Blueprint): void => {
+            table.id();
+            table.string('nickname');
+            table.index('nickname', 'by_nickname');
+            table.dropColumn('nickname');
+        }, 'Index [by_nickname] of table [users] covers column [nickname], which the table does not have.'],
+        ['a unique column it renames', 'create', (table: Blueprint): void => {
+            table.id();
+            table.string('nickname').unique();
+            table.renameColumn('nickname', 'handle');
+        }, 'Index [users_nickname_unique] of table [users] covers column [nickname], which the table does not have.'],
+        ['a column declared twice with a drop between, when creating', 'create', (table: Blueprint): void => {
+            table.id();
+            table.string('draft');
+            table.dropColumn('draft');
+            table.string('draft');
+        }, 'Column [draft] is declared more than once on table [users].'],
+        ['a column the table already holds, declared and dropped', 'alter', (table: Blueprint): void => {
+            table.string('note').nullable();
+            table.dropColumn('note');
+        }, 'Column [note] is declared more than once on table [users].'],
+        ['a column the table already holds, declared and renamed', 'alter', (table: Blueprint): void => {
+            table.string('note').nullable();
+            table.renameColumn('note', 'memo');
+        }, 'Column [note] is declared more than once on table [users].'],
+        ['a declared column renamed onto one the table holds', 'alter', (table: Blueprint): void => {
+            table.string('draft').nullable();
+            table.renameColumn('draft', 'note');
+        }, 'Column [note] is declared more than once on table [users].'],
+        ['a column the table holds renamed onto a declared one', 'alter', (table: Blueprint): void => {
+            table.string('draft').nullable();
+            table.renameColumn('note', 'draft');
+        }, 'Column [draft] is declared more than once on table [users].'],
+    ] as [string, string, (table: Blueprint) => void, string][])('refuses %s', (_name: string, mode: string, callback: (table: Blueprint) => void, message: string): void => {
+        expect((): TableSchema => blueprint(mode, callback).toSchema()).toThrow(new SchemaException(message));
+    });
+});
+
 describe('Blueprint indexes IndexedDB cannot honor', (): void => {
     const existing: TableSchema = {
         table     : 'users',
@@ -906,6 +1115,12 @@ describe('Blueprint column names', (): void => {
         ['\t\n', 'Column [\t\n] of table [users] needs a name that is not blank.'],
         ['a.b', 'Column [a.b] of table [users] may not be named with a dot, which separates the steps of a key path and qualifies a column on a join.'],
         ['a->b', 'Column [a->b] of table [users] may not be named with an arrow, which starts a JSON path.'],
+        ['x as y', 'Column [x as y] of table [users] may not be named with [ as ], which select reads as an alias.'],
+        ['x AS y', 'Column [x AS y] of table [users] may not be named with [ as ], which select reads as an alias.'],
+        ['x As y', 'Column [x As y] of table [users] may not be named with [ as ], which select reads as an alias.'],
+        ['x  as  y', 'Column [x  as  y] of table [users] may not be named with [ as ], which select reads as an alias.'],
+        [' as y', 'Column [ as y] of table [users] may not be named with [ as ], which select reads as an alias.'],
+        ['x as ', 'Column [x as ] of table [users] may not be named with [ as ], which select reads as an alias.'],
     ])('refuses a column named [%s] where it is declared', (name: string, message: string): void => {
         const blueprint: Blueprint = new Blueprint('users');
 
@@ -919,6 +1134,8 @@ describe('Blueprint column names', (): void => {
         ['', 'Column [] of table [users] needs a name that is not blank.'],
         ['a.b', 'Column [a.b] of table [users] may not be named with a dot, which separates the steps of a key path and qualifies a column on a join.'],
         ['a->b', 'Column [a->b] of table [users] may not be named with an arrow, which starts a JSON path.'],
+        ['x as y', 'Column [x as y] of table [users] may not be named with [ as ], which select reads as an alias.'],
+        ['x AS y', 'Column [x AS y] of table [users] may not be named with [ as ], which select reads as an alias.'],
     ])('refuses renaming a column to [%s]', (name: string, message: string): void => {
         const blueprint: Blueprint = new Blueprint('users', {
             table     : 'users',
@@ -938,6 +1155,41 @@ describe('Blueprint column names', (): void => {
             table.string(' padded ');
             table.string('e-mail');
         }).columns.map((column: ColumnSchema): string => column.name)).toEqual(['first name', ' padded ', 'e-mail']);
+    });
+
+    test('accepts a name holding as without a space on each side', (): void => {
+        expect(schema((table: Blueprint): void => {
+            table.string('alias');
+            table.string('base_as');
+            table.string('as');
+            table.string('x\tas\ty');
+            table.string('x as_y');
+        }).columns.map((column: ColumnSchema): string => column.name)).toEqual(['alias', 'base_as', 'as', 'x\tas\ty', 'x as_y']);
+    });
+
+    test('leaves a column the table already holds under a name with as, so it can be renamed or dropped', (): void => {
+        const existing: TableSchema = {
+            table     : 'users',
+            key       : null,
+            increments: true,
+            timestamps: false,
+            columns   : [
+                { name: 'x as y', type: 'string', nullable: true, default: undefined, hasDefault: false, primary: false, increments: false, places: null, values: null },
+                { name: 'a as b', type: 'string', nullable: true, default: undefined, hasDefault: false, primary: false, increments: false, places: null, values: null },
+            ],
+            indexes   : [],
+        };
+
+        const blueprint: Blueprint = new Blueprint('users', existing);
+
+        expect(blueprint.toSchema().columns).toEqual(existing.columns);
+
+        blueprint.renameColumn('x as y', 'x_as_y');
+        blueprint.dropColumn('a as b');
+
+        expect(blueprint.toSchema().columns.map((column: ColumnSchema): string => column.name)).toEqual(['x_as_y']);
+        expect(blueprint.operations().renamed).toEqual([{ from: 'x as y', to: 'x_as_y' }]);
+        expect(blueprint.operations().dropped).toEqual(['a as b']);
     });
 });
 

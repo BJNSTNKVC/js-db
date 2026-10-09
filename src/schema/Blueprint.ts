@@ -34,6 +34,21 @@ export class Blueprint {
     readonly #dropped: string[] = [];
 
     /**
+     * The declared columns the blueprint drops again.
+     */
+    readonly #discarded: Set<ColumnDefinition> = new Set<ColumnDefinition>();
+
+    /**
+     * The names the blueprint gives its declared columns by renaming them.
+     */
+    readonly #names: Map<ColumnDefinition, string> = new Map<ColumnDefinition, string>();
+
+    /**
+     * The declared columns whose name the table already held when they were declared.
+     */
+    readonly #clashing: Set<ColumnDefinition> = new Set<ColumnDefinition>();
+
+    /**
      * The columns to rename.
      */
     readonly #renamed: RenamedColumn[] = [];
@@ -182,7 +197,15 @@ export class Blueprint {
      */
     dropColumn(...columns: string[]): void {
         for (const column of columns) {
-            if (!this.#has(column)) {
+            const declared: ColumnDefinition | undefined = this.#declared(column);
+
+            if (declared !== undefined) {
+                this.#discarded.add(declared);
+
+                continue;
+            }
+
+            if (!this.#exists(column)) {
                 throw new SchemaException(`Column [${column}] does not exist on table [${this.#table}].`);
             }
 
@@ -194,11 +217,19 @@ export class Blueprint {
      * Rename a column of the table.
      */
     renameColumn(from: string, to: string): void {
-        if (!this.#has(from)) {
+        const declared: ColumnDefinition | undefined = this.#declared(from);
+
+        if (declared === undefined && !this.#exists(from)) {
             throw new SchemaException(`Column [${from}] does not exist on table [${this.#table}].`);
         }
 
         this.#named(to);
+
+        if (declared !== undefined) {
+            this.#names.set(declared, to);
+
+            return;
+        }
 
         this.#renamed.push({ from, to });
     }
@@ -255,7 +286,7 @@ export class Blueprint {
         const indexes: IndexChanges = this.#indexChanges();
 
         return {
-            added    : this.#added().map((column: ColumnDefinition): ColumnSchema => column.toSchema()),
+            added    : this.#added(),
             dropped  : this.#dropped,
             renamed  : this.#renamed,
             changed  : this.#changes(),
@@ -272,13 +303,17 @@ export class Blueprint {
 
         const definition: ColumnDefinition = new ColumnDefinition(column, type);
 
+        if (this.#holds(column)) {
+            this.#clashing.add(definition);
+        }
+
         this.#columns.push(definition);
 
         return definition;
     }
 
     /**
-     * Refuse a column name that is blank, or that a key path, a join or a JSON path would read as more than a name.
+     * Refuse a column name that is blank, or that a key path, a join, a JSON path or a select would read as more than a name.
      */
     #named(column: string): void {
         const named: string = `Column [${column}] of table [${this.#table}]`;
@@ -294,13 +329,17 @@ export class Blueprint {
         if (column.includes('->')) {
             throw new SchemaException(`${named} may not be named with an arrow, which starts a JSON path.`);
         }
+
+        if (/ as /i.test(column)) {
+            throw new SchemaException(`${named} may not be named with [ as ], which select reads as an alias.`);
+        }
     }
 
     /**
      * Refuse a declared column whose key path or default IndexedDB and the enforcer cannot honor.
      */
     #storable(definition: ColumnDefinition): void {
-        const column: ColumnSchema = definition.toSchema();
+        const column: ColumnSchema = this.#schemaOf(definition);
         const named: string = `Column [${column.name}] of table [${this.#table}]`;
 
         if (column.primary) {
@@ -441,11 +480,38 @@ export class Blueprint {
     }
 
     /**
-     * Determine whether the column exists on the table, declared or already present.
+     * Determine whether the table already held the column before the blueprint.
      */
-    #has(column: string): boolean {
-        return this.#columnsOf().some((existing: ColumnSchema): boolean => existing.name === column)
-            || this.#columns.some((declared: ColumnDefinition): boolean => declared.name === column);
+    #exists(column: string): boolean {
+        return this.#columnsOf().some((existing: ColumnSchema): boolean => existing.name === column);
+    }
+
+    /**
+     * Get the column the blueprint last declared under the given name and still adds, if any.
+     */
+    #declared(column: string): ColumnDefinition | undefined {
+        return this.#additions().filter((definition: ColumnDefinition): boolean => (this.#names.get(definition) ?? definition.name) === column).at(-1);
+    }
+
+    /**
+     * Determine whether the table holds the column at this point of the blueprint, as a create statement would hold every declaration.
+     */
+    #holds(column: string): boolean {
+        if (this.#existing === null) {
+            return this.#columns.some((definition: ColumnDefinition): boolean => definition.name === column);
+        }
+
+        return this.#kept().some((kept: ColumnSchema): boolean => kept.name === column) || this.#declared(column) !== undefined;
+    }
+
+    /**
+     * Get the schema of a declared column under the name the blueprint gives it.
+     */
+    #schemaOf(definition: ColumnDefinition): ColumnSchema {
+        const column: ColumnSchema = definition.toSchema();
+        const name: string | undefined = this.#names.get(definition);
+
+        return name === undefined ? column : { ...column, name };
     }
 
     /**
@@ -455,9 +521,14 @@ export class Blueprint {
         const changed: Map<string, ColumnSchema> = new Map(this.#changes().map((change: ChangedColumn): [string, ColumnSchema] => [change.to.name, change.to]));
 
         const kept: ColumnSchema[] = this.#kept().map((column: ColumnSchema): ColumnSchema => changed.get(column.name) ?? column);
-        const added: ColumnSchema[] = this.#added().map((column: ColumnDefinition): ColumnSchema => column.toSchema());
-        const columns: ColumnSchema[] = [...kept, ...added];
+        const columns: ColumnSchema[] = [...kept, ...this.#added()];
         const seen: Set<string> = new Set<string>();
+
+        for (const definition of this.#clashing) {
+            if (!definition.changed) {
+                throw new SchemaException(`Column [${definition.name}] is declared more than once on table [${this.#table}].`);
+            }
+        }
 
         for (const column of columns) {
             if (seen.has(column.name)) {
@@ -486,10 +557,17 @@ export class Blueprint {
     }
 
     /**
-     * Get the columns the blueprint adds.
+     * Get the columns the blueprint adds, under the names it gives them.
      */
-    #added(): ColumnDefinition[] {
-        return this.#columns.filter((column: ColumnDefinition): boolean => !column.changed);
+    #added(): ColumnSchema[] {
+        return this.#additions().map((column: ColumnDefinition): ColumnSchema => this.#schemaOf(column));
+    }
+
+    /**
+     * Get the definitions of the columns the blueprint adds.
+     */
+    #additions(): ColumnDefinition[] {
+        return this.#columns.filter((column: ColumnDefinition): boolean => !column.changed && !this.#discarded.has(column));
     }
 
     /**

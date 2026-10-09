@@ -1257,6 +1257,26 @@ describe('Schema.create', (): void => {
 
         await expect(connect([Twice]).open()).rejects.toThrow(new SchemaException('Table [twice] already exists.'));
     });
+
+    test('never creates a column the same callback declares and drops', async (): Promise<void> => {
+        const Dropped: MigrationConstructor = migration('CreateDroppedTable', async (): Promise<void> => {
+            await Schema.create('users', (table: Blueprint): void => {
+                table.id();
+                table.string('name');
+                table.string('nickname').nullable();
+                table.dropColumn('nickname');
+                table.string('draft').nullable();
+                table.renameColumn('draft', 'handle');
+                table.index('handle');
+            });
+        });
+
+        const connection: Connection = connect([Dropped]);
+        const database: IDBDatabase = await connection.open();
+
+        expect((await connection.getColumns('users')).map((column: ColumnSchema): string => column.name)).toEqual(['id', 'name', 'handle']);
+        expect(Array.from(database.transaction('users', 'readonly').objectStore('users').indexNames)).toEqual(['users_handle_index']);
+    });
 });
 
 describe('Schema.table', (): void => {
@@ -1713,6 +1733,26 @@ async function stored(connection: Connection): Promise<string[]> {
 }
 
 describe('Schema.table renamed and dropped columns', (): void => {
+    test('leaves every row alone for a column the same call declares and drops', async (): Promise<void> => {
+        const connection: Connection = await altered([(table: Blueprint): void => {
+            table.string('draft').default('none');
+            table.dropColumn('draft');
+        }]);
+
+        expect((await connection.getColumns('users')).map((column: ColumnSchema): string => column.name)).not.toContain('draft');
+        expect(await records(connection, 'users')).toEqual(people.map((person: Record<string, unknown>, position: number): Record<string, unknown> => ({ id: position + 1, ...person })));
+    });
+
+    test('adds a column the same call declares and renames under its new name only', async (): Promise<void> => {
+        const connection: Connection = await altered([(table: Blueprint): void => {
+            table.string('draft').default('none');
+            table.renameColumn('draft', 'final');
+        }]);
+
+        expect((await connection.getColumns('users')).map((column: ColumnSchema): string => column.name)).toEqual(['id', 'email', 'name', 'city', 'age', 'nickname', 'note', 'final']);
+        expect(await records(connection, 'users')).toEqual(people.map((person: Record<string, unknown>, position: number): Record<string, unknown> => ({ id: position + 1, ...person, final: 'none' })));
+    });
+
     /**
      * Rename one key of every person, as a rewrite should.
      */
@@ -1943,6 +1983,13 @@ describe('Schema definitions IndexedDB cannot honor', (): void => {
         ['an index over a column named with a space', (table: Blueprint): void => {
             table.string('first name').nullable().index();
         }, 'Index [users_first name_index] of table [users] covers column [first name], whose name IndexedDB cannot read as a key path. Name the column as a JavaScript identifier.'],
+        ['a column named with as', (table: Blueprint): void => {
+            table.string('x as y').nullable();
+        }, 'Column [x as y] of table [users] may not be named with [ as ], which select reads as an alias.'],
+        ['a unique column the same callback drops', (table: Blueprint): void => {
+            table.string('handle').nullable().unique();
+            table.dropColumn('handle');
+        }, 'Index [users_handle_unique] of table [users] covers column [handle], which the table does not have.'],
     ];
 
     test.each(REFUSALS)('refuses %s when creating a table, creating nothing', async (_name: string, callback: (table: Blueprint) => void, message: string): Promise<void> => {
@@ -1971,6 +2018,16 @@ describe('Schema definitions IndexedDB cannot honor', (): void => {
         ['a rename onto a name with a dot', (table: Blueprint): void => {
             table.renameColumn('note', 'a.b');
         }, 'Column [a.b] of table [users] may not be named with a dot, which separates the steps of a key path and qualifies a column on a join.'],
+        ['a rename onto a name with as', (table: Blueprint): void => {
+            table.renameColumn('note', 'x AS y');
+        }, 'Column [x AS y] of table [users] may not be named with [ as ], which select reads as an alias.'],
+        ['a change of a column named with as', (table: Blueprint): void => {
+            table.string('x as y').nullable().change();
+        }, 'Column [x as y] of table [users] may not be named with [ as ], which select reads as an alias.'],
+        ['a column the table holds, declared and dropped', (table: Blueprint): void => {
+            table.string('note').nullable();
+            table.dropColumn('note');
+        }, 'Column [note] is declared more than once on table [users].'],
         ['a change into a default the column cannot store', (table: Blueprint): void => {
             table.string('note').nullable().default({}).change();
         }, 'Column [note] of table [users] cannot default to [[object Object]]: Unable to coerce [[object Object]] into a string.'],

@@ -102,8 +102,8 @@ await DB.transaction(async (transaction: Transaction): Promise<void> => {
 - [Seeding](docs/seeding.md): seeders, which connection they write to, running them safely on every
   boot, and rebuilding from scratch
 - [Defining a schema](docs/schema.md): column types and modifiers, altering and changing columns,
-  indexes over renamed and dropped columns, decimals, enums, coercing rows already stored, and
-  reserved tables
+  indexes over renamed and dropped columns, dropping or renaming a column the same callback
+  declares, decimals, enums, coercing rows already stored, and reserved tables
 - [Querying](docs/querying.md): constraints, JSON columns, shaping, terminals and writes
 - [Joins](docs/joins.md): inner, left, right and cross joins, and what they cost
 - [Grouping](docs/grouping.md): `groupBy`, typed aggregates and `having`

@@ -25,7 +25,13 @@ A definition IndexedDB cannot honor, such as a unique boolean column, an index o
 table lacks or a default its column cannot store, fails the migration with `SchemaException` too.
 [Definitions IndexedDB cannot honor](schema.md#definitions-indexeddb-cannot-honor) lists them, and
 what to do about a migration written before 6.0.0 that declares one, which a fresh install now
-refuses.
+refuses. The same goes for a column named with ` as `, refused since 13.0.0.
+
+Since 13.0.0, `dropColumn` and `renameColumn` on a column the same callback declares apply to that
+declaration, where before they did nothing. A migration written that way builds something else on a
+fresh install than it did on devices that already ran it, or fails when the column carries an index.
+[Dropping or renaming a column the same callback declares](schema.md#dropping-or-renaming-a-column-the-same-callback-declares)
+says how to correct it.
 
 A migration that fails rolls back with every other migration the same open was running, since they
 share one version change transaction. The database stays at its previous version, and the next
