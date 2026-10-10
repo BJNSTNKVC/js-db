@@ -108,7 +108,8 @@ query reads. The other parts, and `whereTime`, are always checked that way. A nu
 matches none of them, under `!=` as under any other operator. None of them has an `or` form.
 
 Operators: `=`, `==`, `===`, `!=`, `<>`, `!==`, `<`, `>`, `<=`, `>=`, `like`, `not like`. `==` is
-loose and `===` is strict.
+loose and `===` is strict, except on a JSON column or a column no blueprint declares, which compare
+by kind, as described below.
 
 A value given as an array or an object is bound the way Laravel binds it. `where`, its `or` and
 `not` forms, `whereAny`, `whereAll`, `whereNone`, the object form of `where` and `having` compare
@@ -119,17 +120,35 @@ is `whereBetween('age', [18, 65])`. `whereIn` and its forms throw a `TypeError` 
 `Nested arrays may not be passed to whereIn method.` when the list holds an array or an object. A date
 and binary data are values of their own and are bound as given.
 
-A column that holds an array or an object, such as a JSON column, compares by content and kind, as
-`distinct()` compares JSON values (see [Shaping](#shaping)). It never equals a scalar, so
-`where('tags', 'php')` never matches `['php']`, nor `where('tags', 'php,js')` the array
-`['php', 'js']`. To ask whether an array holds an element, use `whereJsonContains`. Two such columns,
-compared with `whereColumn` or a join, are equal when their contents are. Under `<`, `>`, `<=`, `>=`,
-`whereBetween` and `whereNotBetween`, an array ranks above every number, date and string, as MySQL
-ranks JSON values and IndexedDB ranks keys, so `where('tags', '>', 'z')` matches every array, and two
-arrays compare element by element, `[9]` before `[9, 1]` and `[10]`. An object, and an array holding
-a boolean or an object, has no place in that order, since IndexedDB cannot use it as a key, so
-ordering it is unknown, as a comparison with `null` is below: neither `where('settings', '>', 'a')`
-nor its `whereNot` matches it.
+A JSON column, and a column no blueprint declares, compare values by kind, as MySQL compares JSON
+values. A number never equals a string, a boolean never equals a number, and a date equals only a
+date of the same time, so there `where('code', '5')` never matches `5`, `where('flag', 1)` never
+matches `true`, and `whereIn` and `whereNotIn` find a value only among values of its kind. Under
+`<`, `>`, `<=`, `>=`, `whereBetween` and `whereNotBetween`, two values of the same kind compare as
+JavaScript orders them, a date by its time, while values of different kinds rank by kind: numbers,
+then strings, objects, arrays, booleans, dates and binary data. So `where('code', '>', 5)` matches
+`'5'`, `true` and every date, and `where('code', '<', '5')` matches every number. This order of kinds
+differs from the one `orderBy`, `min` and `max` follow, described in [Shaping](#shaping). A path such
+as `settings->rank` reads a value inside the column rather than the column, and compares loosely,
+as does `whereColumn`.
+
+An array or an object compares by content and kind, as `distinct()` compares JSON values (see
+[Shaping](#shaping)). It never equals a scalar, so `where('tags', 'php')` never matches `['php']`,
+nor `where('tags', 'php,js')` the array `['php', 'js']`. To ask whether an array holds an element,
+use `whereJsonContains`. Two such columns, compared with `whereColumn` or a join, are equal when
+their contents are. Under `<`, `>`, `<=`, `>=`, `whereBetween` and `whereNotBetween`, an array ranks
+above every number and string, so `where('tags', '>', 'z')` matches every array, and two arrays
+compare element by element, `[9]` before `[9, 1]` and `[10]`. Two objects, or two arrays when either
+holds a boolean or an object, have no order, since IndexedDB cannot use them as keys, so ordering
+one against the other is unknown, as a comparison with `null` is below: it matches neither the
+constraint nor its `whereNot`. On a column declared with another type, which holds an array only
+when one was written past the package, an array ranks above every number, date and string, and an
+object, or an array holding a boolean or an object, has no place in that order.
+
+Before 15.0.0 a JSON column, and a column no blueprint declares, compared scalars loosely, as
+JavaScript's `==` does, so `where('code', '5')` matched `5` and `where('flag', 1)` matched `true`,
+while a lookup through an index on the column found neither. Query with the value in the kind the
+column holds, or declare the column with a type, whose conversion still applies.
 
 Before 10.0.0 an array compared as the string its elements join into and an object as
 `'[object Object]'`, so `where('tags', 'php')` matched `['php']`, two arrays were never equal, and
@@ -170,7 +189,8 @@ string the way an insert stores it: `'false'`, `'0'` and `''` are `false` and ev
 A value that does not convert cleanly, such as `'1.5'` or `''` for an integer column or `'soon'` for
 a date column, is compared as given, the same loose way as before. `===` and `!==` never convert,
 since strict means the value's type matters, so `where('age', '===', '18')` matches nothing. Nor
-does a path into a JSON column, which has no declared type, or a column the table does not declare.
+does a path into a JSON column, which has no declared type, or a column the table does not declare,
+which compares by kind instead.
 On a joined query each value is converted with the schema of the table its column belongs to.
 
 Whether an index serves the query never changes which rows it returns. A converted value can be

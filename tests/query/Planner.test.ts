@@ -190,10 +190,10 @@ describe('Planner ranges over a column that can hold any kind', (): void => {
         ['>', 'x'],
         ['>=', [9]],
         ['<', [9]],
-    ] as [Operator, unknown][])('walks the index for %s %j on a JSON column, checking each record again', (operator: Operator, value: unknown): void => {
+    ] as [Operator, unknown][])('scans for %s %j on a JSON column', (operator: Operator, value: unknown): void => {
         const plan: Plan = Planner.plan([basic('tags', operator, value)], [], users);
 
-        expect(plan.index).toEqual('users_tags_index');
+        expect(plan.source).toEqual('scan');
         expect(plan.residual).toEqual([basic('tags', operator, value)]);
     });
 
@@ -201,19 +201,27 @@ describe('Planner ranges over a column that can hold any kind', (): void => {
         ['a', 'z'],
         [5, [9]],
         [[1], [9]],
-    ])('walks the index for a between %j and %j on a JSON column, checking each record again', (from: unknown, to: unknown): void => {
+        ['z', 1],
+    ])('scans for a between %j and %j on a JSON column', (from: unknown, to: unknown): void => {
         const constraint: Constraint = { type: 'between', column: 'tags', from, to, conjunction: 'and', not: false };
         const plan: Plan = Planner.plan([constraint], [], users);
 
-        expect(plan.index).toEqual('users_tags_index');
+        expect(plan.source).toEqual('scan');
         expect(plan.residual).toEqual([constraint]);
     });
 
-    test('checks each record again for a range on an indexed column no blueprint declares', (): void => {
+    test('scans for a range on an indexed column no blueprint declares', (): void => {
         const plan: Plan = Planner.plan([basic('extra', '>=', 'x')], [], loose);
 
-        expect(plan.index).toEqual('users_extra_index');
+        expect(plan.source).toEqual('scan');
         expect(plan.residual).toEqual([basic('extra', '>=', 'x')]);
+    });
+
+    test('drives a range on another column while one on a JSON column is checked against each record', (): void => {
+        const plan: Plan = Planner.plan([basic('tags', '>', 'x'), basic('age', '>=', 18)], [], users);
+
+        expect(plan.index).toEqual('users_age_index');
+        expect(plan.residual).toEqual([basic('tags', '>', 'x')]);
     });
 
     test.each([
@@ -651,12 +659,28 @@ describe('Planner.prepare', (): void => {
         expect(Planner.prepare([nested], types, 'UTC')).toEqual([{ ...nested, constraints: [basic('active', '=', true)] }]);
     });
 
-    test('keeps the value given for a JSON path, which has no declared type', (): void => {
+    test('keeps the value given for a JSON path, which has no declared type, and compares it loosely', (): void => {
         expect(Planner.prepare([basic('tags->count', '=', '18')], types, 'UTC')).toEqual([basic('tags->count', '=', '18')]);
+        expect(Planner.prepare([basic('missing->count', '=', '18')], types, 'UTC')).toEqual([basic('missing->count', '=', '18')]);
     });
 
-    test('keeps the value given for an undeclared column', (): void => {
-        expect(Planner.prepare([basic('missing', '=', '18')], types, 'UTC')).toEqual([basic('missing', '=', '18')]);
+    test('keeps the value given for an undeclared column, and compares it by kind', (): void => {
+        expect(Planner.prepare([basic('missing', '=', '18')], types, 'UTC')).toEqual([{ ...basic('missing', '=', '18'), kinds: true }]);
+    });
+
+    test('marks every comparison on a JSON column to compare by kind', (): void => {
+        const constraints: Constraint[] = [
+            basic('tags', '<', '18'),
+            basic('tags', '===', '18'),
+            { type: 'in', column: 'tags', values: ['1', 2], conjunction: 'and', not: true },
+            { type: 'between', column: 'tags', from: '1', to: 2, conjunction: 'or', not: false },
+        ];
+
+        expect(Planner.prepare(constraints, types, 'UTC')).toEqual(constraints.map((constraint: Constraint): Constraint => ({ ...constraint, kinds: true } as Constraint)));
+    });
+
+    test('leaves a comparison on a declared column of another type unmarked', (): void => {
+        expect(Planner.prepare([basic('name', '=', 18), basic('age', '===', '18')], types, 'UTC')).toEqual([basic('name', '=', 18), basic('age', '===', '18')]);
     });
 
     test('keeps a value that fails to convert as given, and off the index', (): void => {

@@ -8,6 +8,20 @@ import type { Constraint, DatePart, Operator } from './types';
 
 type Truth = boolean | null;
 
+const NUMBER: number = 0;
+
+const STRING: number = 1;
+
+const OBJECT: number = 2;
+
+const ARRAY: number = 3;
+
+const BOOLEAN: number = 4;
+
+const DATE: number = 5;
+
+const BINARY: number = 6;
+
 interface LikeToken {
     kind: 'any' | 'one' | 'literal';
     value: string;
@@ -138,7 +152,7 @@ export class Predicate {
         }
 
         if (constraint.type === 'in') {
-            const found: boolean = constraint.values.some((value: unknown): boolean => this.#compare(held, '==', value) === true);
+            const found: boolean = constraint.values.some((value: unknown): boolean => this.#compare(held, '==', value, constraint.kinds) === true);
 
             if (!found && constraint.values.some((value: unknown): boolean => this.#absent(value))) {
                 return null;
@@ -148,13 +162,13 @@ export class Predicate {
         }
 
         if (constraint.type === 'between') {
-            const lower: Truth = this.#compared(held, '>=', constraint.from);
-            const upper: Truth = this.#compared(held, '<=', constraint.to);
+            const lower: Truth = this.#compared(held, '>=', constraint.from, constraint.kinds);
+            const upper: Truth = this.#compared(held, '<=', constraint.to, constraint.kinds);
 
             return this.#negate(constraint.not, lower === false || upper === false ? false : lower && upper);
         }
 
-        return this.#negate(constraint.not, this.#compared(held, constraint.operator, constraint.value));
+        return this.#negate(constraint.not, this.#compared(held, constraint.operator, constraint.value, constraint.kinds));
     }
 
     /**
@@ -219,14 +233,14 @@ export class Predicate {
     /**
      * Compare a held value against a given one, unknown against null.
      */
-    static #compared(held: unknown, operator: Operator, given: unknown): Truth {
-        return this.#absent(given) ? null : this.#compare(held, operator, given);
+    static #compared(held: unknown, operator: Operator, given: unknown, kinds: boolean = false): Truth {
+        return this.#absent(given) ? null : this.#compare(held, operator, given, kinds);
     }
 
     /**
      * Compare a held value against a given one.
      */
-    static #compare(held: unknown, operator: Operator, given: unknown): Truth {
+    static #compare(held: unknown, operator: Operator, given: unknown, kinds: boolean = false): Truth {
         if (operator === 'like' || operator === 'not like') {
             if (typeof held !== 'string') {
                 return null;
@@ -235,6 +249,10 @@ export class Predicate {
             const matched: boolean = this.#like(String(given), held);
 
             return operator === 'like' ? matched : !matched;
+        }
+
+        if (kinds && this.#kind(held) !== this.#kind(given)) {
+            return this.#apart(this.#kind(held) - this.#kind(given), operator);
         }
 
         if (Binding.structured(held) || Binding.structured(given)) {
@@ -290,6 +308,44 @@ export class Predicate {
         const equal: boolean = Binding.structured(held) && Binding.structured(given) && Signature.value(held) === Signature.value(given);
 
         return operator === '=' || operator === '==' || operator === '===' ? equal : !equal;
+    }
+
+    /**
+     * Compare two values of different kinds by the rank of their kinds.
+     */
+    static #apart(order: number, operator: Exclude<Operator, 'like' | 'not like'>): boolean {
+        if (operator === '<' || operator === '>' || operator === '<=' || operator === '>=') {
+            return this.#ordered(order, operator);
+        }
+
+        return operator === '!=' || operator === '<>' || operator === '!==';
+    }
+
+    /**
+     * Rank the kind of a value, numbers lowest and binary data highest.
+     */
+    static #kind(value: unknown): number {
+        if (typeof value === 'number' || typeof value === 'bigint') {
+            return NUMBER;
+        }
+
+        if (typeof value === 'string') {
+            return STRING;
+        }
+
+        if (Array.isArray(value)) {
+            return ARRAY;
+        }
+
+        if (typeof value === 'boolean') {
+            return BOOLEAN;
+        }
+
+        if (value instanceof Date) {
+            return DATE;
+        }
+
+        return value instanceof ArrayBuffer || ArrayBuffer.isView(value) ? BINARY : OBJECT;
     }
 
     /**

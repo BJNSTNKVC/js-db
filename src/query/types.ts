@@ -13,10 +13,10 @@ export type Direction = 'asc' | 'desc';
 export type DatePart = 'year' | 'month' | 'day';
 
 export type Constraint =
-    | { type: 'basic'; column: string; operator: Operator; value: unknown; conjunction: Conjunction; not: boolean }
-    | { type: 'in'; column: string; values: unknown[]; conjunction: Conjunction; not: boolean }
+    | { type: 'basic'; column: string; operator: Operator; value: unknown; conjunction: Conjunction; not: boolean; kinds?: boolean }
+    | { type: 'in'; column: string; values: unknown[]; conjunction: Conjunction; not: boolean; kinds?: boolean }
     | { type: 'null'; column: string; conjunction: Conjunction; not: boolean }
-    | { type: 'between'; column: string; from: unknown; to: unknown; conjunction: Conjunction; not: boolean }
+    | { type: 'between'; column: string; from: unknown; to: unknown; conjunction: Conjunction; not: boolean; kinds?: boolean }
     | { type: 'column'; column: string; operator: Operator; other: string; conjunction: Conjunction; not: boolean }
     | { type: 'part'; column: string; part: DatePart; operator: DateOperator; value: number; timezone: string; conjunction: Conjunction; not: boolean }
     | { type: 'time'; column: string; operator: DateOperator; value: string; timezone: string; conjunction: Conjunction; not: boolean }

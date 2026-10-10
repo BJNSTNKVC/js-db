@@ -52,6 +52,10 @@ interface Documented extends Item {
     doc?: unknown;
 }
 
+interface Kinded extends Item {
+    code?: unknown;
+}
+
 interface Totals {
     count: number;
     sum: number;
@@ -107,6 +111,10 @@ type Documenting = [string, (query: Builder<Documented>) => Builder<Documented>,
 type Holding = [string, Documented[]];
 
 type Indexing = [string, MigrationConstructor, boolean];
+
+type Kinding = [string, (query: Builder<Kinded>) => Builder<Kinded>, (row: Kinded) => Truth];
+
+type Declaring = [string, MigrationConstructor];
 
 const OPERATORS: Operator[] = ['=', '==', '===', '!=', '<>', '!==', '<', '>', '<=', '>='];
 
@@ -304,14 +312,14 @@ const TAGS: Record<number, unknown> = { 1: [], 2: ['z', 'x', 'z'], 3: [day('2024
 const TAGGED: Tagged[] = ROWS.map((row: Item): Tagged => row.id in TAGS ? { ...row, tags: TAGS[row.id] } : row);
 
 const LISTINGS: Listing[] = [
-    ['where(\'tags\', \'x\')', (query: Builder<Tagged>): Builder<Tagged> => query.where('tags', 'x'), (row: Tagged): Truth => compare(row.tags, '=', 'x')],
-    ['where(\'tags\', \'==\', \'x\')', (query: Builder<Tagged>): Builder<Tagged> => query.where('tags', '==', 'x'), (row: Tagged): Truth => compare(row.tags, '==', 'x')],
-    ['where(\'tags\', \'===\', \'x\')', (query: Builder<Tagged>): Builder<Tagged> => query.where('tags', '===', 'x'), (row: Tagged): Truth => compare(row.tags, '===', 'x')],
-    ['where(\'tags\', \'z,x,z\')', (query: Builder<Tagged>): Builder<Tagged> => query.where('tags', 'z,x,z'), (row: Tagged): Truth => compare(row.tags, '=', 'z,x,z')],
-    ['where(\'tags\', \'>=\', \'x\')', (query: Builder<Tagged>): Builder<Tagged> => query.where('tags', '>=', 'x'), (row: Tagged): Truth => compare(row.tags, '>=', 'x')],
-    ['whereBetween(\'tags\', [\'x\', \'y\'])', (query: Builder<Tagged>): Builder<Tagged> => query.whereBetween('tags', ['x', 'y']), (row: Tagged): Truth => between(row.tags, 'x', 'y')],
-    ['whereIn(\'tags\', [\'x\', \'z\'])', (query: Builder<Tagged>): Builder<Tagged> => query.whereIn('tags', ['x', 'z']), (row: Tagged): Truth => within(row.tags, ['x', 'z'])],
-    ['whereIn(\'tags\', [\'x\', \'x\'])', (query: Builder<Tagged>): Builder<Tagged> => query.whereIn('tags', ['x', 'x']), (row: Tagged): Truth => within(row.tags, ['x', 'x'])],
+    ['where(\'tags\', \'x\')', (query: Builder<Tagged>): Builder<Tagged> => query.where('tags', 'x'), (row: Tagged): Truth => compare(row.tags, '=', 'x', true)],
+    ['where(\'tags\', \'==\', \'x\')', (query: Builder<Tagged>): Builder<Tagged> => query.where('tags', '==', 'x'), (row: Tagged): Truth => compare(row.tags, '==', 'x', true)],
+    ['where(\'tags\', \'===\', \'x\')', (query: Builder<Tagged>): Builder<Tagged> => query.where('tags', '===', 'x'), (row: Tagged): Truth => compare(row.tags, '===', 'x', true)],
+    ['where(\'tags\', \'z,x,z\')', (query: Builder<Tagged>): Builder<Tagged> => query.where('tags', 'z,x,z'), (row: Tagged): Truth => compare(row.tags, '=', 'z,x,z', true)],
+    ['where(\'tags\', \'>=\', \'x\')', (query: Builder<Tagged>): Builder<Tagged> => query.where('tags', '>=', 'x'), (row: Tagged): Truth => compare(row.tags, '>=', 'x', true)],
+    ['whereBetween(\'tags\', [\'x\', \'y\'])', (query: Builder<Tagged>): Builder<Tagged> => query.whereBetween('tags', ['x', 'y']), (row: Tagged): Truth => between(row.tags, 'x', 'y', true)],
+    ['whereIn(\'tags\', [\'x\', \'z\'])', (query: Builder<Tagged>): Builder<Tagged> => query.whereIn('tags', ['x', 'z']), (row: Tagged): Truth => within(row.tags, ['x', 'z'], true)],
+    ['whereIn(\'tags\', [\'x\', \'x\'])', (query: Builder<Tagged>): Builder<Tagged> => query.whereIn('tags', ['x', 'x']), (row: Tagged): Truth => within(row.tags, ['x', 'x'], true)],
     ['whereJsonContains(\'tags\', \'x\')', (query: Builder<Tagged>): Builder<Tagged> => query.whereJsonContains('tags', 'x'), (row: Tagged): Truth => contains(row.tags, 'x')],
     ['whereJsonContains(\'tags\', \'z\')', (query: Builder<Tagged>): Builder<Tagged> => query.whereJsonContains('tags', 'z'), (row: Tagged): Truth => contains(row.tags, 'z')],
     ['whereJsonContains(\'tags\', \'w\')', (query: Builder<Tagged>): Builder<Tagged> => query.whereJsonContains('tags', 'w'), (row: Tagged): Truth => contains(row.tags, 'w')],
@@ -330,8 +338,8 @@ const RETAGS: Retag[] = [
     ['an increment through whereJsonContains(\'tags\', \'z\')', (query: Builder<Tagged>): Promise<number> => query.whereJsonContains('tags', 'z').increment('visits'), (row: Tagged): Tagged | null => contains(row.tags, 'z') === true ? { ...row, visits: row.visits + 1 } : row],
     ['an update of the tags through whereJsonContains(\'tags\', \'x\')', (query: Builder<Tagged>): Promise<number> => query.whereJsonContains('tags', 'x').update({ tags: ['x', 'w'] }), (row: Tagged): Tagged | null => contains(row.tags, 'x') === true ? { ...row, tags: ['x', 'w'] } : row],
     ['a delete through whereJsonContains(\'tags\', \'x\')', (query: Builder<Tagged>): Promise<number> => query.whereJsonContains('tags', 'x').delete(), (row: Tagged): Tagged | null => contains(row.tags, 'x') === true ? null : row],
-    ['an increment through where(\'tags\', \'>=\', \'x\')', (query: Builder<Tagged>): Promise<number> => query.where('tags', '>=', 'x').increment('visits'), (row: Tagged): Tagged | null => compare(row.tags, '>=', 'x') === true ? { ...row, visits: row.visits + 1 } : row],
-    ['an update of the tags through whereIn(\'tags\', [\'x\', \'z\'])', (query: Builder<Tagged>): Promise<number> => query.whereIn('tags', ['x', 'z']).update({ tags: ['z'] }), (row: Tagged): Tagged | null => within(row.tags, ['x', 'z']) === true ? { ...row, tags: ['z'] } : row],
+    ['an increment through where(\'tags\', \'>=\', \'x\')', (query: Builder<Tagged>): Promise<number> => query.where('tags', '>=', 'x').increment('visits'), (row: Tagged): Tagged | null => compare(row.tags, '>=', 'x', true) === true ? { ...row, visits: row.visits + 1 } : row],
+    ['an update of the tags through whereIn(\'tags\', [\'x\', \'z\'])', (query: Builder<Tagged>): Promise<number> => query.whereIn('tags', ['x', 'z']).update({ tags: ['z'] }), (row: Tagged): Tagged | null => within(row.tags, ['x', 'z'], true) === true ? { ...row, tags: ['z'] } : row],
     ['a delete through orderBy(\'tags\').limit(2)', (query: Builder<Tagged>): Promise<number> => query.orderBy('tags').limit(2).delete(), (row: Tagged): Tagged | null => listed(TAGGED, 'asc').slice(0, 2).includes(row) ? null : row],
 ];
 
@@ -394,20 +402,46 @@ const DOCUMENTINGS: Documenting[] = [
     ...GIVENS.flatMap((given: unknown): Documenting[] => OPERATORS.map((operator: Operator): Documenting => [
         `where('doc', '${operator}', ${shown(given)})`,
         (query: Builder<Documented>): Builder<Documented> => query.where('doc', operator, given),
-        (row: Documented): Truth => compare(row.doc, operator, bound(given)),
+        (row: Documented): Truth => compare(row.doc, operator, bound(given), true),
     ])),
     ...[['x'], ['x', 9], [7, 'y'], ['[object Object]', '9,1'], ['x', null], [false]].flatMap((values: unknown[]): Documenting[] => [
-        [`whereIn('doc', ${shown(values)})`, (query: Builder<Documented>): Builder<Documented> => query.whereIn('doc', values), (row: Documented): Truth => within(row.doc, values)],
-        [`whereNotIn('doc', ${shown(values)})`, (query: Builder<Documented>): Builder<Documented> => query.whereNotIn('doc', values), (row: Documented): Truth => not(within(row.doc, values))],
+        [`whereIn('doc', ${shown(values)})`, (query: Builder<Documented>): Builder<Documented> => query.whereIn('doc', values), (row: Documented): Truth => within(row.doc, values, true)],
+        [`whereNotIn('doc', ${shown(values)})`, (query: Builder<Documented>): Builder<Documented> => query.whereNotIn('doc', values), (row: Documented): Truth => not(within(row.doc, values, true))],
     ]),
     ...[[[9], [10]], ['a', 'z'], ['a', 'zz'], [5, [9]], [[], [9, 5]], [1, 8], [{ a: 1 }, [9]], [[9], { a: 1 }]].flatMap(([from, to]: unknown[]): Documenting[] => {
         const [lower, upper]: unknown[] = flattened([from, to]);
 
         return [
-            [`whereBetween('doc', ${shown([from, to])})`, (query: Builder<Documented>): Builder<Documented> => query.whereBetween('doc', [from, to]), (row: Documented): Truth => between(row.doc, lower, upper)],
-            [`whereNotBetween('doc', ${shown([from, to])})`, (query: Builder<Documented>): Builder<Documented> => query.whereNotBetween('doc', [from, to]), (row: Documented): Truth => not(between(row.doc, lower, upper))],
+            [`whereBetween('doc', ${shown([from, to])})`, (query: Builder<Documented>): Builder<Documented> => query.whereBetween('doc', [from, to]), (row: Documented): Truth => between(row.doc, lower, upper, true)],
+            [`whereNotBetween('doc', ${shown([from, to])})`, (query: Builder<Documented>): Builder<Documented> => query.whereNotBetween('doc', [from, to]), (row: Documented): Truth => not(between(row.doc, lower, upper, true))],
         ];
     }),
+];
+
+const VARIETY: Record<number, unknown> = { 1: 5, 2: '5', 3: new Date(5), 4: 1, 5: true, 6: false, 7: null, 8: undefined };
+
+const VARIED: Kinded[] = Object.entries(VARIETY).map(([id, code]: [string, unknown]): Kinded => {
+    const row: Kinded = { ...ROWS[Number(id) % ROWS.length] as Item, id: Number(id) };
+
+    return code === undefined ? row : { ...row, code };
+});
+
+const SORTS: unknown[] = [5, '5', new Date(5), 1, true, false];
+
+const KINDINGS: Kinding[] = [
+    ...SORTS.flatMap((given: unknown): Kinding[] => OPERATORS.map((operator: Operator): Kinding => [
+        `where('code', '${operator}', ${shown(given)})`,
+        (query: Builder<Kinded>): Builder<Kinded> => query.where('code', operator, given),
+        (row: Kinded): Truth => compare(row.code, operator, given, true),
+    ])),
+    ...[...SORTS.map((given: unknown): unknown[] => [given]), ['5', true], [new Date(5), 1], [false, null]].flatMap((values: unknown[]): Kinding[] => [
+        [`whereIn('code', [${values.map(shown).join(', ')}])`, (query: Builder<Kinded>): Builder<Kinded> => query.whereIn('code', values), (row: Kinded): Truth => within(row.code, values, true)],
+        [`whereNotIn('code', [${values.map(shown).join(', ')}])`, (query: Builder<Kinded>): Builder<Kinded> => query.whereNotIn('code', values), (row: Kinded): Truth => not(within(row.code, values, true))],
+    ]),
+    ...SORTS.flatMap((from: unknown): Kinding[] => SORTS.flatMap((to: unknown): Kinding[] => [
+        [`whereBetween('code', [${shown(from)}, ${shown(to)}])`, (query: Builder<Kinded>): Builder<Kinded> => query.whereBetween('code', [from, to]), (row: Kinded): Truth => between(row.code, from, to, true)],
+        [`whereNotBetween('code', [${shown(from)}, ${shown(to)}])`, (query: Builder<Kinded>): Builder<Kinded> => query.whereNotBetween('code', [from, to]), (row: Kinded): Truth => not(between(row.code, from, to, true))],
+    ])),
 ];
 
 /**
@@ -561,6 +595,35 @@ class AddListedDocToItemsTables extends Migration {
 const INDEXINGS: Indexing[] = [
     ['a plain index', AddDocToItemsTables, true],
     ['a multi-entry index', AddListedDocToItemsTables, false],
+];
+
+class AddJsonCodeToItemsTables extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        await Schema.table('indexed', (table: Blueprint): void => {
+            table.json('code').index();
+        });
+
+        await Schema.table('plain', (table: Blueprint): void => {
+            table.json('code');
+        });
+    }
+}
+
+class IndexUndeclaredCodeOnItemsTables extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        grandfathered('indexed', 'code');
+    }
+}
+
+const DECLARINGS: Declaring[] = [
+    ['a JSON column', AddJsonCodeToItemsTables],
+    ['a column no blueprint declares', IndexUndeclaredCodeOnItemsTables],
 ];
 
 class CreateNotesTable extends Migration {
@@ -736,11 +799,44 @@ function moment(value: unknown): Date | null {
 }
 
 /**
+ * Rank the kind of a value as a comparison by kind ranks it.
+ */
+function category(value: unknown): number {
+    if (typeof value === 'number' || typeof value === 'bigint') {
+        return 0;
+    }
+
+    if (typeof value === 'string') {
+        return 1;
+    }
+
+    if (Array.isArray(value)) {
+        return 3;
+    }
+
+    if (typeof value === 'boolean') {
+        return 4;
+    }
+
+    if (value instanceof Date) {
+        return 5;
+    }
+
+    return value instanceof ArrayBuffer || ArrayBuffer.isView(value) ? 6 : 2;
+}
+
+/**
  * Apply the documented semantics of an operator to one value, three-valued.
  */
-function compare(held: unknown, operator: Operator, given: unknown): Truth {
+function compare(held: unknown, operator: Operator, given: unknown, kinds: boolean = false): Truth {
     if (absent(held) || absent(given)) {
         return null;
+    }
+
+    if (kinds && category(held) !== category(given)) {
+        const order: number = category(held) - category(given);
+
+        return { '=': false, '==': false, '===': false, '!=': true, '<>': true, '!==': true, '<': order < 0, '>': order > 0, '<=': order < 0, '>=': order > 0, 'like': null, 'not like': null }[operator];
     }
 
     if (structured(held) || structured(given)) {
@@ -801,9 +897,9 @@ function structural(held: unknown, operator: Operator, given: unknown): Truth {
 /**
  * Apply the documented semantics of whereBetween to one value, three-valued.
  */
-function between(held: unknown, from: unknown, to: unknown): Truth {
-    const lower: Truth = compare(held, '>=', from);
-    const upper: Truth = compare(held, '<=', to);
+function between(held: unknown, from: unknown, to: unknown, kinds: boolean = false): Truth {
+    const lower: Truth = compare(held, '>=', from, kinds);
+    const upper: Truth = compare(held, '<=', to, kinds);
 
     return lower === false || upper === false ? false : (lower === null || upper === null ? null : true);
 }
@@ -818,12 +914,12 @@ function not(truth: Truth): Truth {
 /**
  * Apply the documented semantics of whereIn to one value, three-valued.
  */
-function within(held: unknown, values: unknown[]): Truth {
+function within(held: unknown, values: unknown[], kinds: boolean = false): Truth {
     if (absent(held)) {
         return null;
     }
 
-    const found: boolean = values.some((value: unknown): boolean => !absent(value) && compare(held, '==', value) === true);
+    const found: boolean = values.some((value: unknown): boolean => !absent(value) && compare(held, '==', value, kinds) === true);
 
     return found ? true : (values.some(absent) ? null : false);
 }
@@ -1433,17 +1529,59 @@ describe.each(INDEXINGS)('a JSON column under %s on one copy', (_: string, migra
         });
     });
 
-    test('drives equality and ranges through the index when it is not multi-entry', async (): Promise<void> => {
+    test('drives equality through the index when it is not multi-entry, and ranges by a scan', async (): Promise<void> => {
         await hold(DOCUMENTED);
 
         const indexed: () => Builder<Documented> = (): Builder<Documented> => connection.table<Documented>('indexed');
         const source: string = plain ? 'index:indexed_doc_index' : 'scan';
 
         expect(await indexed().where('doc', [9]).explain()).toEqual(source);
-        expect(await indexed().where('doc', '>=', [9]).explain()).toEqual(source);
-        expect(await indexed().where('doc', '<', 'x').explain()).toEqual(source);
-        expect(await indexed().whereBetween('doc', [5, [9]]).explain()).toEqual(source);
         expect(await indexed().whereIn('doc', ['x', 9]).explain()).toEqual(source);
+        expect(await indexed().where('doc', '>=', [9]).explain()).toEqual('scan');
+        expect(await indexed().where('doc', '<', 'x').explain()).toEqual('scan');
+        expect(await indexed().whereBetween('doc', [5, [9]]).explain()).toEqual('scan');
+    });
+});
+
+describe.each(DECLARINGS)('%s holding values of every kind, indexed on one copy', (_: string, migration: MigrationConstructor): void => {
+    beforeEach(async (): Promise<void> => {
+        connection = new Connection('app', { database: `invariance-kinded-${++sequence}`, migrations: [CreateItemsTables, migration] });
+
+        await connection.migrate();
+        await planted('indexed', VARIED);
+        await planted('plain', VARIED);
+    });
+
+    describe.each(KINDINGS)('%s', (_: string, constrain: (query: Builder<Kinded>) => Builder<Kinded>, holds: (row: Kinded) => Truth): void => {
+        const expected: number[] = ids(VARIED.filter((row: Kinded): boolean => holds(row) === true));
+        const refused: number[] = ids(VARIED.filter((row: Kinded): boolean => holds(row) === false));
+
+        test('gives the same answer, and the same answer to its negation, through an index, through a scan and from the model', async (): Promise<void> => {
+            const answers: Record<Copy, unknown> = await both(async (query: Builder<Kinded>): Promise<unknown> => ({
+                rows     : ids(await constrain(query.clone()).get()),
+                count    : await constrain(query.clone()).count(),
+                first    : (await constrain(query.clone()).orderBy('id').first())?.id ?? null,
+                paginated: await constrain(query.clone()).orderBy('id').paginate(1, 2).then((page: Paginated<Kinded>): unknown => ({ rows: ids(page.data), total: page.total })),
+                negated  : ids(await query.clone().whereNot((nested: Builder<Kinded>): void => {
+                    constrain(nested);
+                }).get()),
+            }));
+
+            const modeled: unknown = { rows: expected, count: expected.length, first: expected[0] ?? null, paginated: { rows: expected.slice(0, 2), total: expected.length }, negated: refused };
+
+            expect(answers).toEqual({ indexed: modeled, plain: modeled });
+        });
+    });
+
+    test('drives equality and whereIn through the index, and every range by a scan', async (): Promise<void> => {
+        const indexed: () => Builder<Kinded> = (): Builder<Kinded> => connection.table<Kinded>('indexed');
+
+        expect(await indexed().where('code', 5).explain()).toEqual('index:indexed_code_index');
+        expect(await indexed().where('code', '5').explain()).toEqual('index:indexed_code_index');
+        expect(await indexed().whereIn('code', [5, '5', new Date(5)]).explain()).toEqual('index:indexed_code_index');
+        expect(await indexed().where('code', '>', 5).explain()).toEqual('scan');
+        expect(await indexed().where('code', '<=', '5').explain()).toEqual('scan');
+        expect(await indexed().whereBetween('code', [1, 5]).explain()).toEqual('scan');
     });
 });
 

@@ -178,9 +178,9 @@ export class Planner {
         }
 
         const type: ColumnType | undefined = schema.columns.find((candidate: ColumnSchema): boolean => candidate.name === constraint.column)?.type;
-        // An index orders keys of every kind together, arrays above all, so a
-        // range over a column that can hold several kinds collects keys
-        // a scan finds false or unknown, and each is checked again.
+        // An index orders the kinds of key otherwise than a comparison ranks kinds,
+        // and holds no boolean or object, so on a column that can hold
+        // several kinds only equality is looked up through it.
         const mixed: boolean = type === 'json' || type === undefined;
 
         if (constraint.type === 'in') {
@@ -192,7 +192,7 @@ export class Planner {
         }
 
         if (constraint.type === 'between') {
-            if (!this.#fits(constraint.from, type) || !this.#fits(constraint.to, type)) {
+            if (mixed || !this.#fits(constraint.from, type) || !this.#fits(constraint.to, type)) {
                 return null;
             }
 
@@ -200,14 +200,14 @@ export class Planner {
                 return { constraint, ...target, range: null, values: [], rechecked: false };
             }
 
-            return { constraint, ...target, range: IDBKeyRange.bound(constraint.from as IDBValidKey, constraint.to as IDBValidKey, false, false), values: null, rechecked: mixed };
+            return { constraint, ...target, range: IDBKeyRange.bound(constraint.from as IDBValidKey, constraint.to as IDBValidKey, false, false), values: null, rechecked: false };
         }
 
-        if (!RANGEABLE.has(constraint.operator) || !this.#fits(constraint.value, type)) {
+        if (!RANGEABLE.has(constraint.operator) || !this.#fits(constraint.value, type) || (mixed && !EQUALITY.has(constraint.operator))) {
             return null;
         }
 
-        return { constraint, ...target, range: this.#range(constraint.operator, constraint.value as IDBValidKey), values: null, rechecked: mixed && !EQUALITY.has(constraint.operator) };
+        return { constraint, ...target, range: this.#range(constraint.operator, constraint.value as IDBValidKey), values: null, rechecked: false };
     }
 
     /**
@@ -345,8 +345,9 @@ export class Planner {
 
         const type: ColumnType | undefined = types.get(constraint.column);
 
-        if (type === undefined) {
-            return constraint;
+        if (type === undefined || type === 'json') {
+            // A path reads a value inside a JSON column, not the column, so it compares loosely.
+            return Columns.path(constraint.column).path.length > 0 ? constraint : { ...constraint, kinds: true };
         }
 
         if (constraint.type === 'in') {

@@ -42,6 +42,12 @@ interface Score {
     stats: Record<string, unknown>;
 }
 
+interface Code {
+    id: number;
+    indexed: unknown;
+    plain: unknown;
+}
+
 interface Reading {
     id: number;
     label: string;
@@ -90,6 +96,12 @@ class CreateTables extends Migration {
             table.id();
             table.string('label');
             table.json('data').nullable();
+        });
+
+        await Schema.create('codes', (table: Blueprint): void => {
+            table.id();
+            table.json('indexed').index();
+            table.json('plain');
         });
     }
 }
@@ -654,12 +666,12 @@ describe('Builder comparing whole JSON values', (): void => {
         expect(await names(profiles().whereIn('tags', ['js', 'go']))).toEqual([]);
     });
 
-    test('ranks an array above every scalar', async (): Promise<void> => {
+    test('ranks an array or an object above every number and string', async (): Promise<void> => {
         expect(await names(profiles().where('tags', '>', 'z'))).toEqual(['Alice', 'Bob', 'Carol', 'Erin']);
         expect(await names(profiles().whereNot('tags', '>', 'z'))).toEqual([]);
         expect(await names(profiles().where('tags', '<', 9))).toEqual([]);
         expect(await names(profiles().whereBetween('tags', ['a', 'z']))).toEqual([]);
-        expect(await names(profiles().where('settings', '>', 'a'))).toEqual([]);
+        expect(await names(profiles().where('settings', '>', 'a'))).toEqual(['Alice', 'Bob', 'Carol', 'Erin']);
         expect(await names(profiles().whereNot('settings', '>', 'a'))).toEqual([]);
     });
 
@@ -679,6 +691,47 @@ describe('Builder comparing whole JSON values', (): void => {
         expect(await names(joined().whereColumn('profiles.tags', 'layouts.meta'))).toEqual(['Alice']);
         expect(await names(joined().whereColumn('profiles.tags', '<', 'layouts.meta'))).toEqual(['Bob', 'Carol']);
         expect(await names(joined().whereColumn('profiles.tags', '!=', 'layouts.meta'))).toEqual(['Bob', 'Carol']);
+    });
+});
+
+describe('Builder comparing JSON values by kind', (): void => {
+    /**
+     * Get the ids of the records a query on the codes table returns.
+     */
+    async function keys(query: Builder<Code>): Promise<number[]> {
+        return (await query.orderBy('id').get()).map((record: Code): number => record.id);
+    }
+
+    beforeAll(async (): Promise<void> => {
+        await connection.table<Code>('codes').insert(['5', 5, '"5"', 'true', '1'].map((value: unknown): Partial<Code> => ({ indexed: value, plain: value })));
+    });
+
+    test('stores a string written as JSON text as the value it parses to', async (): Promise<void> => {
+        expect(await connection.table<Code>('codes').orderBy('id').pluck('plain')).toEqual([5, 5, '5', true, 1]);
+    });
+
+    test.each(['indexed', 'plain'])('compares the %s column by the kind each value parsed to', async (column: string): Promise<void> => {
+        const codes: () => Builder<Code> = (): Builder<Code> => connection.table<Code>('codes');
+
+        expect(await keys(codes().where(column, '5'))).toEqual([3]);
+        expect(await keys(codes().where(column, 5))).toEqual([1, 2]);
+        expect(await keys(codes().where(column, 1))).toEqual([5]);
+        expect(await keys(codes().where(column, true))).toEqual([4]);
+        expect(await keys(codes().whereNot(column, '5'))).toEqual([1, 2, 4, 5]);
+        expect(await keys(codes().whereIn(column, ['5', 1]))).toEqual([3, 5]);
+        expect(await keys(codes().whereNotIn(column, ['5', 1]))).toEqual([1, 2, 4]);
+        expect(await keys(codes().where(column, '>', 5))).toEqual([3, 4]);
+        expect(await keys(codes().where(column, '<', '5'))).toEqual([1, 2, 5]);
+        expect(await keys(codes().whereBetween(column, [1, '5']))).toEqual([1, 2, 3, 5]);
+    });
+
+    test('looks up equality through the index, and reads every record for a range', async (): Promise<void> => {
+        const codes: () => Builder<Code> = (): Builder<Code> => connection.table<Code>('codes');
+
+        expect(await codes().where('indexed', '5').explain()).toEqual('index:codes_indexed_index');
+        expect(await codes().whereIn('indexed', ['5', 1]).explain()).toEqual('index:codes_indexed_index');
+        expect(await codes().where('indexed', '>', 5).explain()).toEqual('scan');
+        expect(await codes().whereBetween('indexed', [1, '5']).explain()).toEqual('scan');
     });
 });
 
