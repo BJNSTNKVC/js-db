@@ -66,6 +66,34 @@ A JSON path groups by the value it reads, and the row carries it under the path'
 aggregate can read a path too, as in `{ sum: 'stats->points' }`, leaving out a record the path
 finds nothing in.
 
+## Grouping beside a select
+
+A grouping reads every row the query matches, whatever its `select`, as SQL's `GROUP BY` runs before
+the select list. So `select('name').groupBy('team')` still groups by `team`, and every aggregate and
+`having` reads the columns the select leaves out.
+
+A grouped column may name a select alias, as MySQL, SQLite and Postgres allow. The grouping groups
+by the column the alias selects and names it after the alias, and `having` and `orderBy` accept that
+column by its own name too:
+
+```ts
+await DB.table('users')
+    .select('team as squad')
+    .groupBy('squad')
+    .aggregate({ total: { count: '*' } })
+    .having('team', 'ops')
+    .get();
+```
+
+```
+[
+    { squad: 'ops', total: 2 }
+]
+```
+
+A column declared by a table the query reads wins over an alias of the same name, as it does in
+those databases, so `select('name as role').groupBy('role')` groups by `role`.
+
 ## having, ordering and paging apply to groups
 
 `having` and `orHaving` filter the grouped rows, and take the same operators as `where`. They can

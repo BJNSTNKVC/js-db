@@ -486,20 +486,25 @@ export class Builder<T = Record<string, unknown>> {
         // which would otherwise page records
         // before they were ever grouped.
         const records: Builder<T> = this.clone();
+        const selection: string[] | null = this.#columns;
 
         records.#orders = [];
         records.#random = false;
         records.#limit = null;
         records.#offset = 0;
         records.#distinct = false;
+        records.#columns = null;
 
         return new Grouping<T, G>(
             async (read: string[]): Promise<Record<string, unknown>[]> => {
-                if (records.#qualifies(read)) {
-                    return await records.clone().select(read.map((column: string): string => `${column} as ${column}`)).#executor().records() as Record<string, unknown>[];
+                const aliased: Map<string, string> = await records.#aliased(columns, selection);
+                const sources: string[] = read.map((column: string): string => aliased.get(column) ?? column);
+
+                if (records.#qualifies(sources)) {
+                    return await records.clone().select(sources.map((source: string, index: number): string => `${source} as ${read[index]}`)).#executor().records() as Record<string, unknown>[];
                 }
 
-                const named: string[] = read.map((column: string): string => records.#column(column));
+                const named: string[] = sources.map((source: string): string => records.#column(source));
                 const fetched: Record<string, unknown>[] = await records.#executor().records() as Record<string, unknown>[];
 
                 return fetched.map((record: Record<string, unknown>): Record<string, unknown> => Object.fromEntries(
@@ -508,7 +513,7 @@ export class Builder<T = Record<string, unknown>> {
             },
             columns,
             new Map<string, string>(columns.map((column: string): [string, string] => [column, Columns.named(column)])),
-            (): Promise<(column: string) => string | null> => records.#placing(columns),
+            (): Promise<(column: string) => string | null> => records.#placing(columns, selection),
         );
     }
 
@@ -728,6 +733,14 @@ export class Builder<T = Record<string, unknown>> {
      * Get a single column from the first record matching the query.
      */
     async value<V = unknown>(column: Key<T>): Promise<V | null> {
+        const selection: string[] | null = this.#columns;
+
+        if (selection !== null) {
+            const row: T | null = await this.first();
+
+            return row === null ? null : Columns.read(row as Record<string, unknown>, this.#selected(column, selection)) as V ?? null;
+        }
+
         if (this.#qualifies([column])) {
             return this.clone().select(`${column} as value`).value<V>('value');
         }
@@ -749,25 +762,27 @@ export class Builder<T = Record<string, unknown>> {
     async pluck<V = unknown>(column: Key<T>, key: Key<T>): Promise<Record<string, V>>;
     async pluck<V = unknown>(column: Key<T>, key?: Key<T>): Promise<V[] | Record<string, V>> {
         const columns: string[] = key === undefined ? [column] : [column, key];
+        const selection: string[] | null = this.#columns;
+
+        if (selection !== null) {
+            const rows: Record<string, unknown>[] = await this.get() as Record<string, unknown>[];
+
+            if (rows.length === 0) {
+                return key === undefined ? [] : {};
+            }
+
+            return this.#plucked<V>(rows, columns.map((named: string): string => this.#selected(named, selection)));
+        }
 
         if (this.#distinct || this.#qualifies(columns)) {
             const rows: Record<string, unknown>[] = await this.clone().select(key === undefined ? [`${column} as value`] : [`${column} as value`, `${key} as key`]).get() as Record<string, unknown>[];
 
-            if (key === undefined) {
-                return rows.map((row: Record<string, unknown>): V => row.value as V);
-            }
-
-            return Object.fromEntries(rows.map((row: Record<string, unknown>): [string, V] => [String(row.key), row.value as V]));
+            return this.#plucked<V>(rows, key === undefined ? ['value'] : ['value', 'key']);
         }
 
-        const [value, keyed]: string[] = columns.map((named: string): string => this.#column(named));
         const records: Record<string, unknown>[] = await this.#executor().records() as Record<string, unknown>[];
 
-        if (keyed === undefined) {
-            return records.map((record: Record<string, unknown>): V => Columns.read(record, value as string) as V);
-        }
-
-        return Object.fromEntries(records.map((record: Record<string, unknown>): [string, V] => [String(Columns.read(record, keyed)), Columns.read(record, value as string) as V]));
+        return this.#plucked<V>(records, columns.map((named: string): string => this.#column(named)));
     }
 
     /**
@@ -1111,6 +1126,30 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
+     * Name a column as the selected row holds it, or fail.
+     */
+    #selected(column: string, selection: string[]): string {
+        const name: string = Columns.parse(column).alias;
+
+        if (!selection.some((expression: string): boolean => Columns.parse(expression).alias === name)) {
+            throw new SchemaException(`Column [${column}] is not among the columns the query selects.`);
+        }
+
+        return name;
+    }
+
+    /**
+     * Read a column from every row, keyed by another when one is given.
+     */
+    #plucked<V>(rows: Record<string, unknown>[], [value, keyed]: string[]): V[] | Record<string, V> {
+        if (keyed === undefined) {
+            return rows.map((row: Record<string, unknown>): V => Columns.read(row, value as string) as V);
+        }
+
+        return Object.fromEntries(rows.map((row: Record<string, unknown>): [string, V] => [String(Columns.read(row, keyed)), Columns.read(row, value as string) as V]));
+    }
+
+    /**
      * Copy the query for an aggregate, without paging or orders.
      */
     #aggregated(): Builder<T> {
@@ -1184,11 +1223,35 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
+     * Map each grouped column naming a select alias to the column it selects.
+     */
+    async #aliased(grouped: string[], selection: string[] | null): Promise<Map<string, string>> {
+        const aliased: Map<string, string> = new Map<string, string>();
+
+        if (selection === null) {
+            return aliased;
+        }
+
+        const declared: string[] = [...(await this.#executor().tables()).values()].flat();
+
+        for (const projection of selection.map((expression: string): Projection => Columns.parse(expression))) {
+            if (grouped.includes(projection.alias) && !declared.includes(projection.alias)) {
+                aliased.set(projection.alias, projection.column);
+            }
+        }
+
+        return aliased;
+    }
+
+    /**
      * Get a lookup from a column to the grouped name it matches.
      */
-    async #placing(grouped: string[]): Promise<(column: string) => string | null> {
+    async #placing(grouped: string[], selection: string[] | null): Promise<(column: string) => string | null> {
+        const aliased: Map<string, string> = await this.#aliased(grouped, selection);
+        const source: (column: string) => string = (column: string): string => aliased.get(column) ?? column;
+
         if (this.#joins.length === 0) {
-            const owned: Map<string, string> = new Map<string, string>(grouped.map((column: string): [string, string] => [this.#column(column), Columns.named(column)]));
+            const owned: Map<string, string> = new Map<string, string>(grouped.map((column: string): [string, string] => [this.#column(source(column)), Columns.named(column)]));
 
             return (column: string): string | null => owned.get(this.#column(column)) ?? null;
         }
@@ -1205,7 +1268,7 @@ export class Builder<T = Record<string, unknown>> {
                 return null;
             }
         };
-        const qualified: Map<string | null, string> = new Map<string | null, string>(grouped.map((column: string): [string | null, string] => [resolved(column), Columns.named(column)]));
+        const qualified: Map<string | null, string> = new Map<string | null, string>(grouped.map((column: string): [string | null, string] => [resolved(source(column)), Columns.named(column)]));
 
         return (column: string): string | null => {
             const name: string | null = resolved(column);

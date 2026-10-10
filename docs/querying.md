@@ -324,8 +324,8 @@ DB.table<User>('users')
 `select()` projects in memory after the fetch. IndexedDB always returns whole records, so it shapes
 the result rather than saving any work. ` as ` in any case aliases a column, as in
 `select('email as address')`, so since 13.0.0 a column may not be declared under a name holding it.
-A column a table already holds under such a name stays out of `select`'s reach, while `pluck` and
-`where` still read it.
+A column a table already holds under such a name stays out of `select`'s reach, while `where`, and
+`pluck` on a query without a `select`, still read it.
 
 `distinct()` drops a row when an earlier one holds the same value in every column it returns, and
 keeps the first, in the order the query asks for. It does so across the whole match before `limit`
@@ -465,9 +465,31 @@ await DB.table<User>('users').sum('visits');
 13
 ```
 
-`pluck` on a `distinct` query returns each value of its column once, and with a key, each pair of
-value and key once, whatever the `select`, as `SELECT DISTINCT` over those columns does. `value`
-reads the first distinct row, which is the first matching row.
+On a query with a `select`, `pluck` and `value` read the rows the select returns.
+Each reads a column under the name the row holds it by: the alias after ` as `, otherwise the name
+after the last dot. A column the select leaves out throws `SchemaException`, and so does a column
+read by its own name once the select aliases it, while a query that matches nothing returns an empty
+result or `null`. Laravel's `value` returns the first selected column whichever column it is given,
+while here it reads the column it names, as `pluck` does. Without a `select`, both read the stored
+record.
+
+```ts
+await DB.table<User>('users').select('name as n').pluck('n');
+await DB.table<User>('users').select('name as n', 'role').value('role');
+
+// SchemaException: Column [role] is not among the columns the query selects.
+await DB.table<User>('users').select('name as n').pluck('role');
+```
+
+```
+['Alice', 'Bob']
+'admin'
+```
+
+`pluck` on a `distinct` query without a `select` returns each value of its column once, and with a
+key, each pair of value and key once, as `SELECT DISTINCT` over those columns does. With a `select`,
+it reads the distinct rows the select returns. `value` reads the first distinct row, which is the
+first matching row.
 
 `min` and `max` return the smallest and largest value as the column holds it, as Laravel's do: a
 number for a number column, a `Date` for a date or datetime column, a string for a string column,

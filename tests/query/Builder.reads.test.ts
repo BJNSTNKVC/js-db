@@ -764,6 +764,33 @@ describe('Builder terminals', (): void => {
         expect(await users().where('role', 'admin').pluck<string>('email', 'name')).toEqual({ Alice: 'alice@example.com' });
     });
 
+    test('plucks and gets a value under the alias the select gives it, alike', async (): Promise<void> => {
+        expect(await users().orderBy('id').select('name as n').pluck('n')).toEqual(['Alice', 'Bob', 'Carol', 'Dave', 'Erin']);
+        expect(await users().orderBy('id').select('name as n').value('n')).toEqual('Alice');
+        expect(await users().where('role', 'owner').select('name as n', 'email').pluck('n', 'email')).toEqual({ 'carol@example.com': 'Carol' });
+    });
+
+    test('rejects plucking a column the select leaves out or aliases', async (): Promise<void> => {
+        await expect(users().select('name as n').pluck('role')).rejects.toThrow('Column [role] is not among the columns the query selects.');
+        await expect(users().select('name as n').pluck('name')).rejects.toThrow(SchemaException);
+        await expect(users().select('users.name as n').pluck('users.name')).rejects.toThrow(SchemaException);
+    });
+
+    test('gets a value under the name the select gives it, wherever it stands in the select', async (): Promise<void> => {
+        expect(await users().orderBy('id').select('name as n', 'role').value('role')).toEqual('admin');
+        expect(await users().orderBy('id').select('name as n', 'users.role').value('users.role')).toEqual('admin');
+    });
+
+    test('rejects a value of a column the select leaves out, once a row is read', async (): Promise<void> => {
+        await expect(users().select('name as n').value('role')).rejects.toThrow('Column [role] is not among the columns the query selects.');
+        await expect(users().select('name as n').value('name')).rejects.toThrow(SchemaException);
+        expect(await users().where('name', 'Nobody').select('name as n').value('role')).toBeNull();
+    });
+
+    test('groups by a select alias, named after the alias', async (): Promise<void> => {
+        expect(await connection.table('users').where('role', 'member').select('name as n').groupBy('n').get()).toEqual([{ n: 'Bob' }, { n: 'Dave' }, { n: 'Erin' }]);
+    });
+
     test('reports that a record exists', async (): Promise<void> => {
         expect(await users().where('name', 'Alice').exists()).toEqual(true);
     });
@@ -1725,7 +1752,12 @@ describe('Builder distinct', (): void => {
     test('plucks the distinct values of a column', async (): Promise<void> => {
         expect(await roles().pluck('role')).toEqual(['a', 'b', 'c']);
         expect(await table().distinct().pluck('role')).toEqual(['a', 'b', 'c']);
-        expect(await table().select('name').distinct().pluck('role')).toEqual(['a', 'b', 'c']);
+        expect(await table().select('role').distinct().pluck('role')).toEqual(['a', 'b', 'c']);
+        expect(await table().select('role', 'visits').distinct().pluck('role')).toEqual(['a', 'a', 'b', 'c']);
+    });
+
+    test('rejects plucking a column a distinct select leaves out', async (): Promise<void> => {
+        await expect(table().select('name').distinct().pluck('role')).rejects.toThrow(SchemaException);
     });
 
     test('plucks the distinct pairs of a column and a key', async (): Promise<void> => {

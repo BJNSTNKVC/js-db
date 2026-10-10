@@ -543,7 +543,11 @@ describe('Distinct on a joined query', (): void => {
     test('plucks the distinct values of a column', async (): Promise<void> => {
         expect(await writers().pluck('users.name')).toEqual(['Alice', 'Bob']);
         expect(await writers().pluck('name')).toEqual(['Alice', 'Bob']);
-        expect(await writers().pluck('posts.user_id', 'users.name')).toEqual({ Alice: 1, Bob: 2 });
+        expect(await writers().pluck('name', 'users.name')).toEqual({ Alice: 'Alice', Bob: 'Bob' });
+    });
+
+    test('rejects plucking a column the distinct select leaves out', async (): Promise<void> => {
+        await expect(writers().pluck('posts.user_id', 'users.name')).rejects.toThrow('Column [posts.user_id] is not among the columns the query selects.');
     });
 
     test('reads the first distinct row for value, first and exists', async (): Promise<void> => {
@@ -1722,5 +1726,136 @@ describe('Qualified columns on a joined query', (): void => {
     test('rejects having and sorting groups by a table the query does not join', async (): Promise<void> => {
         await expect(posted().groupBy('users.name').having('teams.label', 'core').get()).rejects.toThrow('Column [teams.label] names table [teams], which this query does not join.');
         await expect(posted().groupBy('users.name').orderBy('teams.label').get()).rejects.toThrow(SchemaException);
+    });
+});
+
+class CreateSelectedTables extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        await Schema.create('users', (table: Blueprint): void => {
+            table.id();
+            table.string('name');
+            table.string('role');
+        });
+
+        await Schema.create('posts', (table: Blueprint): void => {
+            table.id();
+            table.integer('user_id');
+            table.string('title');
+        });
+    }
+}
+
+describe('A select on a joined query', (): void => {
+    let selected: Connection;
+
+    /**
+     * Join the users of the selected database to their posts, ordered by post.
+     */
+    function authored(): Builder<Record<string, unknown>> {
+        return selected.table('users').join('posts', 'users.id', '=', 'posts.user_id').orderBy('posts.id');
+    }
+
+    /**
+     * Join the users to their posts, selecting each user's name as the author.
+     */
+    function authors(): Builder<Record<string, unknown>> {
+        return authored().select('users.name as author');
+    }
+
+    beforeAll(async (): Promise<void> => {
+        selected = new Connection('app', { database: 'joins-selected', migrations: [CreateSelectedTables] });
+
+        await selected.migrate();
+
+        await selected.table('users').insert([
+            { name: 'Alice', role: 'admin' },
+            { name: 'Bob', role: 'member' },
+        ]);
+
+        await selected.table('posts').insert([
+            { user_id: 1, title: 'First' },
+            { user_id: 1, title: 'Second' },
+            { user_id: 2, title: 'Third' },
+        ]);
+    });
+
+    test('plucks a column under the alias the select gives it', async (): Promise<void> => {
+        expect(await authors().pluck('author')).toEqual(['Alice', 'Alice', 'Bob']);
+        expect(await authored().select('users.name as author', 'posts.title').pluck('title', 'author')).toEqual({ Alice: 'Second', Bob: 'Third' });
+    });
+
+    test('rejects plucking a column the select leaves out', async (): Promise<void> => {
+        await expect(authors().pluck('title')).rejects.toThrow('Column [title] is not among the columns the query selects.');
+        await expect(authors().pluck('posts.title')).rejects.toThrow('Column [posts.title] is not among the columns the query selects.');
+        await expect(authors().pluck('title', 'role')).rejects.toThrow(SchemaException);
+        await expect(authors().pluck('author', 'role')).rejects.toThrow('Column [role] is not among the columns the query selects.');
+    });
+
+    test('rejects plucking a selected column by its own name once the select aliases it', async (): Promise<void> => {
+        await expect(authors().pluck('users.name')).rejects.toThrow('Column [users.name] is not among the columns the query selects.');
+    });
+
+    test('plucks a selected column by its last part, whichever table it names', async (): Promise<void> => {
+        expect(await authored().select('posts.title').pluck('posts.title')).toEqual(['First', 'Second', 'Third']);
+        expect(await authored().select('posts.title').pluck('title')).toEqual(['First', 'Second', 'Third']);
+        expect(await authored().select('posts.title').pluck('users.title')).toEqual(['First', 'Second', 'Third']);
+    });
+
+    test('plucks nothing from no rows, whatever the select holds', async (): Promise<void> => {
+        expect(await authors().where('posts.title', 'Missing').pluck('title')).toEqual([]);
+        expect(await authors().where('posts.title', 'Missing').pluck('title', 'role')).toEqual({});
+        expect(await authors().where('posts.title', 'Missing').value('title')).toBeNull();
+    });
+
+    test('plucks the distinct rows of a distinct select', async (): Promise<void> => {
+        expect(await authors().distinct().pluck('author')).toEqual(['Alice', 'Bob']);
+    });
+
+    test('gets a value under the name the select gives it, wherever it stands in the select', async (): Promise<void> => {
+        expect(await authored().select('posts.title', 'users.name as author').value('author')).toEqual('Alice');
+        expect(await authored().select('users.name as author', 'posts.title').value('posts.title')).toEqual('First');
+    });
+
+    test('rejects a value of a column the select leaves out or aliases', async (): Promise<void> => {
+        await expect(authors().value('title')).rejects.toThrow('Column [title] is not among the columns the query selects.');
+        await expect(authors().value('users.name')).rejects.toThrow(SchemaException);
+    });
+
+    test('groups by a column the select leaves out', async (): Promise<void> => {
+        expect(await authors().groupBy('role').aggregate({ total: { count: '*' } }).get()).toEqual([
+            { role: 'admin', total: 2 },
+            { role: 'member', total: 1 },
+        ]);
+    });
+
+    test('groups by a qualified column beside a select', async (): Promise<void> => {
+        expect(await authors().groupBy('users.role').aggregate({ total: { count: '*' } }).get()).toEqual([
+            { role: 'admin', total: 2 },
+            { role: 'member', total: 1 },
+        ]);
+    });
+
+    test('groups by a select alias, named after the alias', async (): Promise<void> => {
+        expect(await authors().groupBy('author').aggregate({ total: { count: '*' } }).get()).toEqual([
+            { author: 'Alice', total: 2 },
+            { author: 'Bob', total: 1 },
+        ]);
+        expect(await authored().select('name as author').groupBy('author').get()).toEqual([{ author: 'Alice' }, { author: 'Bob' }]);
+    });
+
+    test('groups by a table\'s own column over a select alias of the same name', async (): Promise<void> => {
+        expect(await authored().select('users.name as title').groupBy('title').aggregate({ total: { count: '*' } }).get()).toEqual([
+            { title: 'First', total: 1 },
+            { title: 'Second', total: 1 },
+            { title: 'Third', total: 1 },
+        ]);
+    });
+
+    test('constrains and sorts the groups of an alias by the column it selects', async (): Promise<void> => {
+        expect(await authors().groupBy('author').having('users.name', 'Alice').get()).toEqual([{ author: 'Alice' }]);
+        expect(await authors().groupBy('author').orderBy('users.name', 'desc').get()).toEqual([{ author: 'Bob' }, { author: 'Alice' }]);
     });
 });

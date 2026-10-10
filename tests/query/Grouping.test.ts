@@ -156,6 +156,43 @@ describe('Builder.groupBy', (): void => {
 
         expect(rows).toHaveLength(3);
     });
+
+    test('aggregates over the rows the query reads, whatever it selects', async (): Promise<void> => {
+        const rows: Record<string, unknown>[] = await users()
+            .select('name')
+            .groupBy('team')
+            .aggregate({ total: { count: '*' }, visits: { sum: 'visits' } })
+            .having('visits', '>', 10)
+            .get();
+
+        expect(rows).toEqual([{ team: 'core', total: 3, visits: 20 }]);
+    });
+
+    test('groups by a table\'s own column over a select alias of the same name', async (): Promise<void> => {
+        const rows: Record<string, unknown>[] = await users()
+            .select('name as role')
+            .groupBy('role')
+            .aggregate({ total: { count: '*' } })
+            .orderBy('role')
+            .get();
+
+        expect(rows).toEqual([
+            { role: 'admin', total: 1 },
+            { role: 'member', total: 3 },
+            { role: 'owner', total: 1 },
+        ]);
+    });
+
+    test('groups by a select alias, reading the column it selects', async (): Promise<void> => {
+        const rows: Record<string, unknown>[] = await connection.table('users')
+            .select('team as squad')
+            .groupBy('squad')
+            .aggregate({ total: { count: '*' } })
+            .having('team', 'ops')
+            .get();
+
+        expect(rows).toEqual([{ squad: 'ops', total: 2 }]);
+    });
 });
 
 describe('Grouping aggregations', (): void => {

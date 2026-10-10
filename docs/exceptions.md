@@ -51,6 +51,7 @@ true. All of them are exported from the package root.
   but its own, on a joined query any table it does not join
 - an unqualified column that is ambiguous across the tables a join reads
 - a column that exists on none of the tables the query reads
+- `pluck` or `value` of a column a query's `select` leaves out, once a row is read
 - reading a table inside `DB.transaction` that the transaction did not declare
 - `chunk` or `lazy` with a size, or `paginate` with a page size, that is not a whole number of at
   least 1

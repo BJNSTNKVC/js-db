@@ -81,6 +81,24 @@ flat row, so `pluck('id')` returns `posts.id`. Once one column of a `pluck` is q
 is resolved the way `select` resolves it, so a bare column two tables share throws
 `SchemaException` there.
 
+With a `select`, `pluck` and `value` read the selected row instead, as on a query without a join
+(see [Querying](querying.md#terminals)). `pluck` reads a column under the alias the select gives it,
+or under the name after its last dot, and throws `SchemaException` for a column the select leaves
+out. `value` reads its column the same way, from the first row.
+
+```ts
+const authors = query.clone().select('users.name as author');
+
+await authors.pluck('author');
+
+// SchemaException: Column [posts.title] is not among the columns the query selects.
+await authors.pluck('posts.title');
+```
+
+```
+['Alice', 'Alice', 'Bob']
+```
+
 `sum`, `avg`, `min` and `max` read a column as `pluck` does: a qualified column or a path from one
 off the table it names, a bare column off the flat row. They set the query's `select` aside, as
 they do on a query without a join, so `select('users.name').sum('user_id')` sums the `user_id` of
@@ -121,6 +139,11 @@ given, and a column qualified with a table the query does not join throws `Schem
 
 Two grouped columns that share a last part, as in `groupBy('users.id', 'posts.id')`, still group by
 both, but the row keeps the later one under `id`, as `select('users.id', 'posts.id')` does.
+
+A grouping reads the joined rows before any `select`, so `select('users.name as author')` beside
+`groupBy('users.role')` still groups by role. A grouped column may also name a select alias, so
+`groupBy('author')` groups by `users.name` and names the column `author`, as
+[Grouping](grouping.md#grouping-beside-a-select) describes.
 
 ## Ambiguous columns are rejected, not guessed
 
