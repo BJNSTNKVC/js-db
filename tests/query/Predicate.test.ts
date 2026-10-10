@@ -973,9 +973,8 @@ describe('Predicate comparing arrays and objects', (): void => {
         expect(both(new Date(1000), '<', 2000)).toEqual([true, false]);
     });
 
-    test('keeps the rules for binary values, which are not plain objects', (): void => {
+    test('keeps the rules for binary values against a string, as binary values are not plain objects', (): void => {
         expect(both(new Uint8Array([1, 2]), '=', '1,2')).toEqual([true, false]);
-        expect(both(new Uint8Array([1]), '=', new Uint8Array([1]))).toEqual([false, true]);
     });
 
     test('treats a comparison of an array against null as unknown', (): void => {
@@ -1022,7 +1021,10 @@ describe('Predicate comparing by kind', (): void => {
         [['x'], 'x'],
         [{ a: 1 }, '[object Object]'],
         [[], {}],
-    ])('never finds %o equal to %o, in either order', (first: unknown, second: unknown): void => {
+        [new Uint8Array([53]), '5'],
+        [new Uint8Array([1, 2]), '1,2'],
+        [new Uint8Array([1, 2]), [1, 2]],
+    ])('never finds %o equal to %o, in either order',(first: unknown, second: unknown): void => {
         for (const operator of ['=', '==', '==='] as Operator[]) {
             expect(both(first, operator, second)).toEqual([false, true]);
             expect(both(second, operator, first)).toEqual([false, true]);
@@ -1133,6 +1135,119 @@ describe('Predicate comparing by kind', (): void => {
     test('leaves a constraint not marked to compare by kind loose', (): void => {
         expect(matches([basic('value', '=', '5')], { value: 5 })).toEqual(true);
         expect(matches([{ type: 'in', column: 'value', values: [1], conjunction: 'and', not: false }], { value: true })).toEqual(true);
+    });
+});
+
+describe.each([
+    ['on a column of one type', false],
+    ['by kind', true],
+])('Predicate comparing binary values %s', (_: string, kinds: boolean): void => {
+    const FORMS: [string, unknown][] = [
+        ['a Uint8Array', new Uint8Array([1, 2, 255])],
+        ['an ArrayBuffer', new Uint8Array([1, 2, 255]).buffer],
+        ['a DataView', new DataView(new Uint8Array([1, 2, 255]).buffer)],
+        ['a view over part of a larger buffer', new Uint8Array(new Uint8Array([9, 1, 2, 255, 9]).buffer, 1, 3)],
+    ];
+
+    const PAIRS: [string, unknown, string, unknown][] = FORMS.flatMap(([name, held]: [string, unknown]): [string, unknown, string, unknown][] => {
+        return FORMS.map(([other, given]: [string, unknown]): [string, unknown, string, unknown] => [name, held, other, given]);
+    });
+
+    /**
+     * Mark a constraint to compare by kind when the suite asks for it.
+     */
+    function marked(constraint: Constraint): Constraint {
+        return kinds ? { ...constraint, kinds: true } as Constraint : constraint;
+    }
+
+    /**
+     * Test a value against a basic constraint and against its negation.
+     */
+    function both(held: unknown, operator: Operator, given: unknown): [boolean, boolean] {
+        const constraint: Constraint = marked(basic('value', operator, given));
+
+        return [matches([constraint], { value: held }), matches([{ ...constraint, not: true }], { value: held })];
+    }
+
+    test.each(PAIRS)('finds %s equal to %s holding the same bytes', (_held: string, held: unknown, _given: string, given: unknown): void => {
+        for (const operator of ['=', '==', '===', '<=', '>='] as Operator[]) {
+            expect(both(held, operator, given)).toEqual([true, false]);
+        }
+
+        for (const operator of ['!=', '<>', '!==', '<', '>'] as Operator[]) {
+            expect(both(held, operator, given)).toEqual([false, true]);
+        }
+    });
+
+    test.each([
+        [[1, 2], [1, 3]],
+        [[1], [1, 0]],
+        [[1, 255], [2]],
+        [[9], [10]],
+    ])('orders the bytes %j below %j', (lower: number[], upper: number[]): void => {
+        const forms: ((bytes: number[]) => unknown)[] = [
+            (bytes: number[]): unknown => new Uint8Array(bytes).buffer,
+            (bytes: number[]): unknown => new DataView(new Uint8Array(bytes).buffer),
+            (bytes: number[]): unknown => new Uint8Array(bytes),
+        ];
+
+        for (const low of forms) {
+            for (const high of forms) {
+                const below: unknown = low(lower);
+                const above: unknown = high(upper);
+
+                expect(both(below, '<', above)).toEqual([true, false]);
+                expect(both(below, '<=', above)).toEqual([true, false]);
+                expect(both(above, '>', below)).toEqual([true, false]);
+                expect(both(below, '>=', above)).toEqual([false, true]);
+                expect(both(below, '=', above)).toEqual([false, true]);
+                expect(both(below, '!==', above)).toEqual([true, false]);
+            }
+        }
+    });
+
+    test('orders no bytes below any', (): void => {
+        expect(both(new ArrayBuffer(0), '<', new Uint8Array([0]))).toEqual([true, false]);
+        expect(both(new Uint8Array([0]), '>', new ArrayBuffer(0))).toEqual([true, false]);
+        expect(both(new ArrayBuffer(0), '=', new ArrayBuffer(0))).toEqual([true, false]);
+    });
+
+    test('finds a value in a where in list by its bytes', (): void => {
+        const within: (values: unknown[], not?: boolean) => Constraint = (values: unknown[], not: boolean = false): Constraint => {
+            return marked({ type: 'in', column: 'value', values, conjunction: 'and', not });
+        };
+
+        expect(matches([within([new Uint8Array([7]), new Uint8Array([1, 2]).buffer])], { value: new Uint8Array([1, 2]) })).toEqual(true);
+        expect(matches([within([new Uint8Array([7]), new Uint8Array([1, 2]).buffer], true)], { value: new Uint8Array([1, 2]) })).toEqual(false);
+        expect(matches([within([new Uint8Array([7])])], { value: new Uint8Array([1, 2]) })).toEqual(false);
+        expect(matches([within([new Uint8Array([7])], true)], { value: new Uint8Array([1, 2]) })).toEqual(true);
+    });
+
+    test('bounds a value between two others by its bytes', (): void => {
+        const between: (not?: boolean) => Constraint = (not: boolean = false): Constraint => {
+            return marked({ type: 'between', column: 'value', from: new Uint8Array([1]), to: new DataView(new Uint8Array([2]).buffer), conjunction: 'and', not });
+        };
+
+        expect(matches([between()], { value: new Uint8Array([1, 255]).buffer })).toEqual(true);
+        expect(matches([between(true)], { value: new Uint8Array([1, 255]).buffer })).toEqual(false);
+        expect(matches([between()], { value: new Uint8Array([2, 0]) })).toEqual(false);
+        expect(matches([between(true)], { value: new Uint8Array([2, 0]) })).toEqual(true);
+    });
+
+    test('compares binary values inside arrays and objects by their bytes', (): void => {
+        expect(both([new Uint8Array([1])], '=', [new Uint8Array([1]).buffer])).toEqual([true, false]);
+        expect(both({ a: new Uint8Array([1]) }, '=', { a: new DataView(new Uint8Array([1]).buffer) })).toEqual([true, false]);
+        expect(both([new Uint8Array([1])], '=', [new Uint8Array([2])])).toEqual([false, true]);
+    });
+});
+
+describe('Predicate comparing two columns holding binary values', (): void => {
+    test('compares them by their bytes', (): void => {
+        const column: (operator: Operator) => Constraint = (operator: Operator): Constraint => ({ type: 'column', column: 'a', operator, other: 'b', conjunction: 'and', not: false });
+
+        expect(matches([column('=')], { a: new Uint8Array([1, 2]), b: new Uint8Array([1, 2]).buffer })).toEqual(true);
+        expect(matches([column('=')], { a: new Uint8Array([1, 2]), b: new Uint8Array([1, 3]) })).toEqual(false);
+        expect(matches([column('<')], { a: new Uint8Array([9]), b: new Uint8Array([10]) })).toEqual(true);
     });
 });
 

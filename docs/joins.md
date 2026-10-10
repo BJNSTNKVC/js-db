@@ -179,10 +179,10 @@ IndexedDB has no join, so every one is performed in memory. A single equality be
 the joined table and one of the tables before it uses a hash join when both columns hold values of
 one type, and anything else falls back to a nested loop. Either way a condition matches the rows
 `whereColumn` would, so a number matches the same number held as a string, two dates match when they
-name the same moment, and a null or missing value matches nothing. The join reads every table it
-names in full, without an index, and the `where` clauses then filter the joined rows, so memory is
-proportional to the tables involved. That is fine at the data volumes a browser holds, and worth
-knowing before joining two large tables.
+name the same moment, two binary values match when they hold the same bytes, and a null or missing
+value matches nothing. The join reads every table it names in full, without an index, and the
+`where` clauses then filter the joined rows, so memory is proportional to the tables involved. That
+is fine at the data volumes a browser holds, and worth knowing before joining two large tables.
 
 `orderBy` on a joined query always sorts in memory, since the row is synthesised and no index covers
 it, and `chunk` slices the materialised result rather than walking keys.

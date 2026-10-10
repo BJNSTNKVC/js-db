@@ -1,5 +1,6 @@
 import { Columns } from './Columns';
 import { Predicate } from './Predicate';
+import { Signature } from './Signature';
 import type { Conjunction, Constraint, JoinClause, JoinCondition, Projection } from './types';
 
 interface Hash {
@@ -131,23 +132,25 @@ export class Joiner {
         }
 
         const [probe, column]: [string, string] = sides;
-        const probes: unknown[] = driving.map((row: Record<string, unknown>): unknown => this.#key(Columns.read(row, probe)));
-        const keys: unknown[] = other.map((record: Record<string, unknown>): unknown => this.#key(Columns.read(record, column)));
+        const probes: unknown[] = driving.map((row: Record<string, unknown>): unknown => Columns.read(row, probe));
+        const values: unknown[] = other.map((record: Record<string, unknown>): unknown => Columns.read(record, column));
 
         // A lookup finds only keys of the same kind, which the conditions may
         // match across kinds, so mixed kinds fall back to checking every row.
-        if (new Set([...probes, ...keys].filter((key: unknown): boolean => !this.#missing(key)).map((key: unknown): string => typeof key)).size > 1) {
+        if (new Set([...probes, ...values].filter((value: unknown): boolean => !this.#missing(value)).map((value: unknown): string => this.#kind(value))).size > 1) {
             return null;
         }
 
         const rows: Map<unknown, Record<string, unknown>[]> = new Map<unknown, Record<string, unknown>[]>();
 
         for (const [index, record] of other.entries()) {
-            const key: unknown = keys[index];
+            const value: unknown = values[index];
 
-            if (this.#missing(key)) {
+            if (this.#missing(value)) {
                 continue;
             }
+
+            const key: unknown = this.#key(value);
 
             const bucket: Record<string, unknown>[] | undefined = rows.get(key);
 
@@ -188,7 +191,25 @@ export class Joiner {
      * Reduce a join value to the form the comparison sees.
      */
     static #key(value: unknown): unknown {
+        if (this.#binary(value)) {
+            return Signature.value(value);
+        }
+
         return value instanceof Date ? value.getTime() : value;
+    }
+
+    /**
+     * Name the kind of a join value, as a lookup tells kinds apart.
+     */
+    static #kind(value: unknown): string {
+        return this.#binary(value) ? 'binary' : typeof this.#key(value);
+    }
+
+    /**
+     * Determine whether a join value is binary data, a buffer or a view.
+     */
+    static #binary(value: unknown): boolean {
+        return value instanceof ArrayBuffer || ArrayBuffer.isView(value);
     }
 
     /**

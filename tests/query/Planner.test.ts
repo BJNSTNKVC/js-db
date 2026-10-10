@@ -546,6 +546,85 @@ describe('Planner on a multi-entry index', (): void => {
     });
 });
 
+describe('Planner.keyable', (): void => {
+    test.each([
+        ['an ArrayBuffer', new Uint8Array([1, 2]).buffer],
+        ['an empty ArrayBuffer', new ArrayBuffer(0)],
+        ['a Uint8Array', new Uint8Array([1, 2])],
+        ['a typed array of wider elements', new Uint16Array([513])],
+        ['a DataView', new DataView(new Uint8Array([1, 2]).buffer)],
+        ['an array holding binary values', [new Uint8Array([1]), 'x', new DataView(new ArrayBuffer(1))]],
+    ] as [string, unknown][])('accepts %s', (_name: string, value: unknown): void => {
+        expect(Planner.keyable(value)).toEqual(true);
+    });
+
+    test.each([
+        ['a boolean', true],
+        ['an object', { a: 1 }],
+        ['null', null],
+        ['NaN', NaN],
+        ['an array holding a boolean', [new Uint8Array([1]), true]],
+    ] as [string, unknown][])('refuses %s', (_name: string, value: unknown): void => {
+        expect(Planner.keyable(value)).toEqual(false);
+    });
+});
+
+describe('Planner on binary keys', (): void => {
+    const tokens: TableSchema = {
+        table     : 'tokens',
+        key       : 'id',
+        increments: false,
+        timestamps: false,
+        columns   : [
+            column('id', { type: 'json', primary: true }),
+            column('data', { type: 'json' }),
+            column('label', { type: 'string' }),
+        ],
+        indexes   : [
+            { name: 'tokens_data_index', columns: ['data'], unique: false, multiEntry: false },
+            { name: 'tokens_label_index', columns: ['label'], unique: false, multiEntry: false },
+        ],
+    };
+
+    test('drives an equality on a binary key path from the key', (): void => {
+        const plan: Plan = Planner.plan([basic('id', '=', new Uint8Array([1, 2]))], [], tokens);
+
+        expect(plan.source).toEqual('key');
+        expect(plan.range?.includes(new DataView(new Uint8Array([1, 2]).buffer))).toEqual(true);
+        expect(plan.range?.includes(new Uint8Array([1, 3]))).toEqual(false);
+        expect(plan.residual).toEqual([]);
+    });
+
+    test('looks up each distinct run of bytes a whereIn holds once', (): void => {
+        const values: unknown[] = [new Uint8Array([1, 2]), new Uint8Array([1, 2]).buffer, new DataView(new Uint8Array([3]).buffer)];
+        const plan: Plan = Planner.plan([{ type: 'in', column: 'id', values, conjunction: 'and', not: false }], [], tokens);
+
+        expect(plan.source).toEqual('key');
+        expect(plan.values).toEqual([values[0], values[2]]);
+        expect(plan.residual).toEqual([]);
+    });
+
+    test('drives an equality with binary bytes on an index over a JSON column', (): void => {
+        const plan: Plan = Planner.plan([basic('data', '=', new DataView(new Uint8Array([1]).buffer))], [], tokens);
+
+        expect(plan.index).toEqual('tokens_data_index');
+        expect(plan.residual).toEqual([]);
+    });
+
+    test('scans for a range of binary bytes on a JSON column', (): void => {
+        const constraint: Constraint = basic('data', '>', new Uint8Array([1]));
+
+        expect(Planner.plan([constraint], [], tokens).residual).toEqual([constraint]);
+        expect(Planner.plan([constraint], [], tokens).source).toEqual('scan');
+    });
+
+    test('scans for binary bytes on a column of another type', (): void => {
+        const constraint: Constraint = basic('label', '=', new Uint8Array([1]));
+
+        expect(Planner.plan([constraint], [], tokens).source).toEqual('scan');
+    });
+});
+
 describe('Planner.describe', (): void => {
     test('describes a key plan', (): void => {
         expect(Planner.describe(Planner.plan([basic('id', '=', 7)], [], users))).toEqual('key');

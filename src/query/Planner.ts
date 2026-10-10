@@ -96,7 +96,11 @@ export class Planner {
             return !Number.isNaN(value.getTime());
         }
 
-        return typeof value === 'string' || (Array.isArray(value) && value.every((element: unknown): boolean => this.keyable(element)));
+        if (typeof value === 'string' || value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
+            return true;
+        }
+
+        return Array.isArray(value) && value.every((element: unknown): boolean => this.keyable(element));
     }
 
     /**

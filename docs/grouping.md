@@ -59,7 +59,9 @@ sees every record of its group.
 A JSON column groups by content, comparing values the way `distinct()` does, as described in
 [Querying](querying.md#shaping). Objects holding the same keys and values fall into one group in
 whatever order their keys were written, at every depth, and an array shares a group only with arrays
-holding the same elements in the same order. The group carries the value its first record holds.
+holding the same elements in the same order. Binary data groups by its bytes, so an `ArrayBuffer`
+and a `Uint8Array` holding the same bytes share a group. The group carries the value its first
+record holds.
 
 A JSON path groups by the value it reads, and the row carries it under the path's last step, the way
 `select` names a path, so `groupBy('settings->theme')` gives rows such as `{ theme: 'dark' }`. An

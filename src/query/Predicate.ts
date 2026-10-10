@@ -252,7 +252,11 @@ export class Predicate {
         }
 
         if (kinds && this.#kind(held) !== this.#kind(given)) {
-            return this.#apart(this.#kind(held) - this.#kind(given), operator);
+            return this.#signed(this.#kind(held) - this.#kind(given), operator);
+        }
+
+        if (this.#binary(held) && this.#binary(given)) {
+            return this.#signed(indexedDB.cmp(held, given), operator);
         }
 
         if (Binding.structured(held) || Binding.structured(given)) {
@@ -311,14 +315,14 @@ export class Predicate {
     }
 
     /**
-     * Compare two values of different kinds by the rank of their kinds.
+     * Read any comparison's result from the sign of a comparison.
      */
-    static #apart(order: number, operator: Exclude<Operator, 'like' | 'not like'>): boolean {
+    static #signed(order: number, operator: Exclude<Operator, 'like' | 'not like'>): boolean {
         if (operator === '<' || operator === '>' || operator === '<=' || operator === '>=') {
             return this.#ordered(order, operator);
         }
 
-        return operator === '!=' || operator === '<>' || operator === '!==';
+        return (order === 0) === (operator === '=' || operator === '==' || operator === '===');
     }
 
     /**
@@ -345,7 +349,14 @@ export class Predicate {
             return DATE;
         }
 
-        return value instanceof ArrayBuffer || ArrayBuffer.isView(value) ? BINARY : OBJECT;
+        return this.#binary(value) ? BINARY : OBJECT;
+    }
+
+    /**
+     * Determine whether a value is binary data, a buffer or a view over one.
+     */
+    static #binary(value: unknown): boolean {
+        return value instanceof ArrayBuffer || ArrayBuffer.isView(value);
     }
 
     /**

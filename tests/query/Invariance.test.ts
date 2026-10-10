@@ -444,6 +444,39 @@ const KINDINGS: Kinding[] = [
     ])),
 ];
 
+const PAYLOADS: Record<number, unknown> = {
+    1 : new Uint8Array([1, 2]),
+    2 : new Uint8Array([1, 2]).buffer,
+    3 : new DataView(new Uint8Array([1, 3]).buffer),
+    4 : new Uint8Array([1]),
+    5 : new ArrayBuffer(0),
+    6 : new Uint8Array([9]),
+    7 : new Uint8Array([10]),
+    8 : '1,2',
+    9 : 12,
+    10: null,
+};
+
+const CARRIED: Kinded[] = Object.entries(PAYLOADS).map(([id, code]: [string, unknown]): Kinded => ({ ...ROWS[Number(id) % ROWS.length] as Item, id: Number(id), code }));
+
+const BYTES: unknown[] = [new Uint8Array([1, 2]), new Uint8Array([1, 3]).buffer, new DataView(new Uint8Array([1]).buffer), new Uint8Array([9]), new ArrayBuffer(0)];
+
+const BINARIES: Kinding[] = [
+    ...BYTES.flatMap((given: unknown): Kinding[] => OPERATORS.map((operator: Operator): Kinding => [
+        `where('code', '${operator}', ${shown(given)})`,
+        (query: Builder<Kinded>): Builder<Kinded> => query.where('code', operator, given),
+        (row: Kinded): Truth => compare(row.code, operator, given, true),
+    ])),
+    ...[[BYTES[0], BYTES[3]], [new Uint8Array([1, 2]).buffer, '1,2'], [new DataView(new Uint8Array([10]).buffer), 12]].flatMap((values: unknown[]): Kinding[] => [
+        [`whereIn('code', [${values.map(shown).join(', ')}])`, (query: Builder<Kinded>): Builder<Kinded> => query.whereIn('code', values), (row: Kinded): Truth => within(row.code, values, true)],
+        [`whereNotIn('code', [${values.map(shown).join(', ')}])`, (query: Builder<Kinded>): Builder<Kinded> => query.whereNotIn('code', values), (row: Kinded): Truth => not(within(row.code, values, true))],
+    ]),
+    ...BYTES.flatMap((from: unknown): Kinding[] => BYTES.flatMap((to: unknown): Kinding[] => [
+        [`whereBetween('code', [${shown(from)}, ${shown(to)}])`, (query: Builder<Kinded>): Builder<Kinded> => query.whereBetween('code', [from, to]), (row: Kinded): Truth => between(row.code, from, to, true)],
+        [`whereNotBetween('code', [${shown(from)}, ${shown(to)}])`, (query: Builder<Kinded>): Builder<Kinded> => query.whereNotBetween('code', [from, to]), (row: Kinded): Truth => not(between(row.code, from, to, true))],
+    ])),
+];
+
 /**
  * Give a table an index over one column past the blueprint, as a database migrated before 6.0.0 can hold over a boolean column.
  */
@@ -652,7 +685,31 @@ function day(text: string): Date {
  * Describe a value so that a test name tells it apart.
  */
 function shown(value: unknown): string {
+    if (binary(value)) {
+        return `${(value as object).constructor.name}(${JSON.stringify(Array.from(octets(value)))})`;
+    }
+
     return value instanceof Date ? `new Date('${value.toISOString()}')` : JSON.stringify(value);
+}
+
+/**
+ * Determine whether a value is binary data.
+ */
+function binary(value: unknown): boolean {
+    return value instanceof ArrayBuffer || ArrayBuffer.isView(value);
+}
+
+/**
+ * Read the bytes binary data holds.
+ */
+function octets(value: unknown): Uint8Array {
+    if (value instanceof ArrayBuffer) {
+        return new Uint8Array(value);
+    }
+
+    const view: ArrayBufferView = value as ArrayBufferView;
+
+    return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
 }
 
 /**
@@ -837,6 +894,12 @@ function compare(held: unknown, operator: Operator, given: unknown, kinds: boole
         const order: number = category(held) - category(given);
 
         return { '=': false, '==': false, '===': false, '!=': true, '<>': true, '!==': true, '<': order < 0, '>': order > 0, '<=': order < 0, '>=': order > 0, 'like': null, 'not like': null }[operator];
+    }
+
+    if (binary(held) && binary(given)) {
+        const order: number = indexedDB.cmp(held, given);
+
+        return { '=': order === 0, '==': order === 0, '===': order === 0, '!=': order !== 0, '<>': order !== 0, '!==': order !== 0, '<': order < 0, '>': order > 0, '<=': order <= 0, '>=': order >= 0, 'like': null, 'not like': null }[operator];
     }
 
     if (structured(held) || structured(given)) {
@@ -1582,6 +1645,53 @@ describe.each(DECLARINGS)('%s holding values of every kind, indexed on one copy'
         expect(await indexed().where('code', '>', 5).explain()).toEqual('scan');
         expect(await indexed().where('code', '<=', '5').explain()).toEqual('scan');
         expect(await indexed().whereBetween('code', [1, 5]).explain()).toEqual('scan');
+    });
+});
+
+describe.each(DECLARINGS)('%s holding binary values, indexed on one copy', (_: string, migration: MigrationConstructor): void => {
+    beforeEach(async (): Promise<void> => {
+        connection = new Connection('app', { database: `invariance-binary-${++sequence}`, migrations: [CreateItemsTables, migration] });
+
+        await connection.migrate();
+        await planted('indexed', CARRIED);
+        await planted('plain', CARRIED);
+    });
+
+    describe.each(BINARIES)('%s', (_: string, constrain: (query: Builder<Kinded>) => Builder<Kinded>, holds: (row: Kinded) => Truth): void => {
+        const expected: number[] = ids(CARRIED.filter((row: Kinded): boolean => holds(row) === true));
+        const refused: number[] = ids(CARRIED.filter((row: Kinded): boolean => holds(row) === false));
+
+        test('gives the same answer, and the same answer to its negation, through an index, through a scan and from the model', async (): Promise<void> => {
+            const answers: Record<Copy, unknown> = await both(async (query: Builder<Kinded>): Promise<unknown> => ({
+                rows   : ids(await constrain(query.clone()).get()),
+                count  : await constrain(query.clone()).count(),
+                negated: ids(await query.clone().whereNot((nested: Builder<Kinded>): void => {
+                    constrain(nested);
+                }).get()),
+            }));
+
+            const modeled: unknown = { rows: expected, count: expected.length, negated: refused };
+
+            expect(answers).toEqual({ indexed: modeled, plain: modeled });
+        });
+    });
+
+    test('tells binary values apart by their bytes under distinct and groupBy', async (): Promise<void> => {
+        const answers: Record<Copy, unknown> = await both(async (query: Builder<Kinded>): Promise<unknown> => ({
+            plucked: (await query.clone().distinct().pluck('code')).length,
+            grouped: (await query.clone().groupBy('code').get()).length,
+        }));
+
+        expect(answers).toEqual({ indexed: { plucked: 9, grouped: 9 }, plain: { plucked: 9, grouped: 9 } });
+    });
+
+    test('drives equality and whereIn on binary values through the index, and every range by a scan', async (): Promise<void> => {
+        const indexed: () => Builder<Kinded> = (): Builder<Kinded> => connection.table<Kinded>('indexed');
+
+        expect(await indexed().where('code', new Uint8Array([1, 2])).explain()).toEqual('index:indexed_code_index');
+        expect(await indexed().whereIn('code', [new Uint8Array([1, 2]).buffer, new DataView(new Uint8Array([9]).buffer)]).explain()).toEqual('index:indexed_code_index');
+        expect(await indexed().where('code', '>', new Uint8Array([1])).explain()).toEqual('scan');
+        expect(await indexed().whereBetween('code', [new Uint8Array([1]), new Uint8Array([9])]).explain()).toEqual('scan');
     });
 });
 

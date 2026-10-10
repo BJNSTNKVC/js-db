@@ -155,6 +155,18 @@ Before 10.0.0 an array compared as the string its elements join into and an obje
 `[10]` came before `[9]`. A query that relied on matching an element should use
 `whereJsonContains('tags', 'php')` instead.
 
+Binary data, an `ArrayBuffer`, a typed array or a `DataView`, compares by its bytes on every column,
+as a database compares a binary column. Two values holding the same bytes are equal whichever form
+holds them, so `where('token', new Uint8Array([1, 2]))` matches an `ArrayBuffer` holding those two
+bytes, and `whereIn`, `whereNotIn`, `whereColumn` and a join match them the same way. Under `<`,
+`>`, `<=`, `>=`, `whereBetween` and `whereNotBetween`, two binary values order byte by byte, a
+shorter run first when it starts the longer, as IndexedDB orders binary keys. A view over part of a
+buffer holds only the bytes it covers. On a JSON column, or a column no blueprint declares, binary
+data never equals a string, even one holding the same characters.
+
+Before 15.0.1 two binary values compared by reference, so even a copy of a stored value matched
+nothing, and `find` returned `null` for every binary key.
+
 A value compared with a declared column is first converted to that column's type, so a value that
 arrives as a string from a form, a URL or storage matches what the typed value would. This applies
 to `where` and its `or` and `not` forms with every operator except `===`, `!==`, `like` and
@@ -366,9 +378,10 @@ await DB.table<User>('users').select('settings').distinct().get();
 // { theme: 'dark', rank: 2 } and { rank: 2, theme: 'dark' } come back as one row
 ```
 
-A `Map`, a `Set`, an `ArrayBuffer` and a `RegExp` hold no keys of their own, so each compares as an
-empty object, and a typed array compares as an object keyed by its indexes. A value that contains
-itself cannot be compared, and `distinct()` throws a `TypeError` on it.
+Binary data compares by its bytes, so an `ArrayBuffer`, a typed array and a `DataView` holding the
+same bytes are one value, and two holding different bytes are two. A `Map`, a `Set` and a `RegExp`
+hold no keys of their own, so each compares as an empty object. A value that contains itself cannot
+be compared, and `distinct()` throws a `TypeError` on it.
 
 `orderBy` places `null` and a missing value first ascending, then orders values as IndexedDB orders
 keys: numbers, dates, strings, binary data, then arrays element by element, a shorter array first
@@ -441,8 +454,26 @@ await DB.table<User>('users').max('age');
 
 `find` converts its key to the type of the key path column first, as `where` does, so
 `find(route.params.id)` finds the record even though a route parameter is always a string. A key
-that is `null`, `undefined` or anything else IndexedDB cannot use as a key, such as a boolean,
-returns `null` without reading the store, and `findOrFail` throws `RecordsNotFoundException` for it.
+may be anything IndexedDB takes as one: a number, a date, a string, binary data, or an array of
+these. A key that is `null`, `undefined` or anything else IndexedDB cannot use as a key, such as a
+boolean, returns `null` without reading the store, and `findOrFail` throws `RecordsNotFoundException`
+for it.
+
+A key path declared as `json` can hold binary data, an `ArrayBuffer`, a typed array or a
+`DataView`, such as a UUID stored as 16 bytes. `find` reads the record whose key holds the same
+bytes, whichever form wrote it or looks it up:
+
+```ts
+await Schema.create('devices', (table: Blueprint): void => {
+    table.json('id').primary();
+    table.string('name');
+});
+
+await DB.table('devices').insert({ id: new Uint8Array(bytes), name: 'Phone' });
+
+// The record, read by key, though the key was written as a Uint8Array.
+await DB.table('devices').find(new Uint8Array(bytes).buffer);
+```
 
 `find` answers the whole query, as Laravel's `where(key, id)->first()` does. It reads the record by
 key, returns it only when the query's constraints match it, and applies `select`, so checking that a

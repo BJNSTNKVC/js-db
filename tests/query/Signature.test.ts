@@ -161,6 +161,47 @@ describe('Signature.value keys', (): void => {
     });
 });
 
+describe('Signature.value over binary data', (): void => {
+    const bytes: Uint8Array = new Uint8Array([1, 2, 255]);
+
+    test('encodes binary data by its bytes in hex', (): void => {
+        expect(Signature.value(bytes)).toEqual('x:0102ff');
+        expect(Signature.value(new Uint8Array([]))).toEqual('x:');
+    });
+
+    test.each([
+        ['an ArrayBuffer', bytes.slice().buffer],
+        ['a DataView', new DataView(bytes.slice().buffer)],
+        ['a view over part of a larger buffer', new Uint8Array(new Uint8Array([9, 1, 2, 255, 9]).buffer, 1, 3)],
+        ['a subarray of a longer typed array', new Uint8Array([1, 2, 255, 0]).subarray(0, 3)],
+    ] as [string, unknown][])('encodes %s holding the same bytes as a Uint8Array alike', (_name: string, value: unknown): void => {
+        expect(Signature.value(value)).toEqual(Signature.value(bytes));
+        expect(Signature.value({ a: [value] })).toEqual(Signature.value({ a: [bytes] }));
+    });
+
+    test('encodes a typed array of wider elements by the bytes it holds', (): void => {
+        const wide: Uint16Array = new Uint16Array([0x0201]);
+
+        expect(Signature.value(wide)).toEqual(Signature.value(new Uint8Array(wide.buffer)));
+    });
+
+    test.each([
+        ['two ArrayBuffers holding different bytes', new Uint8Array([1]).buffer, new Uint8Array([2]).buffer],
+        ['two DataViews holding different bytes', new DataView(new Uint8Array([1]).buffer), new DataView(new Uint8Array([2]).buffer)],
+        ['two typed arrays holding different bytes', new Uint8Array([1, 2]), new Uint8Array([1, 3])],
+        ['a shorter run of bytes and a longer one', new Uint8Array([1]), new Uint8Array([1, 0])],
+        ['binary data and an object keyed by its indexes', new Uint8Array([1, 2]), { 0: 1, 1: 2 }],
+        ['binary data and an array of its bytes', new Uint8Array([1, 2]), [1, 2]],
+        ['binary data and an empty object', new ArrayBuffer(0), {}],
+        ['binary data and the string its hex spells', new Uint8Array([16]), '10'],
+        ['binary data and a bigint whose digits its hex spells', new Uint8Array([16]), 16n],
+    ] as [string, unknown, unknown][])('keeps %s apart at every depth', (_name: string, first: unknown, second: unknown): void => {
+        expect(Signature.value(first)).not.toEqual(Signature.value(second));
+        expect(Signature.value([first])).not.toEqual(Signature.value([second]));
+        expect(Signature.value({ a: [{ b: first }] })).not.toEqual(Signature.value({ a: [{ b: second }] }));
+    });
+});
+
 describe('Signature.of', (): void => {
     test('identifies a record by its columns', (): void => {
         // The encoding is private, so what matters is that it repeats and that it separates.

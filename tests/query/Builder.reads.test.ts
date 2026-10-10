@@ -13,6 +13,7 @@ import type { Transaction } from '../../src/database/Transaction';
 import type { MigrationContext } from '../../src/migrations/Migrator';
 import type { TableSchema } from '../../src/schema/types';
 import type { QueryExecuted } from '../../src/events';
+import type { Operator } from '../../src/query/types';
 import type { MockInstance } from 'vitest';
 
 interface User {
@@ -2127,5 +2128,185 @@ describe('Builder columns qualified with the query\'s own table', (): void => {
 
     test('reads another table\'s column once the query joins it', async (): Promise<void> => {
         expect(await players().where('teams.label', 'core').crossJoin('teams').count()).toEqual(0);
+    });
+});
+
+describe('Builder binary keys', (): void => {
+    interface Token {
+        id: IDBValidKey;
+        name: string;
+        data: unknown;
+        label: unknown;
+    }
+
+    interface Link {
+        id: number;
+        token_id: unknown;
+        note: string;
+    }
+
+    class CreateTokensTables extends Migration {
+        /**
+         * Run the migration.
+         */
+        override async up(): Promise<void> {
+            await Schema.create('tokens', (table: Blueprint): void => {
+                table.json('id').primary();
+                table.string('name');
+                table.json('data').nullable();
+                table.string('label').nullable();
+            });
+
+            await Schema.create('links', (table: Blueprint): void => {
+                table.id();
+                table.json('token_id');
+                table.string('note');
+            });
+        }
+    }
+
+    const A: number[] = Array.from({ length: 16 }, (_: unknown, index: number): number => index + 1);
+    const B: number[] = [...A.slice(0, 15), 32];
+    const C: number[] = [255, ...A.slice(1)];
+    const D: number[] = [1, 2, 3];
+
+    let binary: Connection;
+    let sequence: number = 0;
+
+    /**
+     * Begin a query against the tokens table.
+     */
+    function tokens(): Builder<Token> {
+        return binary.table<Token>('tokens');
+    }
+
+    /**
+     * Get the names of the tokens a query returns, sorted.
+     */
+    async function named(query: Builder<Token>): Promise<string[]> {
+        return (await query.get()).map((token: Token): string => token.name).sort();
+    }
+
+    /**
+     * Run a query, collecting the plans it announces.
+     */
+    async function planned(run: () => Promise<unknown>): Promise<string[]> {
+        const plans: string[] = [];
+        const listener: (event: Event) => void = ((event: QueryExecuted): void => {
+            plans.push(event.plan);
+        }) as (event: Event) => void;
+
+        Dispatcher.listen('db:query', listener);
+
+        try {
+            await run();
+        } finally {
+            Dispatcher.forget('db:query', listener);
+        }
+
+        return plans;
+    }
+
+    beforeEach(async (): Promise<void> => {
+        binary = new Connection('app', { database: `builder-reads-binary-${++sequence}`, migrations: [CreateTokensTables] });
+
+        await binary.migrate();
+        await tokens().insert([
+            { id: new Uint8Array(A), name: 'a', data: new Uint8Array([1, 2]).buffer },
+            { id: new Uint8Array(B).buffer, name: 'b', data: new Uint8Array([1, 3]).buffer },
+            { id: new DataView(new Uint8Array(C).buffer), name: 'c', data: new DataView(new Uint8Array([1, 4]).buffer) },
+            { id: new Uint8Array(D), name: 'd', data: new Uint8Array([1, 2]) },
+        ]);
+
+        const database: IDBDatabase = await binary.open();
+        const transaction: IDBTransaction = database.transaction(['tokens'], 'readwrite');
+
+        transaction.objectStore('tokens').put({ id: new Uint8Array(A), name: 'a', data: new Uint8Array([1, 2]).buffer, label: new Uint8Array([7, 7]) });
+
+        await new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
+            transaction.oncomplete = (): void => resolve();
+            transaction.onerror = (): void => reject(transaction.error);
+        });
+    });
+
+    test.each([
+        ['a Uint8Array', (): IDBValidKey => new Uint8Array(A)],
+        ['an ArrayBuffer', (): IDBValidKey => new Uint8Array(A).buffer],
+        ['a DataView', (): IDBValidKey => new DataView(new Uint8Array(A).buffer)],
+        ['a view over part of a larger buffer', (): IDBValidKey => new Uint8Array(new Uint8Array([0, ...A, 0]).buffer, 1, 16)],
+    ] as [string, () => IDBValidKey][])('finds a record by %s holding its key\'s bytes', async (_: string, key: () => IDBValidKey): Promise<void> => {
+        expect((await tokens().find(key()))?.name).toEqual('a');
+        expect((await tokens().findOrFail(key())).name).toEqual('a');
+        expect((await tokens().where('id', key()).first())?.name).toEqual('a');
+    });
+
+    test('finds a record by its binary key through the key path', async (): Promise<void> => {
+        expect(await planned((): Promise<unknown> => tokens().find(new Uint8Array(B)))).toEqual(['key']);
+        expect(await tokens().where('id', new Uint8Array(B)).explain()).toEqual('key');
+        expect(await tokens().whereIn('id', [new Uint8Array(B), new Uint8Array(C)]).explain()).toEqual('key');
+    });
+
+    test('finds no record by bytes no key holds', async (): Promise<void> => {
+        expect(await tokens().find(new Uint8Array([...D, ...new Array<number>(13).fill(0)]))).toBeNull();
+        expect(await tokens().find(new Uint8Array(D.slice(0, 2)))).toBeNull();
+        await expect(tokens().findOrFail(new Uint8Array([9]))).rejects.toThrow(RecordsNotFoundException);
+    });
+
+    test.each([
+        ['=', A, ['a']],
+        ['!=', A, ['b', 'c', 'd']],
+        ['<', B, ['a', 'd']],
+        ['>', A, ['b', 'c']],
+        ['<=', D, ['d']],
+        ['>=', C, ['c']],
+    ] as [Operator, number[], string[]][])('compares a binary key under %s by its bytes', async (operator: Operator, bytes: number[], expected: string[]): Promise<void> => {
+        for (const given of [new Uint8Array(bytes), new DataView(new Uint8Array(bytes).buffer)]) {
+            expect(await named(tokens().where('id', operator, given))).toEqual(expected);
+        }
+    });
+
+    test('finds binary keys in a where in list by their bytes', async (): Promise<void> => {
+        expect(await named(tokens().whereIn('id', [new Uint8Array(A).buffer, new DataView(new Uint8Array(B).buffer), new Uint8Array(A)]))).toEqual(['a', 'b']);
+        expect(await named(tokens().whereNotIn('id', [new Uint8Array(A).buffer]))).toEqual(['b', 'c', 'd']);
+        expect(await named(tokens().whereBetween('id', [new Uint8Array(A), new Uint8Array(B).buffer]))).toEqual(['a', 'b']);
+    });
+
+    test('updates and deletes a record by its binary key', async (): Promise<void> => {
+        expect(await tokens().where('id', new DataView(new Uint8Array(A).buffer)).update({ name: 'renamed' })).toEqual(1);
+        expect((await tokens().find(new Uint8Array(A)))?.name).toEqual('renamed');
+        expect(await tokens().where('id', new Uint8Array(B)).delete()).toEqual(1);
+        expect(await tokens().find(new Uint8Array(B).buffer)).toBeNull();
+        expect(await tokens().count()).toEqual(3);
+    });
+
+    test('upserts a record by its binary key', async (): Promise<void> => {
+        expect(await tokens().upsert([{ id: new Uint8Array(A).buffer, name: 'again' }], 'id', ['name'])).toEqual(1);
+        expect(await tokens().count()).toEqual(4);
+        expect((await tokens().find(new Uint8Array(A)))?.name).toEqual('again');
+    });
+
+    test('tells binary values apart by their bytes under distinct and groupBy', async (): Promise<void> => {
+        expect(await tokens().distinct().pluck('data')).toHaveLength(3);
+        expect(await tokens().select('data').distinct().get()).toHaveLength(3);
+        expect(await tokens().groupBy('data').get()).toHaveLength(3);
+    });
+
+    test('compares binary bytes on a column of another type', async (): Promise<void> => {
+        expect(await named(tokens().where('label', new Uint8Array([7, 7]).buffer))).toEqual(['a']);
+        expect(await named(tokens().where('label', new Uint8Array([7, 8])))).toEqual([]);
+    });
+
+    test('joins two tables on binary values by their bytes', async (): Promise<void> => {
+        await binary.table<Link>('links').insert([
+            { token_id: new Uint8Array(A).buffer, note: 'first' },
+            { token_id: new DataView(new Uint8Array(C).buffer), note: 'second' },
+        ]);
+
+        const joined: Record<string, unknown>[] = await binary.table('links')
+            .join('tokens', 'tokens.id', '=', 'links.token_id')
+            .orderBy('note')
+            .get();
+
+        expect(joined.map((row: Record<string, unknown>): unknown => row['name'])).toEqual(['a', 'c']);
     });
 });

@@ -42,6 +42,10 @@ export class Signature {
             return `w:${this.#encode(value.valueOf(), ancestors)}`;
         }
 
+        if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
+            return `x:${this.#hex(value)}`;
+        }
+
         if (typeof value === 'object') {
             if (ancestors.has(value)) {
                 throw new TypeError('Unable to compare a value that contains itself.');
@@ -59,6 +63,15 @@ export class Signature {
         }
 
         return `${(typeof value).charAt(0)}:${String(value)}`;
+    }
+
+    /**
+     * Spell the bytes of a buffer, or of a view over one, in hex.
+     */
+    static #hex(value: ArrayBuffer | ArrayBufferView): string {
+        const bytes: Uint8Array = value instanceof ArrayBuffer ? new Uint8Array(value) : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+
+        return Array.from(bytes, (byte: number): string => byte.toString(16).padStart(2, '0')).join('');
     }
 
     /**
