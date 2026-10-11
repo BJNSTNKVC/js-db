@@ -487,7 +487,12 @@ export class Connection {
                     failure = error;
 
                     if (live) {
-                        transaction.abort();
+                        try {
+                            transaction.abort();
+                        } catch {
+                            // A browser refuses to abort a transaction it is still committing,
+                            // and completes it instead of rolling it back.
+                        }
                     }
                 });
             };

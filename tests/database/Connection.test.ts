@@ -765,6 +765,53 @@ describe('Migration transaction hazard', (): void => {
         await expect(connect([Slow], database).open()).rejects.toBeInstanceOf(MigrationTransactionClosedException);
         await expect(drop(database)).resolves.toBeUndefined();
     });
+
+    test('leaves no rejection unhandled when the browser refuses to abort a committing upgrade', async (): Promise<void> => {
+        const node: { process: { on(event: string, listener: (reason: unknown) => void): void; off(event: string, listener: (reason: unknown) => void): void } } = globalThis as never;
+        const unhandled: unknown[] = [];
+
+        const listener: (reason: unknown) => void = (reason: unknown): void => {
+            unhandled.push(reason);
+        };
+
+        const Committing: MigrationConstructor = migration('CommittingMigration', async (): Promise<void> => {
+            await Schema.create('early', (table: Blueprint): void => {
+                table.id();
+            });
+
+            const get: IDBObjectStore['get'] = IDBObjectStore.prototype.get;
+
+            vi.spyOn(IDBObjectStore.prototype, 'get').mockImplementation(function (this: IDBObjectStore, query: IDBValidKey | IDBKeyRange): IDBRequest {
+                if (query === undefined) {
+                    throw new DOMException('The transaction is not active.', 'TransactionInactiveError');
+                }
+
+                return get.call(this, query);
+            });
+
+            vi.spyOn(IDBTransaction.prototype, 'abort').mockImplementation((): void => {
+                throw new DOMException('The transaction is committing.', 'InvalidStateError');
+            });
+
+            await Schema.create('late', (table: Blueprint): void => {
+                table.id();
+            });
+        });
+
+        node.process.on('unhandledRejection', listener);
+
+        try {
+            await expect(connect([Committing]).open()).rejects.toThrow(new MigrationTransactionClosedException('CommittingMigration'));
+            await new Promise<void>((resolve: () => void): void => {
+                setTimeout(resolve);
+            });
+        } finally {
+            node.process.off('unhandledRejection', listener);
+            vi.restoreAllMocks();
+        }
+
+        expect(unhandled).toEqual([]);
+    }, 2000);
 });
 
 describe('Migration failures', (): void => {
