@@ -75,6 +75,13 @@ moment its request queue drains. So a migration may **only** await operations fr
 Awaiting `Schema.*`, `DB.table(...)` and `DB.transaction(...)` is safe. Awaiting a `fetch`, a timer, or any other promise
 ends the transaction, and the next schema call or query throws `MigrationTransactionClosedException`.
 
+A browser stops taking requests the moment a migration awaits outside work, but writes the commit in
+the background. A schema call or query made before the commit lands throws
+`MigrationTransactionClosedException` all the same, as does a query through a builder made earlier
+or a `DB.transaction` joining the migration, and the migration is not recorded as run even if it
+catches the exception. Before 15.0.3 a browser threw IndexedDB's own `TransactionInactiveError` there
+instead.
+
 A query on the connection being migrated joins the version-change transaction, so a migration can
 read and rewrite rows between schema changes:
 

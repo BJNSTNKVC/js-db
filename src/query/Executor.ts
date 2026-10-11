@@ -3,6 +3,7 @@ import { Dispatcher } from '../events/Dispatcher';
 import { SchemaException, UniqueConstraintViolationException } from '../exceptions';
 import { Handles } from '../database/Handles';
 import { Request } from '../database/Request';
+import { Migrator } from '../migrations/Migrator';
 import { Columns } from './Columns';
 import { Comparator } from './Comparator';
 import { Joiner } from './Joiner';
@@ -474,7 +475,7 @@ export class Executor<T> {
         const table: string = this.#query.table;
 
         if (this.#query.transaction !== null) {
-            return Handles.alive(this.#query.transaction).objectStore(table);
+            return this.#alive(this.#query.transaction).objectStore(table);
         }
 
         const database: IDBDatabase = await this.#connection.open();
@@ -800,7 +801,7 @@ export class Executor<T> {
     async #stores(tables: string[], mode: IDBTransactionMode): Promise<(table: string) => IDBObjectStore> {
         const transaction: IDBTransaction = this.#query.transaction === null
             ? (await this.#connection.open()).transaction(tables, mode)
-            : Handles.alive(this.#query.transaction);
+            : this.#alive(this.#query.transaction);
         const outside: string | undefined = tables.find((table: string): boolean => !transaction.objectStoreNames.contains(table));
 
         if (outside !== undefined) {
@@ -808,6 +809,17 @@ export class Executor<T> {
         }
 
         return (table: string): IDBObjectStore => transaction.objectStore(table);
+    }
+
+    /**
+     * Get the query's transaction, refusing one that no longer accepts requests.
+     */
+    #alive(transaction: IDBTransaction): IDBTransaction {
+        if (transaction === Migrator.context()?.transaction) {
+            Migrator.alive();
+        }
+
+        return Handles.alive(transaction);
     }
 
     /**

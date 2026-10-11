@@ -1,6 +1,7 @@
 import { Dispatcher } from '../events/Dispatcher';
 import { MigrationEnded, MigrationsEnded, MigrationsStarted, MigrationStarted, NoPendingMigrations } from '../events';
 import { MigrationMismatchException, MigrationTransactionClosedException } from '../exceptions';
+import { Handles } from '../database/Handles';
 import { Registry } from '../schema/Registry';
 import { Repository } from './Repository';
 import type { TableSchema } from '../schema/types';
@@ -75,7 +76,7 @@ export class Migrator {
             throw new MigrationTransactionClosedException('unknown');
         }
 
-        if (!context.alive) {
+        if (!context.alive || Handles.inactive(context.transaction)) {
             throw new MigrationTransactionClosedException(context.migration);
         }
 

@@ -25,6 +25,7 @@ import type { ColumnSchema, TableSchema } from '../../src/schema/types';
 import type { MockInstance } from 'vitest';
 import type { MigrationContext } from '../../src/migrations/Migrator';
 import type { Transaction } from '../../src/database/Transaction';
+import type { Builder } from '../../src/query/Builder';
 import type { DatabaseVersionChanged, IndexSchema } from '../../src/main';
 
 let sequence: number = 0;
@@ -921,6 +922,97 @@ describe('Querying inside a migration', (): void => {
             await upgraded.table('users').get();
         })).rejects.toBeInstanceOf(MigrationTransactionClosedException);
     }, 2000);
+
+    describe('after the transaction went inactive', (): void => {
+        /**
+         * Make every request refuse to run from now on, as an inactive transaction's does.
+         */
+        function deactivate(): void {
+            const requests: [object, string[]][] = [
+                [IDBDatabase.prototype, ['createObjectStore', 'deleteObjectStore']],
+                [IDBObjectStore.prototype, ['add', 'clear', 'count', 'createIndex', 'delete', 'deleteIndex', 'get', 'getAll', 'getAllKeys', 'getKey', 'openCursor', 'openKeyCursor', 'put']],
+                [IDBIndex.prototype, ['count', 'get', 'getAll', 'getAllKeys', 'getKey', 'openCursor', 'openKeyCursor']],
+            ];
+
+            for (const [prototype, methods] of requests) {
+                for (const method of methods) {
+                    vi.spyOn(prototype as Record<string, () => never>, method).mockImplementation((): never => {
+                        throw new DOMException('The transaction is not active.', 'TransactionInactiveError');
+                    });
+                }
+            }
+        }
+
+        /**
+         * Upgrade with a migration whose transaction goes inactive before the attempt.
+         */
+        async function attempted(attempt: (early: Builder) => Promise<unknown>, caught: boolean = false): Promise<unknown[]> {
+            const database: string = `connection-${++sequence}`;
+            const thrown: unknown[] = [];
+
+            DB.configure({ default: 'app', connections: { app: { database } } });
+
+            try {
+                await expect(upgrade(async (): Promise<void> => {
+                    await Schema.table('users', (table: Blueprint): void => {
+                        table.integer('rank').default(0);
+                    });
+
+                    await upgraded.table('users').where('name', 'Alice').update({ age: 31 });
+
+                    const early: Builder = upgraded.table('users');
+
+                    deactivate();
+
+                    try {
+                        await attempt(early);
+                    } catch (error: unknown) {
+                        thrown.push(error);
+
+                        if (!caught) {
+                            throw error;
+                        }
+                    }
+                }, database)).rejects.toThrow(new MigrationTransactionClosedException('UpgradeUsers'));
+            } finally {
+                vi.restoreAllMocks();
+                DB.purge('app');
+            }
+
+            connections.splice(0).forEach((connection: Connection): void => connection.disconnect());
+
+            const restored: Connection = connect([CreateUsersTable], database);
+
+            expect(await restored.tables()).toEqual(['users']);
+            expect(await restored.hasColumn('users', 'rank')).toEqual(false);
+            expect(await restored.table('users').orderBy('name').pluck('age')).toEqual([30, 40]);
+            expect((await records(restored, 'migrations')).map((record: Record<string, unknown>): unknown => record.migration)).toEqual(['CreateUsersTable']);
+
+            return thrown;
+        }
+
+        test.each([
+            ['a schema call', (): Promise<unknown> => Schema.create('notes', (table: Blueprint): void => {
+                table.id();
+            })],
+            ['a query', (): Promise<unknown> => upgraded.table('users').get()],
+            ['a builder made before it went inactive', (early: Builder): Promise<unknown> => early.get()],
+            ['a truncate on a builder made before it went inactive', (early: Builder): Promise<unknown> => early.truncate()],
+            ['a DB.transaction joining the migration', (): Promise<unknown> => DB.transaction((transaction: Transaction): Promise<unknown> => transaction.table('users').get())],
+        ])('reports %s as a closed migration and leaves the database as it was', async (_: string, attempt: (early: Builder) => Promise<unknown>): Promise<void> => {
+            const thrown: unknown[] = await attempted(attempt);
+
+            expect(thrown).toHaveLength(1);
+            expect(thrown[0]).toBeInstanceOf(MigrationTransactionClosedException);
+            expect(thrown[0]).toEqual(new MigrationTransactionClosedException('UpgradeUsers'));
+        }, 2000);
+
+        test('refuses to record a migration that caught the exception and returned', async (): Promise<void> => {
+            const thrown: unknown[] = await attempted((): Promise<unknown> => upgraded.table('users').get(), true);
+
+            expect(thrown).toEqual([new MigrationTransactionClosedException('UpgradeUsers')]);
+        }, 2000);
+    });
 
     test('leaves a query on another database to that database', async (): Promise<void> => {
         const other: Connection = connect([CreatePostsTable]);
