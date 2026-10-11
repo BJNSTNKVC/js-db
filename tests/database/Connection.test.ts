@@ -26,7 +26,7 @@ import type { MockInstance } from 'vitest';
 import type { MigrationContext } from '../../src/migrations/Migrator';
 import type { Transaction } from '../../src/database/Transaction';
 import type { Builder } from '../../src/query/Builder';
-import type { DatabaseVersionChanged, IndexSchema } from '../../src/main';
+import type { DatabaseVersionChanged, IndexSchema, NoPendingMigrations } from '../../src/main';
 
 let sequence: number = 0;
 
@@ -195,6 +195,32 @@ describe('Connection versioning', (): void => {
 
         expect(await connection.migrate()).toEqual(['CreatePostsTable']);
         expect((await connection.open()).version).toEqual(3);
+    });
+
+    test('announces no pending migrations on every open that finds none to run', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+        const announced: string[] = [];
+
+        const listener: (event: Event) => void = (event: Event): void => {
+            announced.push((event as NoPendingMigrations).connection);
+        };
+
+        Dispatcher.listen('db:no-pending-migrations', listener);
+
+        try {
+            await connect([CreateUsersTable], database).migrate();
+
+            expect(announced).toEqual([]);
+
+            connections.splice(0).forEach((connection: Connection): void => connection.disconnect());
+
+            await connect([CreateUsersTable], database).migrate();
+            await connect([], `connection-${++sequence}`).migrate();
+
+            expect(announced).toEqual(['app', 'app']);
+        } finally {
+            Dispatcher.forget('db:no-pending-migrations', listener);
+        }
     });
 
     test('reports nothing on a second migrate of a live connection', async (): Promise<void> => {
@@ -420,14 +446,18 @@ describe('Connection multi tab', (): void => {
         });
     });
 
-    test('reports a database upgraded past its own version as a migration mismatch', async (): Promise<void> => {
-        const database: string = `connection-${++sequence}`;
-        const connection: Connection = connect([CreateUsersTable], database);
-
-        await connection.migrate();
-
-        await new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
+    /**
+     * Upgrade a database to version nine from another tab, recording these migrations.
+     */
+    function ahead(database: string, migrations: string[]): Promise<void> {
+        return new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
             const request: IDBOpenDBRequest = indexedDB.open(database, 9);
+
+            request.onupgradeneeded = (): void => {
+                for (const [index, migration] of migrations.entries()) {
+                    (request.transaction as IDBTransaction).objectStore(Repository.table).put({ order: index + 1, migration, at: new Date().toISOString() });
+                }
+            };
 
             request.onsuccess = (): void => {
                 request.result.close();
@@ -438,6 +468,14 @@ describe('Connection multi tab', (): void => {
             request.onerror = (): void => reject(request.error);
             request.onblocked = (): void => reject(new Error('The connection did not step aside.'));
         });
+    }
+
+    test('reports a database another tab migrated further as a migration mismatch', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+        const connection: Connection = connect([CreateUsersTable], database);
+
+        await connection.migrate();
+        await ahead(database, ['CreateUsersTable', 'CreatePostsTable']);
 
         await expect(connection.open()).rejects.toBeInstanceOf(MigrationMismatchException);
     });
@@ -449,19 +487,20 @@ describe('Connection multi tab', (): void => {
         await connection.migrate();
         connection.disconnect();
 
-        await new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
-            const request: IDBOpenDBRequest = indexedDB.open(database, 9);
+        await ahead(database, ['CreateUsersTable', 'CreatePostsTable']);
 
-            request.onsuccess = (): void => {
-                request.result.close();
+        await expect(connection.open()).rejects.toThrow(/already run \[CreateUsersTable, CreatePostsTable\]/);
+    });
 
-                resolve();
-            };
+    test('opens a database stored past its own version whose records match', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+        const connection: Connection = connect([CreateUsersTable], database);
 
-            request.onerror = (): void => reject(request.error);
-        });
+        await connection.migrate();
+        await ahead(database, ['CreateUsersTable']);
 
-        await expect(connection.open()).rejects.toThrow(/already run \[CreateUsersTable\]/);
+        expect(await connection.migrate()).toEqual([]);
+        expect((await connection.open()).version).toEqual(9);
     });
 
     test('recreates the database when another tab deletes it', async (): Promise<void> => {
@@ -643,7 +682,7 @@ describe('Connection platform failures', (): void => {
             request.onerror = (): void => reject(request.error);
         });
 
-        await expect(connect([CreateUsersTable], database).open()).rejects.toMatchObject({ name: 'NotFoundError' });
+        await expect(connect([], database).open()).rejects.toMatchObject({ name: 'NotFoundError' });
         await expect(drop(database)).resolves.toBeUndefined();
     });
 
@@ -812,6 +851,177 @@ describe('Migration transaction hazard', (): void => {
 
         expect(unhandled).toEqual([]);
     }, 2000);
+
+    describe('after a migration failed past its commit', (): void => {
+        const First: MigrationConstructor = migration('FirstMigration', async (): Promise<void> => {
+            await Schema.create('first', (table: Blueprint): void => {
+                table.id();
+            });
+        });
+
+        const Committing: MigrationConstructor = migration('CommittingMigration', async (): Promise<void> => {
+            await Schema.create('early', (table: Blueprint): void => {
+                table.id();
+            });
+
+            const get: IDBObjectStore['get'] = IDBObjectStore.prototype.get;
+
+            vi.spyOn(IDBObjectStore.prototype, 'get').mockImplementation(function (this: IDBObjectStore, query: IDBValidKey | IDBKeyRange): IDBRequest {
+                if (query === undefined) {
+                    throw new DOMException('The transaction is not active.', 'TransactionInactiveError');
+                }
+
+                return get.call(this, query);
+            });
+
+            vi.spyOn(IDBTransaction.prototype, 'abort').mockImplementation((): void => {
+                throw new DOMException('The transaction is committing.', 'InvalidStateError');
+            });
+
+            await Schema.create('late', (table: Blueprint): void => {
+                table.id();
+            });
+        });
+
+        const Last: MigrationConstructor = migration('LastMigration', async (): Promise<void> => {
+            await Schema.create('last', (table: Blueprint): void => {
+                table.id();
+            });
+        });
+
+        /**
+         * Fail the committing migration past its commit, leaving the database at version four.
+         */
+        async function committed(database: string): Promise<void> {
+            try {
+                await expect(connect([First, Committing, Last], database).migrate()).rejects.toBeInstanceOf(MigrationTransactionClosedException);
+            } finally {
+                vi.restoreAllMocks();
+            }
+
+            connections.splice(0).forEach((connection: Connection): void => connection.disconnect());
+
+            expect(await stored(database)).toEqual(4);
+        }
+
+        /**
+         * Read the version a database is stored at.
+         */
+        function stored(database: string): Promise<number> {
+            return new Promise<number>((resolve: (version: number) => void, reject: (reason: unknown) => void): void => {
+                const request: IDBOpenDBRequest = indexedDB.open(database);
+
+                request.onsuccess = (): void => {
+                    request.result.close();
+
+                    resolve(request.result.version);
+                };
+
+                request.onerror = (): void => reject(request.error);
+            });
+        }
+
+        test('runs the failed migration and every one after it on the next open', async (): Promise<void> => {
+            const database: string = `connection-${++sequence}`;
+
+            await committed(database);
+
+            const Fixed: MigrationConstructor = migration('CommittingMigration', async (): Promise<void> => {
+                await Schema.create('late', (table: Blueprint): void => {
+                    table.id();
+                });
+            });
+
+            const connection: Connection = connect([First, Fixed, Last], database);
+
+            expect(await connection.migrate()).toEqual(['CommittingMigration', 'LastMigration']);
+            expect((await connection.status()).map((status: MigrationStatus): boolean => status.ran)).toEqual([true, true, true]);
+            expect((await connection.tables()).sort()).toEqual(['early', 'first', 'last', 'late']);
+            expect((await connection.open()).version).toEqual(5);
+        }, 2000);
+
+        test('rejects a retry that meets its own leftover schema, which DB.fresh rebuilds', async (): Promise<void> => {
+            const database: string = `connection-${++sequence}`;
+
+            await committed(database);
+
+            const Retried: MigrationConstructor = migration('CommittingMigration', async (): Promise<void> => {
+                await Schema.create('early', (table: Blueprint): void => {
+                    table.id();
+                });
+            });
+
+            DB.configure({ default: 'app', connections: { app: { database, migrations: [First, Retried, Last] } } });
+
+            try {
+                await expect(DB.migrate('app')).rejects.toThrow(new SchemaException('Table [early] already exists.'));
+                expect(await stored(database)).toEqual(4);
+                expect(await DB.fresh('app')).toEqual(['FirstMigration', 'CommittingMigration', 'LastMigration']);
+                expect(await DB.connection('app').tables()).toEqual(['early', 'first', 'last']);
+                expect((await DB.connection('app').status()).map((status: MigrationStatus): boolean => status.ran)).toEqual([true, true, true]);
+            } finally {
+                DB.purge('app');
+            }
+        }, 2000);
+
+        test('runs a migration that failed after its transaction completed on the next open', async (): Promise<void> => {
+            const database: string = `connection-${++sequence}`;
+
+            await expect(connect([Slow, Last], database).migrate()).rejects.toBeInstanceOf(MigrationTransactionClosedException);
+
+            connections.splice(0).forEach((connection: Connection): void => connection.disconnect());
+
+            expect(await stored(database)).toEqual(3);
+
+            const Fixed: MigrationConstructor = migration('SlowMigration', async (): Promise<void> => {
+                await Schema.create('slow', (table: Blueprint): void => {
+                    table.id();
+                });
+            });
+
+            const connection: Connection = connect([Fixed, Last], database);
+
+            expect(await connection.migrate()).toEqual(['SlowMigration', 'LastMigration']);
+            expect((await connection.status()).map((status: MigrationStatus): boolean => status.ran)).toEqual([true, true]);
+            expect((await connection.open()).version).toEqual(4);
+        }, 2000);
+
+        test('starts over when another tab upgrades between its two opens', async (): Promise<void> => {
+            const database: string = `connection-${++sequence}`;
+
+            await connect([First], database).migrate();
+
+            connections.splice(0).forEach((connection: Connection): void => connection.disconnect());
+
+            const open: IDBFactory['open'] = indexedDB.open.bind(indexedDB);
+            let raced: boolean = false;
+
+            const spy: MockInstance = vi.spyOn(indexedDB, 'open').mockImplementation((name: string, version?: number): IDBOpenDBRequest => {
+                if (version === undefined) {
+                    return open(name);
+                }
+
+                if (!raced) {
+                    raced = true;
+
+                    const racing: IDBOpenDBRequest = open(name, version + 5);
+
+                    racing.onsuccess = (): void => racing.result.close();
+                }
+
+                return open(name, version);
+            });
+
+            try {
+                const connection: Connection = connect([First, Last], database);
+
+                expect(await connection.migrate()).toEqual(['LastMigration']);
+                expect((await connection.open()).version).toEqual(9);
+            } finally {
+                spy.mockRestore();
+            }
+        }, 2000);
+    });
 });
 
 describe('Migration failures', (): void => {

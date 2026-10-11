@@ -1,5 +1,5 @@
 import { Dispatcher } from '../events/Dispatcher';
-import { MigrationEnded, MigrationsEnded, MigrationsStarted, MigrationStarted, NoPendingMigrations } from '../events';
+import { MigrationEnded, MigrationsEnded, MigrationsStarted, MigrationStarted } from '../events';
 import { MigrationMismatchException, MigrationTransactionClosedException } from '../exceptions';
 import { Handles } from '../database/Handles';
 import { Registry } from '../schema/Registry';
@@ -36,13 +36,6 @@ export class Migrator {
      */
     static version(migrations: MigrationConstructor[]): number {
         return migrations.length + 1;
-    }
-
-    /**
-     * Get the index of the first migration pending at a version.
-     */
-    static pending(version: number): number {
-        return Math.max(0, version - 1);
     }
 
     /**
@@ -86,7 +79,7 @@ export class Migrator {
     /**
      * Run the pending migrations inside the version change transaction.
      */
-    static async run(connection: string, strict: boolean, timezone: string, database: IDBDatabase, transaction: IDBTransaction, migrations: MigrationConstructor[], from: number, at: Date): Promise<string[]> {
+    static async run(connection: string, strict: boolean, timezone: string, database: IDBDatabase, transaction: IDBTransaction, migrations: MigrationConstructor[], at: Date): Promise<string[]> {
         Repository.create(database);
         Registry.create(database);
 
@@ -111,7 +104,7 @@ export class Migrator {
         transaction.addEventListener('abort', this.#close);
 
         try {
-            return await this.#migrate(connection, migrations, from, at);
+            return await this.#migrate(connection, migrations, ran.length, at);
         } finally {
             this.#context = null;
         }
@@ -122,12 +115,6 @@ export class Migrator {
      */
     static async #migrate(connection: string, migrations: MigrationConstructor[], from: number, at: Date): Promise<string[]> {
         const pending: MigrationConstructor[] = migrations.slice(from);
-
-        if (pending.length === 0) {
-            Dispatcher.dispatch(new NoPendingMigrations(connection));
-
-            return [];
-        }
 
         const ran: string[] = [];
 

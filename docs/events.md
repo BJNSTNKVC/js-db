@@ -37,6 +37,16 @@ DB.onQueryExecuted((event: QueryExecuted): void => {
 A connection with no seeders announces nothing, so `seeding-started` firing always means at least
 one seeder is about to run.
 
+Every open that finds no migration left to run announces `no-pending-migrations`, including an open
+of a database already migrated. Before 16.0.0 only an open creating a database with no migrations
+registered announced it.
+
+`database-version-changed` carries the version another tab is opening at, or `null` when it deletes
+the database. That is the number of that tab's migrations plus one, or higher once a migration has
+been retried (see [Migrations are forward-only](migrations.md#migrations-are-forward-only)), so read
+it as a signal to reload rather than as a migration count. Before 16.0.0 it was always the number of
+migrations plus one.
+
 `transaction-rolled-back` is dispatched once whenever `DB.transaction` rejects without committing,
 and its `reason` is the error the call rejects with. That covers a callback that throws, a write that
 fails whether it was awaited or left running when the callback returned, and a commit the browser

@@ -55,7 +55,7 @@ constraints, its return values and its aggregate keys.
 |--------------------------------|------------------------------------------------------------------------------------------------------------|
 | `default`                      | The connection used when none is named                                                                     |
 | `connections[name].database`   | The IndexedDB database name                                                                                |
-| `connections[name].migrations` | Ordered migration classes. Their order **is** the schema version.                                          |
+| `connections[name].migrations` | Ordered migration classes, each run once. Only ever append to the list.                                    |
 | `connections[name].seeders`    | Ordered seeder classes, run by `DB.seed(name)`. See [Seeding](seeding.md).                                 |
 | `connections[name].strict`     | Defaults to `true`. Missing required values and values a column cannot store throw. `false` writes `null`. |
 | `connections[name].timezone`   | Defaults to `'UTC'`. The timezone every calendar day and time of day is read and stored in.                |
@@ -79,9 +79,9 @@ as `'local'` still does. Before 12.0.0 a query read a date string in a form a wr
 `'Jan 15 2024'` or `'2024/01/15'`, in the device's timezone whatever the setting. It now matches
 nothing, so pass a `Date` or an ISO string such as `'2024-01-15'`.
 
-`DB.migrate(name)` is idempotent. It opens the database at the version your migrations ask for, and
-when that already matches, nothing runs. Calling it on every boot is the intended usage, and there
-is no "has this been migrated?" check for you to write.
+`DB.migrate(name)` is idempotent. It opens the database and runs the migrations not yet recorded as
+run, and when every one already is, nothing runs. Calling it on every boot is the intended usage,
+and there is no "has this been migrated?" check for you to write.
 
 The connection name is **required** here. Every method whose subject is the connection itself names
 it rather than falling back to the default, since a silent fallback would migrate, seed or delete the

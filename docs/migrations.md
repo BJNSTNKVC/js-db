@@ -37,6 +37,15 @@ A migration that fails rolls back with every other migration the same open was r
 share one version change transaction. The database stays at its previous version, and the next
 open runs them again.
 
+A migration can also fail after its upgrade committed, such as one that awaits outside work (see
+[What a migration may await](#what-a-migration-may-await)). Nothing is left to roll back then: the
+migrations before it stay recorded, and what it did before the commit survives, but it is not
+recorded as run. The next open runs it again, with every migration registered after it. A rerun that
+meets its own earlier work usually fails, such as `Schema.create` on the table it already made,
+which throws `SchemaException`. Rebuild such a database with `DB.fresh(name)`, or have the migration
+check `Schema.hasTable` first. Before 16.0.0 no later open ran it or any migration after it, and
+`DB.status` listed them as not run for good.
+
 ## Migrations are forward-only
 
 IndexedDB versions cannot decrease, so there is no `down()`, no `rollback()` and no batches. To
@@ -44,6 +53,12 @@ start over, `DB.fresh(name)` deletes the database and replays every migration.
 
 Migrations may only ever be **appended**. Reordering them, or removing one that already ran, throws
 `MigrationMismatchException` rather than corrupting the schema.
+
+An open runs the registered migrations past those recorded as run, upgrading the database to the
+number of migrations plus one, or to one above its stored version when that is higher. So the
+version is the number of migrations plus one until a migration is retried, and higher after. Before
+16.0.0 it was always the number of migrations plus one, and a database stored past that version
+threw `MigrationMismatchException` even when its recorded migrations matched.
 
 The recorded name defaults to the class name in snake case, the way Laravel names a migration file,
 so `CreateUsersTable` is recorded as `create_users_table`. Because it is derived from the class name,

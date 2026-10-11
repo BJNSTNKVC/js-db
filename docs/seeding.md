@@ -64,14 +64,13 @@ the surface small.
 
 This is the one place where a browser differs from a server in a way that bites. On a server
 `db:seed` is a command someone runs. In an app, boot happens on every refresh. Migrations are safe
-there, since the database is already at the version its migrations ask for and nothing runs. Seeding
-has no such guard, so a seeder inserting two rows leaves four after the second refresh and six after
-the third.
+there, since every migration is already recorded as run and nothing runs. Seeding has no such
+guard, so a seeder inserting two rows leaves four after the second refresh and six after the third.
 
 There are two ways to handle it, and they answer different questions.
 
-**Seed only a database that has never been migrated.** `DB.status` reads the stored version without
-migrating, so it can be asked before `DB.migrate` whether this is a first run:
+**Seed only a database that has never been migrated.** `DB.status` reads the recorded migrations
+without migrating, so it can be asked before `DB.migrate` whether this is a first run:
 
 ```ts
 const status: MigrationStatus[] = await DB.status('app');

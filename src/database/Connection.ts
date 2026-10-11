@@ -1,6 +1,7 @@
 import {
     DatabaseBlocked,
     DatabaseVersionChanged,
+    NoPendingMigrations,
     SeederEnded,
     SeederStarted,
     SeedingEnded,
@@ -10,7 +11,7 @@ import {
     TransactionRolledBack
 } from '../events';
 import { Dispatcher } from '../events/Dispatcher';
-import { DatabaseBlockedException, MigrationMismatchException, TableNotFoundException, TransactionClosedException } from '../exceptions';
+import { DatabaseBlockedException, TableNotFoundException, TransactionClosedException } from '../exceptions';
 import { Migrator } from '../migrations/Migrator';
 import { Repository } from '../migrations/Repository';
 import { Registry } from '../schema/Registry';
@@ -444,18 +445,63 @@ export class Connection {
     }
 
     /**
-     * Open the database at the version the registered migrations ask for.
+     * Open the database, upgrading it when registered migrations have not run yet.
      */
-    #connect(): Promise<IDBDatabase> {
+    async #connect(): Promise<IDBDatabase> {
         const migrations: MigrationConstructor[] = this.migrations;
-        const version: number = Migrator.version(migrations);
+        const database: IDBDatabase = await this.#current();
+        let ran: MigrationRecord[];
 
+        try {
+            ran = await Connection.#records(database);
+
+            Migrator.verify(ran, Migrator.names(migrations));
+        } catch (error: unknown) {
+            database.close();
+
+            throw error;
+        }
+
+        if (ran.length === migrations.length) {
+            Dispatcher.dispatch(new NoPendingMigrations(this.#name));
+
+            return this.#ready(database, null);
+        }
+
+        database.close();
+
+        return this.#upgrade(migrations, Math.max(database.version + 1, Migrator.version(migrations)));
+    }
+
+    /**
+     * Open the database at whatever version is already stored.
+     */
+    #current(): Promise<IDBDatabase> {
+        return new Promise<IDBDatabase>((resolve: (database: IDBDatabase) => void, reject: (reason: unknown) => void): void => {
+            const request: IDBOpenDBRequest = indexedDB.open(this.#config.database);
+
+            // Opening without a version upgrades only a database that does not exist yet,
+            // which then holds the reserved stores and nothing else.
+            request.onupgradeneeded = (): void => {
+                Repository.create(request.result);
+                Registry.create(request.result);
+            };
+
+            request.onsuccess = (): void => resolve(request.result);
+            request.onerror = (): void => reject(request.error);
+        });
+    }
+
+    /**
+     * Open the database at a higher version, running the pending migrations.
+     */
+    #upgrade(migrations: MigrationConstructor[], version: number): Promise<IDBDatabase> {
         return new Promise<IDBDatabase>((resolve: (database: IDBDatabase) => void, reject: (reason: unknown) => void): void => {
             const request: IDBOpenDBRequest = indexedDB.open(this.#config.database, version);
             let runner: Promise<string[]> | null = null;
             let failure: unknown = null;
 
-            request.onupgradeneeded = (event: IDBVersionChangeEvent): void => {
+            request.onupgradeneeded = (): void => {
                 const transaction: IDBTransaction = request.transaction as IDBTransaction;
 
                 // The request keeps hold of the transaction for a tick after it finishes, so
@@ -476,7 +522,6 @@ export class Connection {
                     request.result,
                     transaction,
                     migrations,
-                    Migrator.pending(event.oldVersion),
                     new Date(),
                 );
 
@@ -510,14 +555,10 @@ export class Connection {
                     return;
                 }
 
-                // A stored version above the one the registered migrations
-                // ask for can only mean migrations were removed, so
-                // report that rather than the raw platform error.
+                // Another tab upgraded the database since its records were read,
+                // so the open starts over from the version that tab left.
                 if (request.error?.name === 'VersionError') {
-                    this.#recorded().then(
-                        (ran: MigrationRecord[]): void => reject(new MigrationMismatchException(ran.map((record: MigrationRecord): string => record.migration), Migrator.names(migrations))),
-                        reject,
-                    );
+                    this.#connect().then(resolve, reject);
 
                     return;
                 }
@@ -535,22 +576,24 @@ export class Connection {
      * Get the recorded migrations, opening at whatever version is already stored.
      */
     async #recorded(): Promise<MigrationRecord[]> {
-        const database: IDBDatabase = await new Promise<IDBDatabase>((resolve: (database: IDBDatabase) => void, reject: (reason: unknown) => void): void => {
-            const request: IDBOpenDBRequest = indexedDB.open(this.#config.database);
-
-            request.onsuccess = (): void => resolve(request.result);
-            request.onerror = (): void => reject(request.error);
-        });
+        const database: IDBDatabase = await this.#current();
 
         try {
-            if (!database.objectStoreNames.contains(Repository.table)) {
-                return [];
-            }
-
-            return await Repository.ran(database.transaction(Repository.table, 'readonly'));
+            return await Connection.#records(database);
         } finally {
             database.close();
         }
+    }
+
+    /**
+     * Get the migrations recorded in an open database, if it holds any.
+     */
+    static async #records(database: IDBDatabase): Promise<MigrationRecord[]> {
+        if (!database.objectStoreNames.contains(Repository.table)) {
+            return [];
+        }
+
+        return Repository.ran(database.transaction(Repository.table, 'readonly'));
     }
 
     /**
