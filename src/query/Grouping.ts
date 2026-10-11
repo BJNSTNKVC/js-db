@@ -10,7 +10,7 @@ type Records = (columns: string[]) => Promise<Record<string, unknown>[]>;
 
 type Placing = () => Promise<(column: string) => string | null>;
 
-export class Grouping<T, G extends (keyof T & string)[], A extends Aggregations = Record<string, never>> {
+export class Grouping<T, G extends Key<T>[], A extends Aggregations = Record<string, never>> {
     /**
      * Fetch the matching records, holding the given columns as given.
      */

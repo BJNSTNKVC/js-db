@@ -240,11 +240,14 @@ to its length rather than freezing the tab.
 A column may name the table the query reads, as Laravel allows, so `'users.visits'` on
 `DB.table('users')` reads `visits`. Every method that takes a column accepts it: the constraints,
 nested ones included, `orderBy`, `select`, `pluck`, `value`, `groupBy`, a grouping's aggregates,
-`having` and `orderBy`, `sum`, `avg`, `min` and `max`, and `update`, `increment`, `decrement` and
-`upsert`. A query written for a join keeps working once the join is taken away.
+`having` and `orderBy`, `sum`, `avg`, `min` and `max`, `update`, `increment`, `decrement` and
+`upsert`'s conflict target and columns to update, and the keys of every record `insert`,
+`insertOrIgnore`, `insertGetId`, `upsert` and `updateOrInsert` write. A query written for a join
+keeps working once the join is taken away.
 
 ```ts
 await DB.table<User>('users').where('users.role', 'admin').orderBy('users.age').pluck('users.name');
+await DB.table('users').insert({ 'users.name': 'Alice', 'users.email': 'alice@example.com' });
 ```
 
 The column reaches the planner in its bare form, so `where('users.email', ...)` reads through the
@@ -256,6 +259,16 @@ refuses it, since a query without a join reads no other table:
 ```ts
 // SchemaException: Column [posts.likes] names table [posts], which this query does not read.
 await DB.table<User>('users').where('posts.likes', '>', 3).get();
+```
+
+A record naming one column twice, once qualified and once not, throws `SchemaException` too, as
+MySQL refuses a column specified twice. Each row of an insert is resolved on its own, so one row may
+qualify a column the next leaves bare. Before 15.0.2 an insert stored a qualified key as given,
+under a name no read reaches.
+
+```ts
+// SchemaException: Column [name] is named twice, as [users.name] and [name].
+await DB.table('users').insert({ 'users.name': 'Alice', name: 'Alicia' });
 ```
 
 The check runs when the query does, so a constraint on another table's column may come before the

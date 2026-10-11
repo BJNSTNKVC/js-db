@@ -30,6 +30,11 @@ Because the alias is an object key rather than a string inside an expression, th
 inferred rather than cast. That row is typed `{ role: string; total: number; oldest: number | null }`,
 and reading a column you did not group or aggregate is a compile error.
 
+`groupBy` takes any column the builder does, as Laravel's takes any string. A grouped column is
+typed by the record type: `groupBy('role')` and `groupBy('users.role')` both give `role: string`,
+while a path such as `groupBy('settings->theme')` or a column the type does not declare gives
+`unknown`. Before 15.0.2 a typed builder accepted only the bare keys of its type.
+
 `min` and `max` return the value as the column holds it and compare values as `orderBy` does, as
 [Querying](querying.md#terminals) describes, so `{ max: 'created_at' }` gives a `Date` and
 `{ min: 'name' }` a string. Each is typed by its column, `User['age'] | null` for `{ max: 'age' }`,

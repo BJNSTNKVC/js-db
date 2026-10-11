@@ -480,7 +480,7 @@ export class Builder<T = Record<string, unknown>> {
     /**
      * Group the matching records by one or more columns.
      */
-    groupBy<G extends (keyof T & string)[]>(...columns: G): Grouping<T, G> {
+    groupBy<G extends Key<T>[]>(...columns: G): Grouping<T, G> {
         // The grouping owns its own ordering and paging,
         // so the fetch it is handed drops this query's,
         // which would otherwise page records
@@ -952,21 +952,21 @@ export class Builder<T = Record<string, unknown>> {
      * Insert one or more records into the table.
      */
     async insert(records: Partial<T> | Partial<T>[]): Promise<number> {
-        return this.#executor().insert(Array.isArray(records) ? records : [records]);
+        return this.#executor().insert((Array.isArray(records) ? records : [records]).map((record: Partial<T>): Partial<T> => this.#insertable(record)));
     }
 
     /**
      * Insert one or more records, skipping any the unique indexes reject.
      */
     async insertOrIgnore(records: Partial<T> | Partial<T>[]): Promise<number> {
-        return this.#executor().insert(Array.isArray(records) ? records : [records], true);
+        return this.#executor().insert((Array.isArray(records) ? records : [records]).map((record: Partial<T>): Partial<T> => this.#insertable(record)), true);
     }
 
     /**
      * Insert a record and get the key the database gave it.
      */
     async insertGetId(record: Partial<T>): Promise<IDBValidKey> {
-        return this.#executor().insertGetId(record);
+        return this.#executor().insertGetId(this.#insertable(record));
     }
 
     /**
@@ -1003,7 +1003,7 @@ export class Builder<T = Record<string, unknown>> {
     async upsert(values: Partial<T>[], uniqueBy: Key<T> | Key<T>[], update?: Key<T>[]): Promise<number> {
         const columns: string[] = (Array.isArray(uniqueBy) ? uniqueBy : [uniqueBy]).map((column: string): string => this.#column(column));
 
-        return this.#executor().upsert(values, columns, update?.map((column: string): string => this.#column(column)));
+        return this.#executor().upsert(values.map((value: Partial<T>): Partial<T> => this.#insertable(value)), columns, update?.map((column: string): string => this.#column(column)));
     }
 
     /**
@@ -1195,6 +1195,25 @@ export class Builder<T = Record<string, unknown>> {
         }
 
         throw new SchemaException(`Column [${column}] names table [${Columns.split(column).table}], which this query does not read.`);
+    }
+
+    /**
+     * Name every column of a record to insert as the table stores it.
+     */
+    #insertable(record: Partial<T>): Partial<T> {
+        const given: Map<string, string> = new Map<string, string>();
+
+        return Object.fromEntries(Object.entries(record).map(([column, value]: [string, unknown]): [string, unknown] => {
+            const own: string = this.#column(column);
+
+            if (given.has(own)) {
+                throw new SchemaException(`Column [${own}] is named twice, as [${given.get(own)}] and [${column}].`);
+            }
+
+            given.set(own, column);
+
+            return [own, value];
+        })) as Partial<T>;
     }
 
     /**

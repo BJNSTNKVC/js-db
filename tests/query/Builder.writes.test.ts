@@ -2036,3 +2036,113 @@ describe('Builder writes naming a column with the query\'s own table', (): void 
         expect(await users().get()).toEqual(before);
     });
 });
+
+describe('Builder inserts naming a column with a table', (): void => {
+    type Write = (query: Builder, record: Record<string, unknown>) => Promise<unknown>;
+
+    const writes: [string, Write][] = [
+        ['insert', (query: Builder, record: Record<string, unknown>): Promise<unknown> => query.insert(record)],
+        ['insertOrIgnore', (query: Builder, record: Record<string, unknown>): Promise<unknown> => query.insertOrIgnore(record)],
+        ['insertGetId', (query: Builder, record: Record<string, unknown>): Promise<unknown> => query.insertGetId(record)],
+        ['upsert', (query: Builder, record: Record<string, unknown>): Promise<unknown> => query.upsert([record], 'email')],
+        ['updateOrInsert', (query: Builder, { email, ...values }: Record<string, unknown>): Promise<unknown> => query.updateOrInsert({ email }, values)],
+    ];
+
+    describe.each([
+        ['a strict', true],
+        ['a loose', false],
+    ] as [string, boolean][])('on %s connection', (_: string, strict: boolean): void => {
+        let isolated: Connection;
+
+        /**
+         * Begin an untyped query against the users table.
+         */
+        function people(): Builder {
+            return isolated.table('users');
+        }
+
+        /**
+         * Get every stored key holding a dot.
+         */
+        async function dotted(): Promise<string[]> {
+            return (await people().get()).flatMap((record: Record<string, unknown>): string[] => Object.keys(record).filter((key: string): boolean => key.includes('.')));
+        }
+
+        beforeEach(async (): Promise<void> => {
+            isolated = new Connection('app', { database: `builder-writes-qualified-${++sequence}`, migrations: [CreateUsersTable], strict });
+
+            await isolated.migrate();
+        });
+
+        afterEach((): void => {
+            isolated.disconnect();
+        });
+
+        test.each(writes)('writes the own table\'s column through %s, storing no key named after the table', async (_: string, write: Write): Promise<void> => {
+            await write(people(), { 'users.name': 'Alice', email: 'alice@example.com' });
+
+            expect(await people().pluck('name')).toEqual(['Alice']);
+            expect(await dotted()).toEqual([]);
+        });
+
+        test.each(writes)('refuses another table\'s column in %s, writing nothing', async (_: string, write: Write): Promise<void> => {
+            await expect(write(people(), { name: 'Alice', email: 'alice@example.com', 'codes.label': 'x' })).rejects.toThrow(
+                new SchemaException('Column [codes.label] names table [codes], which this query does not read.'),
+            );
+
+            expect(await people().count()).toEqual(0);
+        });
+
+        test.each(writes)('refuses a column named twice in %s, writing nothing', async (_: string, write: Write): Promise<void> => {
+            await expect(write(people(), { 'users.name': 'Alice', name: 'Bob', email: 'alice@example.com' })).rejects.toThrow(
+                new SchemaException('Column [name] is named twice, as [users.name] and [name].'),
+            );
+
+            expect(await people().count()).toEqual(0);
+        });
+
+        test('resolves each row of an insert on its own', async (): Promise<void> => {
+            expect(await people().insert([
+                { 'users.name': 'Alice', email: 'alice@example.com' },
+                { name: 'Bob', 'users.email': 'bob@example.com' },
+            ])).toEqual(2);
+
+            expect(await people().orderBy('id').pluck('email', 'name')).toEqual({ Alice: 'alice@example.com', Bob: 'bob@example.com' });
+            expect(await dotted()).toEqual([]);
+        });
+
+        test('refuses a later row naming another table, writing no row', async (): Promise<void> => {
+            await expect(people().insert([
+                { name: 'Alice', email: 'alice@example.com' },
+                { name: 'Bob', email: 'bob@example.com', 'codes.label': 'x' },
+            ])).rejects.toBeInstanceOf(SchemaException);
+
+            expect(await people().count()).toEqual(0);
+        });
+
+        test('inserts through qualified attributes with updateOrInsert, then updates through them', async (): Promise<void> => {
+            expect(await people().updateOrInsert({ 'users.email': 'alice@example.com' }, { 'users.name': 'Alice' })).toEqual(true);
+            expect(await people().updateOrInsert({ 'users.email': 'alice@example.com' }, { 'users.name': 'Alicia' })).toEqual(false);
+
+            expect(await people().get()).toMatchObject([{ name: 'Alicia', email: 'alice@example.com' }]);
+            expect(await dotted()).toEqual([]);
+        });
+
+        test('merges qualified values into every column of a matching record', async (): Promise<void> => {
+            await people().insert({ name: 'Alice', email: 'alice@example.com', visits: 1 });
+
+            expect(await people().upsert([{ 'users.name': 'Alicia', email: 'alice@example.com', 'users.visits': 5 }], 'email')).toEqual(1);
+
+            expect(await people().get()).toMatchObject([{ name: 'Alicia', visits: 5 }]);
+            expect(await dotted()).toEqual([]);
+        });
+    });
+
+    test.each(writes)('still refuses %s on a joined builder', async (operation: string, write: Write): Promise<void> => {
+        await expect(write(connection.table('users').join('codes', 'users.visits', '=', 'codes.code'), { 'users.name': 'Alice', email: 'alice@example.com' })).rejects.toThrow(
+            new SchemaException(`Table [users] does not support ${operation} through a join.`),
+        );
+
+        expect(await users().count()).toEqual(0);
+    });
+});

@@ -49,6 +49,7 @@ true. All of them are exported from the package root.
 - `update`, `upsert`, `increment` or `decrement` touching the key path
 - a qualified column naming a table the query does not read: on a query without a join any table
   but its own, on a joined query any table it does not join
+- a record to insert naming one column twice, once qualified with its table and once not
 - an unqualified column that is ambiguous across the tables a join reads
 - a column that exists on none of the tables the query reads
 - `pluck` or `value` of a column a query's `select` leaves out, once a row is read

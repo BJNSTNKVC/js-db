@@ -97,5 +97,9 @@ type Stepped<K extends string> = K extends `${string}->${infer S}` ? Stepped<S> 
 
 type Named<K extends string> = K extends `${string}->${string}` ? Stepped<K> : K extends `${string}.${infer N}` ? N : K;
 
-export type Grouped<T, G extends (keyof T & string)[], A extends Aggregations> =
-    { [K in G[number] as Named<K>]: T[K] } & { [K in keyof A]: Aggregated<A[K], T> };
+type Typed<T, K extends string> = K extends keyof T
+    ? T[K]
+    : K extends `${string}->${string}` ? unknown : Named<K> extends keyof T ? T[Named<K>] : unknown;
+
+export type Grouped<T, G extends Key<T>[], A extends Aggregations> =
+    { [K in G[number] as Named<K>]: Typed<T, K> } & { [K in keyof A]: Aggregated<A[K], T> };

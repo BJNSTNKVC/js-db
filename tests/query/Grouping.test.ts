@@ -7,6 +7,7 @@ import { Blueprint } from '../../src/schema/Blueprint';
 import type { Builder } from '../../src/query/Builder';
 import { Grouping } from '../../src/query/Grouping';
 import { Predicate } from '../../src/query/Predicate';
+import type { Grouped } from '../../src/query/types';
 
 interface User {
     id: number;
@@ -584,11 +585,32 @@ describe('Grouping inference', (): void => {
         expect(absent).toBeUndefined();
     });
 
-    test('rejects grouping by a column the record type does not have', (): void => {
-        // @ts-expect-error 'missing' is not a key of User
-        const grouping: Grouping<User, ("name" | "role" | "id" | "team" | "age" | "visits")[], Record<string, never>> = users().groupBy('missing');
+    test('groups by a column qualified with its own table, typed as the column it names', async (): Promise<void> => {
+        const rows: { role: string; total: number }[] = await users()
+            .groupBy('users.role')
+            .aggregate({ total: { count: '*' } })
+            .orderBy('users.role')
+            .get();
 
-        expect(grouping).toBeDefined();
+        // @ts-expect-error a qualified column is typed as the string it names
+        const wrong: number = rows[0]!.role;
+
+        expect(rows).toEqual([
+            { role: 'admin', total: 1 },
+            { role: 'member', total: 3 },
+            { role: 'owner', total: 1 },
+        ]);
+        expect(wrong).toEqual('admin');
+    });
+
+    test('types a column the record type does not have as unknown', async (): Promise<void> => {
+        const rows: Grouped<User, ['missing'], Record<string, never>>[] = await users().groupBy('missing').get();
+
+        // @ts-expect-error a column the record type does not have is unknown
+        const missing: string = rows[0]!.missing;
+
+        expect(rows).toHaveLength(1);
+        expect(missing).toBeUndefined();
     });
 });
 
@@ -763,12 +785,20 @@ describe('Grouping over a JSON path', (): void => {
         }
     }
 
+    interface Score {
+        id: number;
+        team: string;
+        stats: { points?: number; tier: string } | null;
+    }
+
     let scores: () => Builder;
+    let typed: () => Builder<Score>;
 
     beforeAll(async (): Promise<void> => {
         const isolated: Connection = new Connection('app', { database: 'grouping-paths', migrations: [CreateScoresTable] });
 
         scores = (): Builder => isolated.table('scores');
+        typed = (): Builder<Score> => isolated.table<Score>('scores');
 
         await isolated.migrate();
         await scores().insert([
@@ -811,6 +841,31 @@ describe('Grouping over a JSON path', (): void => {
             { tier: 'gold', total: 16 },
             { tier: 'silver', total: 4 },
         ]);
+    });
+
+    test('groups a typed builder by a path, typed as unknown', async (): Promise<void> => {
+        const rows: { tier: unknown; total: number | null }[] = await typed()
+            .whereNotNull('stats')
+            .groupBy('stats->tier')
+            .aggregate({ total: { sum: 'stats->points' } })
+            .orderBy('stats->tier')
+            .get();
+
+        const teams: Grouped<Score, ['stats->team'], Record<string, never>>[] = await typed().groupBy('stats->team').get();
+
+        // @ts-expect-error a path is unknown, never the string it holds
+        const tier: string = rows[0]!.tier;
+
+        // @ts-expect-error a path is unknown, even one whose last step names a column
+        const team: string = teams[0]!.team;
+
+        expect(rows).toEqual([
+            { tier: 'gold', total: 16 },
+            { tier: 'silver', total: 4 },
+        ]);
+        expect(tier).toEqual('gold');
+        expect(teams).toHaveLength(1);
+        expect(team).toBeUndefined();
     });
 
     test('constrains and sorts the groups by a grouped path', async (): Promise<void> => {
