@@ -713,6 +713,41 @@ describe('Connection closing a handle it read from', (): void => {
         expect(await connection.fresh()).toEqual(['CreateUsersTable']);
         expect(events).toEqual([]);
     }, 2000);
+
+    const USER: Record<string, unknown> = { name: 'Alice', email: 'alice@example.com', age: 30 };
+
+    test.each([
+        ['get', (connection: Connection): Promise<unknown> => connection.table('users').get()],
+        ['find', (connection: Connection): Promise<unknown> => connection.table('users').find(1)],
+        ['count', (connection: Connection): Promise<unknown> => connection.table('users').where('name', 'Alice').count()],
+        ['max', (connection: Connection): Promise<unknown> => connection.table('users').max('age')],
+        ['explain', (connection: Connection): Promise<unknown> => connection.table('users').explain()],
+        ['chunk', (connection: Connection): Promise<unknown> => connection.table('users').chunk(1, (): void => {})],
+        ['a joined read', (connection: Connection): Promise<unknown> => connection.table('users').join('posts', 'users.id', '=', 'posts.id').get()],
+        ['insert', (connection: Connection): Promise<unknown> => connection.table('users').insert({ ...USER, email: 'bob@example.com' })],
+        ['insertGetId', (connection: Connection): Promise<unknown> => connection.table('users').insertGetId({ ...USER, email: 'bob@example.com' })],
+        ['upsert', (connection: Connection): Promise<unknown> => connection.table('users').upsert([USER], 'email')],
+        ['update', (connection: Connection): Promise<unknown> => connection.table('users').where('name', 'Alice').update({ age: 31 })],
+        ['delete', (connection: Connection): Promise<unknown> => connection.table('users').where('name', 'Alice').delete()],
+        ['truncate', (connection: Connection): Promise<unknown> => connection.table('users').truncate()],
+        ['a joined update', (connection: Connection): Promise<unknown> => connection.table('posts').join('users', 'users.id', '=', 'posts.id').update({ title: 'Hello' })],
+        ['a failed insert', (connection: Connection): Promise<unknown> => connection.table('users').insert(USER).catch((): null => null)],
+    ])('runs fresh straight after %s without reporting itself blocked', async (_: string, query: (connection: Connection) => Promise<unknown>): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+        const connection: Connection = connect([CreateUsersTable, CreatePostsTable], database);
+        const events: string[] = blockings(database);
+
+        await connection.migrate();
+        await connection.table('users').insert(USER);
+        await connection.table('posts').insert({ title: 'Draft' });
+
+        finishing();
+
+        await query(connection);
+
+        expect(await connection.fresh()).toEqual(['CreateUsersTable', 'CreatePostsTable']);
+        expect(events).toEqual([]);
+    }, 2000);
 });
 
 describe('Connection version change event', (): void => {

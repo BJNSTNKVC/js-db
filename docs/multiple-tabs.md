@@ -14,6 +14,8 @@ browsers now and then under load: the open emitted `database-blocked` and reject
 `DatabaseBlockedException` with no other tab open, while the upgrade carried on behind it. A tab
 whose open failed, such as with `MigrationMismatchException`, or that disconnected or ran `fresh()`
 straight after opening, could likewise be reported as blocking an upgrade or delete for a moment.
+Before 18.0.3 Safari did the same to a `fresh()` made straight after a query outside
+`DB.transaction`.
 
 The other tab is usually running newer code with more migrations, after a deploy. This tab can no
 longer open the database, and its next query would reject with `MigrationMismatchException`. Reload

@@ -12,6 +12,12 @@ const users: User[] = await DB.table<User>('users')
     .get();
 ```
 
+A terminal outside `DB.transaction` and migrations runs in a transaction of its own, and its promise
+settles once that transaction has committed, or rolled back after a failure, as an autocommitted
+statement does in Laravel. A write has landed by the time it resolves, and `DB.fresh` can follow at
+once. Before 18.0.3 a terminal settled as soon as its last request did, while its transaction was
+still finishing, so Safari reported a `fresh()` made straight after it as blocked.
+
 ## Constraints
 
 `where` takes four forms: a column and a value for an implicit `=`, a column with an explicit
