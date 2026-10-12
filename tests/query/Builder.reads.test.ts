@@ -886,12 +886,12 @@ describe('Builder terminals', (): void => {
         expect([await users().where('role', 'member').min('name'), await users().where('role', 'member').max('name')]).toEqual(['Bob', 'Erin']);
     });
 
-    test('takes min and max of a date column holding a string as orderBy orders them, every date before the string', async (): Promise<void> => {
+    test('takes min and max of a date column holding a string as the column would store it, skipping the string', async (): Promise<void> => {
         const visited: () => Builder<Visit> = (): Builder<Visit> => connection.table<Visit>('visits');
 
         expect(await visited().orderBy('at', 'desc').value('at')).toEqual('not a date');
         expect(await visited().min('at')).toEqual(new Date(Date.UTC(2026, 0, 5, 9, 30, 0)));
-        expect(await visited().max('at')).toEqual('not a date');
+        expect(await visited().max('at')).toEqual(new Date(Date.UTC(2026, 2, 1, 18, 45, 0)));
         expect(await visited().where('label', '!=', 'garbled').max('at')).toEqual(new Date(Date.UTC(2026, 2, 1, 18, 45, 0)));
     });
 
@@ -1200,7 +1200,7 @@ describe('Builder ordering through an index that leaves records out', (): void =
 
         expect(await legacy.table<Named>('flags').orderBy('active').explain()).toEqual('scan');
         expect(await legacy.table<Named>('flags').orderBy('active').pluck('name')).toEqual(['Bob', 'Alice', 'Carol']);
-        expect([await legacy.table('flags').min('active'), await legacy.table('flags').max('active')]).toEqual([0, 1]);
+        expect([await legacy.table('flags').min('active'), await legacy.table('flags').max('active')]).toEqual([false, true]);
     });
 
     test('takes min and max over a grandfathered boolean index from the records', async (): Promise<void> => {

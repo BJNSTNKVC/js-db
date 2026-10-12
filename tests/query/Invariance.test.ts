@@ -345,7 +345,10 @@ const RETAGS: Retag[] = [
 
 const MIXES: Record<number, unknown> = { 1: '2', 2: '', 3: 7, 4: 4, 5: 9 };
 
-const MIXED: Item[] = ROWS.map((row: Item): Item => ({ ...row, visits: MIXES[row.id] as number }));
+const MIXED: Item[] = [
+    ...ROWS.map((row: Item): Item => ({ ...row, visits: MIXES[row.id] as number })),
+    { id: 6, name: 'Fay', role: 'c', visits: true as unknown as number, score: null, active: null, seen: null },
+];
 
 const MIXTURES: Condition[] = [
     ...OPERATORS.map((operator: Operator): Condition => [
@@ -804,6 +807,15 @@ function same(a: unknown, b: unknown): boolean {
  */
 function comparable(value: unknown): unknown {
     return value instanceof Date ? value.getTime() : value;
+}
+
+/**
+ * Read a value as a loose write would store it in an integer column.
+ */
+function integral(value: unknown): number | null {
+    const number: number = typeof value === 'number' ? value : (typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN);
+
+    return Number.isFinite(number) ? Math.round(number) : null;
 }
 
 /**
@@ -1867,11 +1879,26 @@ describe('a column holding values of another type', (): void => {
     }, 2000);
 
     test('aggregates the column the same way through an index, through a scan and in the model', async (): Promise<void> => {
-        const expected: Totals = modeled(MIXED, (row: Item): unknown => row.visits);
+        const expected: Totals = { ...modeled(MIXED, (row: Item): unknown => row.visits), ...extremes(MIXED.map((row: Item): unknown => integral(row.visits))) };
 
         const answers: Record<Copy, Totals> = await both((query: Builder<Item>): Promise<Totals> => totals(query, 'visits'));
 
         expect(answers).toEqual({ indexed: expected, plain: expected });
+    });
+
+    test('takes min and max as the column would store them, through an index and through a scan', async (): Promise<void> => {
+        await both((query: Builder<Item>): Promise<number> => query.whereIn('visits', [2, 0]).increment('visits', 0));
+
+        const answers: Record<Copy, unknown> = await both(async (query: Builder<Item>): Promise<unknown> => ({
+            min: await query.clone().min('visits'),
+            max: await query.clone().max('visits'),
+        }));
+
+        expect(await plans(async (): Promise<void> => {
+            await connection.table<Item>('indexed').min('visits');
+            await connection.table<Item>('indexed').max('visits');
+        })).toEqual(['index:indexed_visits_index', 'index:indexed_visits_index']);
+        expect(answers).toEqual({ indexed: { min: 0, max: 9 }, plain: { min: 0, max: 9 } });
     });
 
     test('reads the records rather than the index, and says so in explain and the query log', async (): Promise<void> => {
@@ -1958,7 +1985,7 @@ describe('a column holding values of another type', (): void => {
             answers.push(await transaction.table<Item>('indexed').where('visits', '>=', 2).explain());
         }, { tables: ['indexed'] });
 
-        expect(answers).toEqual([expected, expected.length, extremes(MIXED.map((row: Item): unknown => row.visits)).min, 'scan']);
+        expect(answers).toEqual([expected, expected.length, extremes(MIXED.map((row: Item): unknown => integral(row.visits))).min, 'scan']);
     }, 2000);
 
     test('reads the records inside a migration', async (): Promise<void> => {
@@ -1984,6 +2011,6 @@ describe('a column holding values of another type', (): void => {
 
         await connection.migrate();
 
-        expect(answers).toEqual([expected, expected.length, extremes(MIXED.map((row: Item): unknown => row.visits)).max, visited(MIXED, 'asc').map((row: Item): number => row.id)]);
+        expect(answers).toEqual([expected, expected.length, extremes(MIXED.map((row: Item): unknown => integral(row.visits))).max, visited(MIXED, 'asc').map((row: Item): number => row.id)]);
     }, 2000);
 });

@@ -73,10 +73,13 @@ Each resolves to a description of the plan chosen:
   describes.
 - A value IndexedDB cannot use as a key, such as `true` in an integer column, is in no index, so
   this check cannot see it. A scan compares it as JavaScript does, finding `true` for
-  `where('visits', 1)`, while a lookup through the index never does. `max('visits')` likewise
-  reads the largest number off the index, while the records rank `true` above every number. Writing the value again through
-  the builder repairs it in the same way. `Schema.coerce` finds it too, failing the migration on a
-  strict connection, which refuses `true` in an integer column, and writing `null` on a loose one.
+  `where('visits', 1)`, while a lookup through the index never does. `min` and `max` agree either
+  way, since on a typed column they read each value as a loose write would store it, leaving out
+  `true`, which an integer column stores as `null`, and reading `'2'` as `2`. Before 18.0.1
+  `max('visits')` read the largest number off the index, while the records ranked `true` above
+  every number. Writing the value again through the builder repairs `where` in the same way, and
+  `Schema.coerce` finds the value too, failing the migration on a strict connection, which refuses
+  `true` in an integer column, and writing `null` on a loose one.
 - A multi-entry index holds one entry per distinct element of the array a record stores, so it
   never drives an equality, a `whereIn`, a range, a `whereBetween` or an order, which compare the
   whole value. It drives `whereJsonContains(column, value)` alone, as a point lookup of the value,

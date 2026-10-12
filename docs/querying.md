@@ -558,10 +558,13 @@ first matching row.
 `min` and `max` return the smallest and largest value as the column holds it, as Laravel's do: a
 number for a number column, a `Date` for a date or datetime column, a string for a string column,
 `false` or `true` for a boolean column, and for a decimal the whole number of its smallest unit a
-read returns. They compare values as `orderBy` does, leaving out `null` and missing values, so a
-column holding values of several kinds, such as a JSON column or an integer column holding `'2'`,
-takes every number before every date, string, array, boolean and object. Objects tie, and the first
-one read wins. The result is typed by the column: `max('created_at')` on a `Builder<User>`
+read returns. They compare values as `orderBy` does, leaving out `null` and missing values. On a
+typed column they read each value as a loose write would store it, so an integer column holding
+`'2'` gives `2`, and one holding `true` leaves it out, as a write would store `null`. A JSON column,
+or a column no blueprint declares, holds values of several kinds and takes every number before
+every date, string, array, boolean and object. Objects tie, and the first one read wins. Before
+18.0.1 a typed column compared such a value as it held it, so `max` could return `true` from an
+integer column. The result is typed by the column: `max('created_at')` on a `Builder<User>`
 resolves to `User['created_at'] | null`, and a qualified column or a path resolves to `unknown`.
 
 ```ts

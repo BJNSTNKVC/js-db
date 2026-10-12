@@ -1,7 +1,9 @@
+import { Enforcer } from '../schema/Enforcer';
 import { Binding } from './Binding';
 import { Comparator } from './Comparator';
 import { Predicate } from './Predicate';
 import { Signature } from './Signature';
+import type { ColumnType } from '../schema/types';
 import type { Aggregation, Aggregations, Conjunction, Constraint, Direction, Grouped, Key, Operator, Order } from './types';
 
 type Basic = Extract<Constraint, { type: 'basic' }>;
@@ -9,6 +11,8 @@ type Basic = Extract<Constraint, { type: 'basic' }>;
 type Records = (columns: string[]) => Promise<Record<string, unknown>[]>;
 
 type Placing = () => Promise<(column: string) => string | null>;
+
+type Typing = () => Promise<(column: string) => ColumnType | undefined>;
 
 export class Grouping<T, G extends Key<T>[], A extends Aggregations = Record<string, never>> {
     /**
@@ -30,6 +34,16 @@ export class Grouping<T, G extends Key<T>[], A extends Aggregations = Record<str
      * Get a lookup from a column to the grouped name it matches.
      */
     readonly #placing: Placing;
+
+    /**
+     * Get a lookup from a column to the type its table declares.
+     */
+    readonly #typing: Typing;
+
+    /**
+     * The timezone dates and times are read in.
+     */
+    readonly #timezone: string;
 
     /**
      * The aggregations computed for each group.
@@ -59,18 +73,20 @@ export class Grouping<T, G extends Key<T>[], A extends Aggregations = Record<str
     /**
      * Create a new grouping.
      */
-    constructor(records: Records, columns: G, names: Map<string, string>, placing: Placing = async (): Promise<(column: string) => string | null> => (): null => null) {
+    constructor(records: Records, columns: G, names: Map<string, string>, placing: Placing = async (): Promise<(column: string) => string | null> => (): null => null, typing: Typing = async (): Promise<(column: string) => ColumnType | undefined> => (): undefined => undefined, timezone: string = 'UTC') {
         this.#records = records;
         this.#columns = columns;
         this.#names = names;
         this.#placing = placing;
+        this.#typing = typing;
+        this.#timezone = timezone;
     }
 
     /**
      * Compute the given aggregations for each group.
      */
     aggregate<const N extends Aggregations>(aggregations: N): Grouping<T, G, N> {
-        const grouping: Grouping<T, G, N> = new Grouping<T, G, N>(this.#records, this.#columns, this.#names, this.#placing);
+        const grouping: Grouping<T, G, N> = new Grouping<T, G, N>(this.#records, this.#columns, this.#names, this.#placing, this.#typing, this.#timezone);
 
         grouping.#aggregations = aggregations;
         grouping.#constraints = this.#constraints;
@@ -134,11 +150,12 @@ export class Grouping<T, G extends Key<T>[], A extends Aggregations = Record<str
     async get(): Promise<Grouped<T, G, A>[]> {
         const grouped: Map<string, Record<string, unknown>[]> = this.#grouped(await this.#records(this.#read()));
         const placed: (column: string) => string | null = await this.#placing();
+        const typed: (column: string) => ColumnType | undefined = await this.#typing();
         const named: (column: string) => string = (column: string): string => this.#names.get(column) ?? placed(column) ?? column;
         const rows: Record<string, unknown>[] = [];
 
         for (const members of grouped.values()) {
-            rows.push(this.#row(members));
+            rows.push(this.#row(members, typed));
         }
 
         const matches: (row: Record<string, unknown>) => boolean = Predicate.compile(this.#constraints.map((constraint: Basic): Basic => ({ ...constraint, column: named(constraint.column) })));
@@ -201,7 +218,7 @@ export class Grouping<T, G extends Key<T>[], A extends Aggregations = Record<str
     /**
      * Build the row for a group, carrying its columns and its aggregates.
      */
-    #row(members: Record<string, unknown>[]): Record<string, unknown> {
+    #row(members: Record<string, unknown>[], typed: (column: string) => ColumnType | undefined): Record<string, unknown> {
         const row: Record<string, unknown> = {};
         const first: Record<string, unknown> = members[0] as Record<string, unknown>;
 
@@ -210,7 +227,7 @@ export class Grouping<T, G extends Key<T>[], A extends Aggregations = Record<str
         }
 
         for (const [alias, aggregation] of Object.entries(this.#aggregations)) {
-            row[alias] = this.#aggregate(aggregation, members);
+            row[alias] = this.#aggregate(aggregation, members, typed);
         }
 
         return row;
@@ -219,7 +236,7 @@ export class Grouping<T, G extends Key<T>[], A extends Aggregations = Record<str
     /**
      * Compute a single aggregate over the members of a group.
      */
-    #aggregate(aggregation: Aggregation, members: Record<string, unknown>[]): unknown {
+    #aggregate(aggregation: Aggregation, members: Record<string, unknown>[], typed: (column: string) => ColumnType | undefined): unknown {
         if ('count' in aggregation) {
             return aggregation.count === '*'
                 ? members.length
@@ -227,7 +244,9 @@ export class Grouping<T, G extends Key<T>[], A extends Aggregations = Record<str
         }
 
         if ('min' in aggregation || 'max' in aggregation) {
-            return this.#extreme(this.#values('min' in aggregation ? aggregation.min : aggregation.max, members), 'min' in aggregation);
+            const column: string = 'min' in aggregation ? aggregation.min : aggregation.max;
+
+            return this.#extreme(Enforcer.stored(this.#values(column, members), typed(column), this.#timezone), 'min' in aggregation);
         }
 
         const values: number[] = this.#values('sum' in aggregation ? aggregation.sum : aggregation.avg, members)

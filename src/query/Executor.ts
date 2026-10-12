@@ -4,6 +4,7 @@ import { SchemaException, UniqueConstraintViolationException } from '../exceptio
 import { Handles } from '../database/Handles';
 import { Request } from '../database/Request';
 import { Migrator } from '../migrations/Migrator';
+import { Enforcer } from '../schema/Enforcer';
 import { Columns } from './Columns';
 import { Comparator } from './Comparator';
 import { Joiner } from './Joiner';
@@ -172,7 +173,7 @@ export class Executor<T> {
     /**
      * Get the value at one end of a column's range.
      */
-    async extreme(column: string, direction: IDBCursorDirection): Promise<unknown> {
+    async extreme(column: string, direction: IDBCursorDirection, type: ColumnType | undefined): Promise<unknown> {
         const schema: TableSchema = await this.#connection.schema(this.#query.table);
         const index: IndexSchema | null = this.#sole(schema, column);
 
@@ -192,7 +193,7 @@ export class Executor<T> {
             }
         }
 
-        const values: unknown[] = await this.values(column);
+        const values: unknown[] = Enforcer.stored(await this.values(column), type, this.#connection.timezone);
 
         if (values.length === 0) {
             return null;

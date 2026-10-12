@@ -320,6 +320,29 @@ describe('Grouping extremes in the column\'s own type', (): void => {
         expect(rows).toEqual(expected);
     });
 
+    test('skips a value the column turns into null and reads one it converts, as a write would store them', async (): Promise<void> => {
+        const mixed: Connection = new Connection('app', { database: 'grouping-mixed', migrations: [CreateUsersTable] });
+        const database: IDBDatabase = await mixed.open();
+        const transaction: IDBTransaction = database.transaction('users', 'readwrite');
+
+        for (const [team, visits] of [['core', 0], ['core', true], ['core', 1], ['ops', '2'], ['ops', 5]] as [string, unknown][]) {
+            transaction.objectStore('users').add({ name: 'Zed', role: 'member', team, age: null, visits });
+        }
+
+        await new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
+            transaction.oncomplete = (): void => resolve();
+            transaction.onerror = (): void => reject(transaction.error);
+        });
+
+        const rows: Record<string, unknown>[] = await mixed.table<User>('users').groupBy('team').aggregate({ least: { min: 'visits' }, most: { max: 'visits' } }).orderBy('team').get();
+
+        expect(rows).toEqual([{ team: 'core', least: 0, most: 1 }, { team: 'ops', least: 2, most: 5 }]);
+
+        const tallies: Record<string, unknown>[] = await mixed.table('users').select('visits as tally').groupBy('tally').aggregate({ most: { max: 'tally' } }).get();
+
+        expect(tallies.map((row: Record<string, unknown>): unknown => row['most'])).toEqual([0, null, 1, 2, 5]);
+    });
+
     test('constrains and sorts the groups by the extremes they take', async (): Promise<void> => {
         const kinds: (rows: Extremes[]) => string[] = (rows: Extremes[]): string[] => rows.map((row: Extremes): string => row.kind);
 

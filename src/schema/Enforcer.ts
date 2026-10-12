@@ -42,6 +42,19 @@ export class Enforcer {
     }
 
     /**
+     * Read values as a loose write would store them in the column.
+     */
+    static stored(values: unknown[], type: ColumnType | undefined, timezone: string): unknown[] {
+        if (type === undefined || type === 'json') {
+            return values;
+        }
+
+        return values
+            .map((value: unknown): unknown => this.coerce(value, type, false, timezone))
+            .filter((value: unknown): boolean => value !== null);
+    }
+
+    /**
      * Prepare a record for insertion, applying defaults, timestamps and coercion.
      */
     static insertable(record: Record<string, unknown>, schema: TableSchema, strict: boolean, timezone: string, at: Date): Record<string, unknown> {

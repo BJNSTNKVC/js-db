@@ -9,7 +9,7 @@ import { Calendar } from '../schema/Calendar';
 import type { Parts } from '../schema/Calendar';
 import { Enforcer } from '../schema/Enforcer';
 import type { Connection } from '../database/Connection';
-import type { ColumnSchema, TableSchema } from '../schema/types';
+import type { ColumnSchema, ColumnType, TableSchema } from '../schema/types';
 import type {
     Conjunction,
     Constraint,
@@ -514,6 +514,13 @@ export class Builder<T = Record<string, unknown>> {
             columns,
             new Map<string, string>(columns.map((column: string): [string, string] => [column, Columns.named(column)])),
             (): Promise<(column: string) => string | null> => records.#placing(columns, selection),
+            async (): Promise<(column: string) => ColumnType | undefined> => {
+                const aliased: Map<string, string> = await records.#aliased(columns, selection);
+                const typed: (column: string) => ColumnType | undefined = await records.#types();
+
+                return (column: string): ColumnType | undefined => typed(aliased.get(column) ?? column);
+            },
+            this.#connection.timezone,
         );
     }
 
@@ -835,7 +842,7 @@ export class Builder<T = Record<string, unknown>> {
     async min<K extends Key<T>>(column: K): Promise<Held<T, K> | null> {
         const [query, read]: [Builder<T>, string] = this.#over(column);
 
-        return await query.#executor().extreme(read, 'next') as Held<T, K> | null;
+        return await query.#executor().extreme(read, 'next', (await this.#types())(column)) as Held<T, K> | null;
     }
 
     /**
@@ -844,7 +851,7 @@ export class Builder<T = Record<string, unknown>> {
     async max<K extends Key<T>>(column: K): Promise<Held<T, K> | null> {
         const [query, read]: [Builder<T>, string] = this.#over(column);
 
-        return await query.#executor().extreme(read, 'prev') as Held<T, K> | null;
+        return await query.#executor().extreme(read, 'prev', (await this.#types())(column)) as Held<T, K> | null;
     }
 
     /**
@@ -1293,6 +1300,29 @@ export class Builder<T = Record<string, unknown>> {
             const name: string | null = resolved(column);
 
             return name === null ? null : qualified.get(name) ?? null;
+        };
+    }
+
+    /**
+     * Get a lookup from a column to the type its table declares.
+     */
+    async #types(): Promise<(column: string) => ColumnType | undefined> {
+        const schemas: TableSchema[] = [];
+
+        for (const table of [this.#table, ...this.#joins.map((clause: JoinClause): string => clause.table)]) {
+            schemas.push(await this.#connection.schema(table));
+        }
+
+        // A bare column on a join reads from the last table declaring it,
+        // as the flattened row holds it.
+        return (column: string): ColumnType | undefined => {
+            const { table, name }: { table: string | null; name: string } = Columns.split(column);
+
+            return schemas
+                .filter((schema: TableSchema): boolean => table === null || schema.table === table)
+                .flatMap((schema: TableSchema): ColumnSchema[] => schema.columns)
+                .filter((declared: ColumnSchema): boolean => declared.name === name)
+                .at(-1)?.type;
         };
     }
 

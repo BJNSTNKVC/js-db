@@ -1221,6 +1221,26 @@ describe('Joins across the types the columns hold', (): void => {
         ]);
     });
 
+    test('takes min and max on a joined query as each column would store it', async (): Promise<void> => {
+        const joined: () => Builder<Record<string, unknown>> = (): Builder<Record<string, unknown>> => authored.table('users').join('posts', 'users.id', '=', 'posts.user_id');
+        const database: IDBDatabase = await authored.open();
+        const transaction: IDBTransaction = database.transaction('posts', 'readwrite');
+
+        transaction.objectStore('posts').add({ user_id: 1, author: 7, day: 'not a date', title: 'Fifth' });
+
+        await new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
+            transaction.oncomplete = (): void => resolve();
+            transaction.onerror = (): void => reject(transaction.error);
+        });
+
+        expect([await joined().max('posts.day'), await joined().max('day')]).toEqual([new Date('2024-02-01T00:00:00.000Z'), new Date('2024-02-01T00:00:00.000Z')]);
+        expect([await joined().min('posts.author'), await joined().max('author')]).toEqual(['1', '7']);
+        expect(await joined().groupBy('users.name').aggregate({ latest: { max: 'posts.day' }, last: { max: 'author' } }).get()).toEqual([
+            { name: 'Alice', latest: new Date('2024-01-01T00:00:00.000Z'), last: '7' },
+            { name: 'Bob', latest: new Date('2024-02-01T00:00:00.000Z'), last: '2' },
+        ]);
+    });
+
     describe.each(PAIRINGS)('on %s', (_: string, first: string, second: string): void => {
         describe.each([
             ['users', [first, second]],
