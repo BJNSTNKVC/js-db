@@ -9,6 +9,12 @@ IndexedDB is shared across tabs, which produces two situations worth handling:
   block that tab, then emits `database-version-changed`. Its `version` is the version the other tab
   is opening, or `null` when it is deleting the database.
 
+Before 18.0.2 a tab could report itself as the one blocking. Safari did it on every upgrade, and other
+browsers now and then under load: the open emitted `database-blocked` and rejected with
+`DatabaseBlockedException` with no other tab open, while the upgrade carried on behind it. A tab
+whose open failed, such as with `MigrationMismatchException`, or that disconnected or ran `fresh()`
+straight after opening, could likewise be reported as blocking an upgrade or delete for a moment.
+
 The other tab is usually running newer code with more migrations, after a deploy. This tab can no
 longer open the database, and its next query would reject with `MigrationMismatchException`. Reload
 the page when the event arrives, rather than querying again:

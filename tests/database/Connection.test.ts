@@ -26,7 +26,7 @@ import type { MockInstance } from 'vitest';
 import type { MigrationContext } from '../../src/migrations/Migrator';
 import type { Transaction } from '../../src/database/Transaction';
 import type { Builder } from '../../src/query/Builder';
-import type { DatabaseVersionChanged, IndexSchema, NoPendingMigrations } from '../../src/main';
+import type { DatabaseBlocked, DatabaseVersionChanged, IndexSchema, NoPendingMigrations } from '../../src/main';
 
 let sequence: number = 0;
 
@@ -520,6 +520,199 @@ describe('Connection multi tab', (): void => {
         expect(await connection.migrate()).toEqual(['CreateUsersTable']);
         expect(await connection.tables()).toEqual(['users']);
     });
+});
+
+describe('Connection closing a handle it read from', (): void => {
+    /**
+     * Report an upgrade or delete as blocked while a closed handle still finishes a transaction, as WebKit does.
+     */
+    function finishing(): void {
+        const live: Map<IDBDatabase, number> = new Map<IDBDatabase, number>();
+        const closed: Set<IDBDatabase> = new Set<IDBDatabase>();
+        const transaction: IDBDatabase['transaction'] = IDBDatabase.prototype.transaction;
+        const close: IDBDatabase['close'] = IDBDatabase.prototype.close;
+        const open: IDBFactory['open'] = indexedDB.open.bind(indexedDB);
+        const remove: IDBFactory['deleteDatabase'] = indexedDB.deleteDatabase.bind(indexedDB);
+
+        vi.spyOn(IDBDatabase.prototype, 'transaction').mockImplementation(function (this: IDBDatabase, ...parameters: Parameters<IDBDatabase['transaction']>): IDBTransaction {
+            const handle: IDBTransaction = transaction.apply(this, parameters);
+
+            const finish: () => void = (): void => {
+                live.set(this, (live.get(this) ?? 1) - 1);
+            };
+
+            live.set(this, (live.get(this) ?? 0) + 1);
+            handle.addEventListener('complete', finish);
+            handle.addEventListener('abort', finish);
+
+            return handle;
+        });
+
+        vi.spyOn(IDBDatabase.prototype, 'close').mockImplementation(function (this: IDBDatabase): void {
+            closed.add(this);
+            close.call(this);
+        });
+
+        /**
+         * Fire blocked at the request when a closed handle of its database is still finishing.
+         */
+        function blocking(name: string, request: IDBOpenDBRequest): IDBOpenDBRequest {
+            const pending: boolean = [...closed].some((handle: IDBDatabase): boolean => handle.name === name && (live.get(handle) ?? 0) > 0);
+
+            if (pending) {
+                queueMicrotask((): void => {
+                    request.onblocked?.call(request, new Event('blocked') as IDBVersionChangeEvent);
+                });
+            }
+
+            return request;
+        }
+
+        vi.spyOn(indexedDB, 'open').mockImplementation((name: string, version?: number): IDBOpenDBRequest => {
+            return version === undefined ? open(name) : blocking(name, open(name, version));
+        });
+
+        vi.spyOn(indexedDB, 'deleteDatabase').mockImplementation((name: string): IDBOpenDBRequest => blocking(name, remove(name)));
+    }
+
+    /**
+     * Count the blocked events dispatched for a database.
+     */
+    function blockings(database: string): string[] {
+        const events: string[] = [];
+
+        const listener: (event: Event) => void = (event: Event): void => {
+            if ((event as DatabaseBlocked).database === database) {
+                events.push(event.type);
+            }
+        };
+
+        Dispatcher.listen('db:database-blocked', listener);
+        blocked.push(listener);
+
+        return events;
+    }
+
+    const blocked: ((event: Event) => void)[] = [];
+
+    afterEach((): void => {
+        vi.restoreAllMocks();
+
+        for (const listener of blocked.splice(0)) {
+            Dispatcher.forget('db:database-blocked', listener);
+        }
+    });
+
+    test('migrates a fresh database without reporting itself blocked', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+        const events: string[] = blockings(database);
+
+        finishing();
+
+        expect(await connect([CreateUsersTable], database).migrate()).toEqual(['CreateUsersTable']);
+        expect(events).toEqual([]);
+    }, 2000);
+
+    test('runs an appended migration without reporting itself blocked', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+
+        await connect([CreateUsersTable], database).migrate();
+        connections.splice(0).forEach((connection: Connection): void => connection.disconnect());
+
+        const events: string[] = blockings(database);
+
+        finishing();
+
+        expect(await connect([CreateUsersTable, CreatePostsTable], database).migrate()).toEqual(['CreatePostsTable']);
+        expect(events).toEqual([]);
+    }, 2000);
+
+    test('migrates after reporting status without reporting itself blocked', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+        const connection: Connection = connect([CreateUsersTable], database);
+        const events: string[] = blockings(database);
+
+        finishing();
+
+        expect((await connection.status()).map((status: MigrationStatus): boolean => status.ran)).toEqual([false]);
+        expect(await connection.migrate()).toEqual(['CreateUsersTable']);
+        expect(events).toEqual([]);
+    }, 2000);
+
+    test('lets the database be deleted after a mismatched open', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+
+        await connect([CreateUsersTable, CreatePostsTable], database).migrate();
+        connections.splice(0).forEach((connection: Connection): void => connection.disconnect());
+
+        finishing();
+
+        await expect(connect([CreatePostsTable, CreateUsersTable], database).open()).rejects.toBeInstanceOf(MigrationMismatchException);
+        await expect(drop(database)).resolves.toBeUndefined();
+    }, 2000);
+
+    test('lets the database be deleted after reading the migration records fails', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+
+        await connect([CreateUsersTable], database).migrate();
+        connections.splice(0).forEach((connection: Connection): void => connection.disconnect());
+
+        finishing();
+        vi.spyOn(Repository, 'ran').mockRejectedValueOnce(new Error('Unreadable.'));
+
+        await expect(connect([CreateUsersTable], database).open()).rejects.toThrow('Unreadable.');
+        await expect(drop(database)).resolves.toBeUndefined();
+    }, 2000);
+
+    test('lets the database be deleted after reading the schemas fails', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+
+        await connect([CreateUsersTable], database).migrate();
+        connections.splice(0).forEach((connection: Connection): void => connection.disconnect());
+
+        finishing();
+        vi.spyOn(Registry, 'all').mockRejectedValueOnce(new Error('Unreadable.'));
+
+        await expect(connect([CreateUsersTable], database).open()).rejects.toThrow('Unreadable.');
+        await expect(drop(database)).resolves.toBeUndefined();
+    }, 2000);
+
+    test('lets another tab upgrade once the connection disconnects straight after migrating', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+        const connection: Connection = connect([CreateUsersTable], database);
+
+        finishing();
+
+        await connection.migrate();
+
+        connection.disconnect();
+
+        await new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
+            const request: IDBOpenDBRequest = indexedDB.open(database, 9);
+
+            request.onsuccess = (): void => {
+                handles.push(request.result);
+
+                resolve();
+            };
+
+            request.onerror = (): void => reject(request.error);
+            request.onblocked = (): void => reject(new Error('The connection did not step aside.'));
+        });
+    }, 2000);
+
+    test('runs fresh straight after migrating without reporting itself blocked', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+        const connection: Connection = connect([CreateUsersTable], database);
+        const events: string[] = blockings(database);
+
+        finishing();
+
+        await connection.migrate();
+
+        expect(await connection.fresh()).toEqual(['CreateUsersTable']);
+        expect(events).toEqual([]);
+    }, 2000);
 });
 
 describe('Connection version change event', (): void => {

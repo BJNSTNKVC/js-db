@@ -613,7 +613,28 @@ export class Connection {
             return [];
         }
 
-        return Repository.ran(database.transaction(Repository.table, 'readonly'));
+        const transaction: IDBTransaction = database.transaction(Repository.table, 'readonly');
+
+        return Connection.#finish(transaction, Repository.ran(transaction));
+    }
+
+    /**
+     * Settle a read only once its transaction has finished, committed or aborted.
+     */
+    static async #finish<T>(transaction: IDBTransaction, read: Promise<T>): Promise<T> {
+        // A closed handle counts as open until its transactions finish,
+        // so closing it straight after the read can make a browser
+        // report the upgrade or delete that follows as blocked.
+        const finished: Promise<void> = new Promise<void>((resolve: () => void): void => {
+            transaction.addEventListener('complete', resolve);
+            transaction.addEventListener('abort', resolve);
+        });
+
+        try {
+            return await read;
+        } finally {
+            await finished;
+        }
     }
 
     /**
@@ -627,7 +648,7 @@ export class Connection {
             const records: Promise<MigrationRecord[]> = Repository.ran(transaction);
             const schemas: Promise<TableSchema[]> = Registry.all(transaction);
 
-            const [ran, registry]: [MigrationRecord[], TableSchema[]] = await Promise.all([records, schemas]);
+            const [ran, registry]: [MigrationRecord[], TableSchema[]] = await Connection.#finish(transaction, Promise.all([records, schemas]));
 
             Migrator.verify(ran, Migrator.names(this.migrations));
 
