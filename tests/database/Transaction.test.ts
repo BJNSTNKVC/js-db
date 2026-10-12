@@ -349,7 +349,7 @@ describe('Transaction events', (): void => {
         expect(reason).toBe(failure);
     });
 
-    test('announces a commit the platform refuses as a rollback', async (): Promise<void> => {
+    test('announces no outcome for a commit the browser refuses', async (): Promise<void> => {
         const open: IDBDatabase['transaction'] = IDBDatabase.prototype.transaction;
         let handle: IDBTransaction | null = null;
 
@@ -372,7 +372,7 @@ describe('Transaction events', (): void => {
         vi.restoreAllMocks();
 
         expect(reason).toBeInstanceOf(QuotaExceededException);
-        expect(seen).toEqual(['db:transaction-beginning', 'db:transaction-rolled-back']);
+        expect(seen).toEqual(['db:transaction-beginning']);
         expect(await connection.table<User>('users').count()).toEqual(0);
     });
 
@@ -758,7 +758,7 @@ describe('Transaction that went inactive before it completed', (): void => {
         expect(await connection.table<User>('users').count()).toEqual(0);
     }, 2000);
 
-    test('rolls back a commit the browser refuses after the transaction went inactive', async (): Promise<void> => {
+    test('announces no outcome for a commit the browser refuses after the transaction went inactive', async (): Promise<void> => {
         const open: IDBDatabase['transaction'] = IDBDatabase.prototype.transaction;
         const abort: IDBTransaction['abort'] = IDBTransaction.prototype.abort;
         const get: IDBObjectStore['get'] = IDBObjectStore.prototype.get;
@@ -794,7 +794,7 @@ describe('Transaction that went inactive before it completed', (): void => {
         vi.restoreAllMocks();
 
         expect(reason).toBeInstanceOf(QuotaExceededException);
-        expect(seen).toEqual(['db:transaction-beginning', 'db:transaction-rolled-back']);
+        expect(seen).toEqual(['db:transaction-beginning']);
         expect(await connection.table<User>('users').count()).toEqual(0);
     }, 2000);
 

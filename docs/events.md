@@ -48,14 +48,17 @@ it as a signal to reload rather than as a migration count. Before 16.0.0 it was 
 migrations plus one.
 
 `transaction-rolled-back` is dispatched once whenever `DB.transaction` rejects without committing,
-and its `reason` is the error the call rejects with. That covers a callback that throws, a write that
-fails whether it was awaited or left running when the callback returned, and a commit the browser
-refuses, such as for a full quota.
+and its `reason` is the error the call rejects with. That covers a callback that throws, and a write
+that fails whether it was awaited or left running when the callback returned.
+
+A commit the browser refuses, such as for a full quota, announces neither `transaction-committed`
+nor `transaction-rolled-back`, though `DB.transaction` still rejects with the failure, such as
+`QuotaExceededException`. Before 18.0.0 it announced `transaction-rolled-back`.
 
 A transaction whose callback awaited something outside this package commits early, so it announces
 `transaction-committed` and not `transaction-rolled-back`, even though `DB.transaction` rejects with
-`TransactionClosedException`. Only a browser that refuses that commit, or a transaction that could
-still roll back, announces `transaction-rolled-back` instead. See
+`TransactionClosedException`. A transaction that could still roll back announces
+`transaction-rolled-back` instead, and a browser that refuses that commit announces neither. See
 [What the callback may await](transactions.md#what-the-callback-may-await).
 
 A `DB.transaction` that joins one already running, whether a transaction or a migration, announces

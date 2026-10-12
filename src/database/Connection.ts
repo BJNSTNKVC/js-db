@@ -280,6 +280,7 @@ export class Connection {
         let committed: boolean = false;
         let aborted: boolean = false;
         let aborting: boolean = false;
+        let resolved: boolean = false;
 
         // An untolerated request failure bubbles here and takes the transaction
         // down with it, which happens before our own catch runs.
@@ -318,6 +319,8 @@ export class Connection {
             // so the callback may only await operations from this package.
             const result: R = await callback(transaction);
 
+            resolved = true;
+
             if (!committed && !aborted && !aborting && Handles.inactive(handle)) {
                 await settled;
             }
@@ -354,6 +357,12 @@ export class Connection {
                 Dispatcher.dispatch(new TransactionCommitted(this.#name));
 
                 throw error instanceof TransactionClosedException ? error : new TransactionClosedException(this.#name, { cause: error });
+            }
+
+            // A transaction that aborts after the callback resolved, with no request
+            // having failed, is a commit the browser refused.
+            if (resolved && !aborting) {
+                throw error;
             }
 
             Dispatcher.dispatch(new TransactionRolledBack(this.#name, error));
