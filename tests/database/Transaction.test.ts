@@ -524,16 +524,40 @@ describe('Transaction that closed early', (): void => {
         expect(await connection.table<User>('users').count()).toEqual(0);
     });
 
-    test('refuses a transaction kept past its call', async (): Promise<void> => {
+    test('runs a transaction kept past its call on its own', async (): Promise<void> => {
         let kept: Transaction | null = null;
 
         await connection.transaction(async (transaction: Transaction): Promise<void> => {
             kept = transaction;
 
             await transaction.table<User>('users').insert({ name: 'Alice' });
+        }, { tables: ['users'] });
+
+        const held: Transaction = kept as unknown as Transaction;
+
+        const seen: string[] = await recorded(EVENTS, async (): Promise<void> => {
+            await held.table<User>('users').insert({ name: 'Bob' });
+            await held.table<Post>('posts').insert({ user_id: 1, title: 'Hello' });
+            await held.table<User>('users').join('posts', 'users.id', '=', 'posts.user_id').where('posts.title', 'Hello').update({ role: 'author' });
         });
 
-        await expect((kept as unknown as Transaction).table<User>('users').get()).rejects.toThrow(new TransactionClosedException('app'));
+        expect(seen).toEqual([]);
+        expect(await held.table<User>('users').orderBy('name').pluck('name')).toEqual(['Alice', 'Bob']);
+        expect(await connection.table<User>('users').where('role', 'author').pluck('name')).toEqual(['Alice']);
+        expect(await connection.table<Post>('posts').pluck('title')).toEqual(['Hello']);
+    });
+
+    test('rolls back the writes of a failed query on a transaction kept past its call', async (): Promise<void> => {
+        let kept: Transaction | null = null;
+
+        await connection.transaction((transaction: Transaction): void => {
+            kept = transaction;
+        });
+
+        await expect((kept as unknown as Transaction).table('tags').upsert([{ slug: 'a', label: 'x' }, { slug: 'b', label: 'x' }], 'slug'))
+            .rejects.toThrow(new UniqueConstraintViolationException('tags', 'tags_label_unique'));
+
+        expect(await connection.table('tags').count()).toEqual(0);
     });
 
     test('reports a transaction the platform is still committing when the callback fails as closed', async (): Promise<void> => {

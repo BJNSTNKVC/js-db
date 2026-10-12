@@ -48,8 +48,7 @@ so the transaction commits while the callback is still running, and **everything
 await stays written**. The package reports it rather than failing with a bare platform error:
 
 - Every later query through the transaction throws `TransactionClosedException`, naming the
-  connection, and so does a nested `DB.transaction` call, which joins the closed transaction. A
-  `Transaction` kept after its call has settled throws it too.
+  connection, and so does a nested `DB.transaction` call, which joins the closed transaction.
 - `DB.transaction` rejects with `TransactionClosedException` once the callback settles, whether the
   callback let the exception through, caught it, or made no further query. An error the callback
   throws after the close is kept as the exception's `cause`.
@@ -86,6 +85,25 @@ cases end in a rollback instead, rejecting with their own failure and dispatchin
 callback that lets the exception through while a write it left running still holds the transaction
 open. Before 9.1.1 such a query failed with IndexedDB's own `TransactionInactiveError`, and a
 callback that caught it or made no further query resolved as if nothing had happened.
+
+A `Transaction`, or a builder made from one, kept after its call has settled runs on its own, as a
+builder made afresh would: each query opens a transaction of its own, reaching any table whatever
+`options.tables` named, and dispatches no transaction events. Inside a migration it joins the
+upgrade instead. Keep the work inside the callback when it must be atomic. Before 17.0.0 such a query
+threw `TransactionClosedException`.
+
+```ts
+let kept: Transaction;
+
+await DB.transaction(async (transaction: Transaction): Promise<void> => {
+    kept = transaction;
+
+    await transaction.table<User>('users').insert({ name: 'John' });
+}, { tables: ['users'] });
+
+// Runs on its own, outside the settled transaction.
+await kept.table('posts').insert({ user_id: 1, title: 'Hello' });
+```
 
 > Modeled on Laravel's [Database: Transactions](https://laravel.com/docs/12.x/database#database-transactions).
 > The tables have to be declared up front, because an IndexedDB transaction fixes its scope when it

@@ -1521,6 +1521,117 @@ describe('Querying inside a migration', (): void => {
             expect(await other.table('posts').pluck('title')).toEqual(['Written elsewhere']);
         }, 2000);
     });
+
+    describe('kept past the migration', (): void => {
+        test('reads and writes through a builder and a transaction once migrate resolves', async (): Promise<void> => {
+            let kept: Builder | null = null;
+            let held: Transaction | null = null;
+
+            await upgrade(async (): Promise<void> => {
+                kept = upgraded.table('users');
+
+                await upgraded.transaction((transaction: Transaction): void => {
+                    held = transaction;
+                });
+            });
+
+            const builder: Builder = kept as unknown as Builder;
+            const transaction: Transaction = held as unknown as Transaction;
+
+            await builder.insert({ name: 'Carol', email: 'c@x', age: 50 });
+            await transaction.table('users').where('name', 'Bob').update({ age: 41 });
+
+            expect(await builder.count()).toEqual(3);
+            expect(await transaction.table('users').orderBy('name').pluck('age')).toEqual([30, 41, 50]);
+        }, 2000);
+
+        test('joins a later migration of the same upgrade with a builder made in an earlier one', async (): Promise<void> => {
+            const database: string = `connection-${++sequence}`;
+            const failure: Error = new Error('Nope.');
+
+            let kept: Builder | null = null;
+
+            const first: Connection = connect([CreateUsersTable], database);
+
+            await first.table('users').insert([{ name: 'Alice', email: 'a@x', age: 30 }, { name: 'Bob', email: 'b@x', age: 40 }]);
+
+            first.disconnect();
+
+            const later: Connection = connect([
+                CreateUsersTable,
+                migration('KeepUsers', (): void => {
+                    kept = later.table('users');
+                }),
+                migration('WriteUsers', async (): Promise<void> => {
+                    await (kept as unknown as Builder).insert({ name: 'Carol', email: 'c@x', age: 50 });
+
+                    throw failure;
+                }),
+            ], database);
+
+            await expect(later.migrate()).rejects.toBe(failure);
+
+            connections.splice(0).forEach((connection: Connection): void => connection.disconnect());
+
+            expect(await connect([CreateUsersTable], database).table('users').orderBy('name').pluck('name')).toEqual(['Alice', 'Bob']);
+        }, 2000);
+
+        test('joins a later upgrade with a builder kept past an earlier one, and a failed write leaves it running', async (): Promise<void> => {
+            const database: string = `connection-${++sequence}`;
+            const caught: unknown[] = [];
+
+            let kept: Builder | null = null;
+
+            await upgrade(async (): Promise<void> => {
+                kept = upgraded.table('users');
+            }, database);
+
+            upgraded.disconnect();
+
+            const later: Connection = connect([
+                CreateUsersTable,
+                migration('UpgradeUsers', async (): Promise<void> => {}),
+                migration('UpgradeUsersAgain', async (): Promise<void> => {
+                    const builder: Builder = kept as unknown as Builder;
+
+                    await builder.insert({ name: 'Carol', email: 'c@x', age: 50 });
+
+                    try {
+                        await builder.upsert([{ id: 1, name: 'Alice', email: 'b@x', age: 30 }], 'id');
+                    } catch (error: unknown) {
+                        caught.push(error);
+                    }
+
+                    await later.table('users').where('name', 'Bob').update({ age: 41 });
+                }),
+            ], database);
+
+            expect(await later.migrate()).toEqual(['UpgradeUsersAgain']);
+            expect(caught).toEqual([new UniqueConstraintViolationException('users', 'users_email_unique')]);
+            expect(await later.table('users').orderBy('name').pluck('age')).toEqual([30, 41, 50]);
+        }, 2000);
+
+        test('joins a migration with a builder made before it, and a failed write leaves it running', async (): Promise<void> => {
+            const database: string = `connection-${++sequence}`;
+            const caught: unknown[] = [];
+            const early: Builder = connect([CreateUsersTable], database).table('users');
+
+            expect(await upgrade(async (): Promise<void> => {
+                await early.insert({ name: 'Carol', email: 'c@x', age: 50 });
+
+                try {
+                    await early.upsert([{ id: 1, name: 'Alice', email: 'b@x', age: 30 }], 'id');
+                } catch (error: unknown) {
+                    caught.push(error);
+                }
+
+                await upgraded.table('users').where('name', 'Bob').update({ age: 41 });
+            }, database)).toEqual(['UpgradeUsers']);
+
+            expect(caught).toEqual([new UniqueConstraintViolationException('users', 'users_email_unique')]);
+            expect(await upgraded.table('users').orderBy('name').pluck('age')).toEqual([30, 41, 50]);
+        }, 2000);
+    });
 });
 
 describe('Reserved tables', (): void => {

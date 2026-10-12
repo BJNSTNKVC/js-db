@@ -12,6 +12,11 @@ export class Handles {
     static readonly #closed: WeakMap<IDBTransaction, string> = new WeakMap<IDBTransaction, string>();
 
     /**
+     * The transactions whose migration or transaction call has finished.
+     */
+    static readonly #released: WeakSet<IDBTransaction> = new WeakSet<IDBTransaction>();
+
+    /**
      * Mark the transaction as opened by a transaction call.
      */
     static open(transaction: IDBTransaction, connection: string): void {
@@ -26,9 +31,27 @@ export class Handles {
     }
 
     /**
+     * Mark the transaction as finished with by its migration or transaction call.
+     */
+    static release(transaction: IDBTransaction): void {
+        this.#released.add(transaction);
+    }
+
+    /**
+     * Determine whether the transaction's migration or transaction call has finished.
+     */
+    static released(transaction: IDBTransaction): boolean {
+        return this.#released.has(transaction);
+    }
+
+    /**
      * Get the transaction, refusing one that no longer accepts requests.
      */
-    static alive(transaction: IDBTransaction): IDBTransaction {
+    static alive(transaction: IDBTransaction): IDBTransaction | null {
+        if (this.released(transaction)) {
+            return null;
+        }
+
         const closed: string | undefined = this.#closed.get(transaction);
 
         if (closed !== undefined) {

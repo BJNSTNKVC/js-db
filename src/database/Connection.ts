@@ -247,6 +247,13 @@ export class Connection {
     }
 
     /**
+     * Get the transaction of the migration running on this connection's database.
+     */
+    migrating(): IDBTransaction | null {
+        return this.#migration()?.transaction ?? null;
+    }
+
+    /**
      * Run the callback inside a transaction, committing when it resolves.
      */
     async transaction<R>(callback: (transaction: Transaction) => R | Promise<R>, options: TransactionOptions = {}): Promise<R> {
@@ -323,11 +330,15 @@ export class Connection {
 
             this.#active = null;
 
+            Handles.release(handle);
+
             Dispatcher.dispatch(new TransactionCommitted(this.#name));
 
             return result;
         } catch (error: unknown) {
             this.#active = null;
+
+            Handles.release(handle);
 
             if (!committed && !aborted && !aborting) {
                 try {

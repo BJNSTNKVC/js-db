@@ -262,7 +262,7 @@ export class Executor<T> {
         const started: number = performance.now();
 
         for (const value of values) {
-            await Writer.merge(store, schema, this.#connection.strict, this.#connection.timezone, columns, target, value as Record<string, unknown>, update, this.#query.transaction === null);
+            await Writer.merge(store, schema, this.#connection.strict, this.#connection.timezone, columns, target, value as Record<string, unknown>, update, this.#owns(store));
         }
 
         this.#emit('upsert', started, values.length);
@@ -473,9 +473,10 @@ export class Executor<T> {
      */
     async #store(mode: IDBTransactionMode): Promise<IDBObjectStore> {
         const table: string = this.#query.table;
+        const transaction: IDBTransaction | null = this.#transaction();
 
-        if (this.#query.transaction !== null) {
-            return this.#alive(this.#query.transaction).objectStore(table);
+        if (transaction !== null) {
+            return transaction.objectStore(table);
         }
 
         const database: IDBDatabase = await this.#connection.open();
@@ -799,9 +800,7 @@ export class Executor<T> {
      * Get the object stores of the given tables, all within one transaction.
      */
     async #stores(tables: string[], mode: IDBTransactionMode): Promise<(table: string) => IDBObjectStore> {
-        const transaction: IDBTransaction = this.#query.transaction === null
-            ? (await this.#connection.open()).transaction(tables, mode)
-            : this.#alive(this.#query.transaction);
+        const transaction: IDBTransaction = this.#transaction() ?? (await this.#connection.open()).transaction(tables, mode);
         const outside: string | undefined = tables.find((table: string): boolean => !transaction.objectStoreNames.contains(table));
 
         if (outside !== undefined) {
@@ -812,14 +811,23 @@ export class Executor<T> {
     }
 
     /**
-     * Get the query's transaction, refusing one that no longer accepts requests.
+     * Get the transaction the query joins, refusing one that no longer accepts requests.
      */
-    #alive(transaction: IDBTransaction): IDBTransaction {
-        if (transaction === Migrator.context()?.transaction) {
+    #transaction(): IDBTransaction | null {
+        const transaction: IDBTransaction | null = this.#query.transaction === null ? null : Handles.alive(this.#query.transaction);
+
+        if (transaction !== null && transaction === Migrator.context()?.transaction) {
             Migrator.alive();
         }
 
-        return Handles.alive(transaction);
+        return transaction ?? this.#connection.migrating();
+    }
+
+    /**
+     * Determine whether the query opened the store's transaction itself.
+     */
+    #owns(store: IDBObjectStore): boolean {
+        return store.transaction !== this.#query.transaction && store.transaction !== Migrator.context()?.transaction;
     }
 
     /**
@@ -1002,7 +1010,7 @@ export class Executor<T> {
         await writes.last;
 
         if (writes.failure !== null) {
-            throw await Writer.failed(store, schema, writes.failure.record, writes.failure.previous, writes.failure.error, this.#query.transaction === null);
+            throw await Writer.failed(store, schema, writes.failure.record, writes.failure.previous, writes.failure.error, this.#owns(store));
         }
     }
 

@@ -1,4 +1,5 @@
 import { SchemaException } from '../exceptions';
+import { Handles } from './Handles';
 import type { Builder } from '../query/Builder';
 import type { Connection } from './Connection';
 
@@ -32,7 +33,7 @@ export class Transaction {
      * Begin a query against a table inside the transaction.
      */
     table<T = Record<string, unknown>>(name: string): Builder<T> {
-        if (!this.#transaction.objectStoreNames.contains(name)) {
+        if (!Handles.released(this.#transaction) && !this.#transaction.objectStoreNames.contains(name)) {
             throw new SchemaException(`Table [${name}] is outside the scope of this transaction.`);
         }
 

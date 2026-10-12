@@ -107,6 +107,8 @@ export class Migrator {
             return await this.#migrate(connection, migrations, ran.length, at);
         } finally {
             this.#context = null;
+
+            Handles.release(transaction);
         }
     }
 

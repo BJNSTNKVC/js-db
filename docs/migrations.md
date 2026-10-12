@@ -137,10 +137,18 @@ transaction, and resolves with what the callback returns:
   query throws `MigrationTransactionClosedException`, as `DB.table` does.
 
 While a migration runs, every query and every `DB.transaction` on its connection joins it, including
-one the rest of the app starts at that moment. Migrating at boot with `await DB.migrate(name)`,
-before the rest of the app starts, keeps that from mattering. Before 7.0.0 a query inside a migration
-waited for the very upgrade it was part of and never settled, and before 9.0.1 so did
-`DB.transaction`.
+one the rest of the app starts at that moment and one through a builder made before it. Migrating
+at boot with `await DB.migrate(name)`, before the rest of the app starts, keeps that from mattering.
+Before 7.0.0 a query inside a migration waited for the very upgrade it was part of and never
+settled, and before 9.0.1 so did `DB.transaction`.
+
+A builder, or a `Transaction` from `DB.transaction`, made in a migration and kept after it has
+finished runs as a builder made afresh would. It joins a migration running at that moment, and
+otherwise each query opens a transaction of its own, so a kept `Transaction` reaches any table. One
+used in a later migration of the same upgrade joins that migration. Before 17.0.0 a query through one
+kept past the upgrade failed with IndexedDB's own `InvalidStateError`, and one made before a
+migration and run inside it opened its own transaction, making the migration throw
+`MigrationTransactionClosedException`.
 
 If you need data from the network, that is what a seeder is for. See [Seeding](seeding.md).
 
