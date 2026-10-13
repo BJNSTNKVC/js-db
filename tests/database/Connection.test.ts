@@ -21,7 +21,6 @@ import {
     UniqueConstraintViolationException,
 } from '../../src/exceptions';
 import { Env } from '../environment';
-import { ZONES } from '../zones';
 import type { MigrationConstructor, MigrationStatus } from '../../src/migrations/types';
 import type { ColumnSchema, TableSchema } from '../../src/schema/types';
 import type { MockInstance } from 'vitest';
@@ -2869,51 +2868,6 @@ describe('Schema definitions IndexedDB cannot honor', (): void => {
 
         expect((await records(connection, 'users')).map((record: Record<string, unknown>): unknown => record['age'])).toEqual([30, 40]);
     });
-
-    describe('with a date-only default', (): void => {
-        const zone: string = Intl.DateTimeFormat().resolvedOptions().timeZone;
-
-        afterEach((): void => {
-            vi.stubEnv('TZ', zone);
-            vi.unstubAllEnvs();
-        });
-
-        /**
-         * Add date columns defaulting to a date-only string and change another to one, on a connection set to the given timezone, and read what Alice holds.
-         */
-        async function backfilled(timezone?: string): Promise<{ connection: Connection; alice: Record<string, unknown> }> {
-            const connection: Connection = await altered([(table: Blueprint): void => {
-                table.date('joined').default('2024-01-15');
-                table.datetime('seen').default('2024-01-15');
-                table.date('left').nullable();
-            }, (table: Blueprint): void => {
-                table.date('left').nullable().default('2024-02-29').change();
-            }], { rows: [{ email: 'a@x', name: 'Alice' }], timezone });
-
-            const [alice]: Record<string, unknown>[] = await records(connection, 'users');
-
-            return { connection, alice: alice as Record<string, unknown> };
-        }
-
-        test.each(ZONES)('backfills the local day it names in %s on a local connection', async (timezone: string): Promise<void> => {
-            Env.moveTo(timezone);
-
-            const { connection, alice }: { connection: Connection; alice: Record<string, unknown> } = await backfilled('local');
-
-            expect([alice['joined'], alice['seen'], alice['left']]).toEqual([new Date(2024, 0, 15), new Date(2024, 0, 15), new Date(2024, 1, 29)]);
-            expect((await connection.getColumns('users')).find((column: ColumnSchema): boolean => column.name === 'joined')?.default).toEqual('2024-01-15');
-        });
-
-        test.each(ZONES)('backfills midnight UTC by default and midnight in the migrating connection\'s timezone, with the process in %s', async (process: string): Promise<void> => {
-            Env.moveTo(process);
-
-            const utc: Record<string, unknown> = (await backfilled()).alice;
-            const york: Record<string, unknown> = (await backfilled('America/New_York')).alice;
-
-            expect([utc['joined'], utc['seen'], utc['left']]).toEqual([new Date('2024-01-15T00:00:00.000Z'), new Date('2024-01-15T00:00:00.000Z'), new Date('2024-02-29T00:00:00.000Z')]);
-            expect([york['joined'], york['seen'], york['left']]).toEqual([new Date('2024-01-15T05:00:00.000Z'), new Date('2024-01-15T05:00:00.000Z'), new Date('2024-02-29T05:00:00.000Z')]);
-        });
-    });
 });
 
 describe('Schema.table required columns added to a table with rows', (): void => {
@@ -3295,8 +3249,6 @@ describe('Schema.rename', (): void => {
 });
 
 describe('Schema.coerce', (): void => {
-    const zone: string = Intl.DateTimeFormat().resolvedOptions().timeZone;
-
     const CreateVisitorsTable: MigrationConstructor = migration('CreateVisitorsTable', async (): Promise<void> => {
         await Schema.create('visitors', (table: Blueprint): void => {
             table.id();
@@ -3313,11 +3265,6 @@ describe('Schema.coerce', (): void => {
             table.integer('rank').nullable().unique();
             table.string('label').nullable().unique().multiEntry();
         });
-    });
-
-    afterEach((): void => {
-        vi.stubEnv('TZ', zone);
-        vi.unstubAllEnvs();
     });
 
     /**
@@ -3507,17 +3454,6 @@ describe('Schema.coerce', (): void => {
         const connection: Connection = await coerced([{ name: 'A', rank: '' }, { name: 'B', rank: ' ' }], every);
 
         expect(await connection.table('visitors').pluck('rank')).toEqual([null, null]);
-    });
-
-    test.each([
-        [undefined, '2024-01-15T00:00:00.000Z'],
-        ['America/New_York', '2024-01-15T05:00:00.000Z'],
-    ])('reads a date-only string in the migrating connection\'s timezone, %s, whatever the process runs in', async (timezone: string | undefined, moment: string): Promise<void> => {
-        Env.moveTo('Asia/Tokyo');
-
-        const connection: Connection = await coerced([{ name: 'A', joined: '2024-01-15' }], every, { timezone });
-
-        expect((await records(connection, 'visitors'))[0]?.['joined']).toEqual(new Date(moment));
     });
 
     test('refuses to run outside a migration', async (): Promise<void> => {

@@ -1,19 +1,12 @@
 import { defineConfig } from 'vitest/config';
 import { playwright } from '@vitest/browser-playwright';
-import { tabs } from './tests/browser/commands';
-import { Engine } from './tests/engines';
-import { ZONES } from './tests/zones';
+import { tabs } from './tests/browser/commands.ts';
+import { Engine } from './tests/engines.ts';
+import { ZONES } from './tests/zones.ts';
 
 const ENGINES: Engine[] = Object.values(Engine);
 
-const ZONED: string[] = [
-    'tests/database/Connection.test.ts',
-    'tests/query/Builder.extras.test.ts',
-    'tests/query/Builder.writes.test.ts',
-    'tests/query/Predicate.test.ts',
-    'tests/schema/Calendar.test.ts',
-    'tests/schema/Enforcer.test.ts',
-];
+const ZONED: string[] = ['tests/**/*.zoned.test.ts'];
 
 export default defineConfig({
     test: {
@@ -49,7 +42,10 @@ export default defineConfig({
                         headless          : true,
                         screenshotFailures: false,
                         instances         : [
-                            ...ENGINES.map((browser: Engine) => ({ browser })),
+                            ...ENGINES.map((browser: Engine) => ({
+                                browser,
+                                provider: playwright({ contextOptions: { timezoneId: 'UTC' } }),
+                            })),
                             ...ENGINES.flatMap((browser: Engine) => ZONES.map((timezoneId: string) => ({
                                 browser,
                                 name    : `browser (${browser}, ${timezoneId})`,

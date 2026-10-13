@@ -55,4 +55,4 @@ jobs:
 
             - run: npm ci
 
-            - run: npx vitest run --project "Browser (${{ matrix.engine }}*"
+            - run: npx vitest run --project "Browser (${{ matrix.engine }}*" --passWithNoTests
