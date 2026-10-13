@@ -91,11 +91,13 @@ Awaiting `Schema.*`, `DB.table(...)` and `DB.transaction(...)` is safe. Awaiting
 ends the transaction, and the next schema call or query throws `MigrationTransactionClosedException`.
 
 A browser stops taking requests the moment a migration awaits outside work, but writes the commit in
-the background. A schema call or query made before the commit lands throws
+the background, and announces it some time after it has finished. A schema call or query made before
+the commit lands, or after it lands but before the browser announces it, throws
 `MigrationTransactionClosedException` all the same, as does a query through a builder made earlier
 or a `DB.transaction` joining the migration, and the migration is not recorded as run even if it
-catches the exception. Before 15.0.3 a browser threw IndexedDB's own `TransactionInactiveError` there
-instead.
+catches the exception. Before 18.0.5 a browser threw IndexedDB's own `InvalidStateError` once the
+commit had landed but not yet been announced. Before 15.0.3 it threw IndexedDB's own
+`TransactionInactiveError` before the commit landed.
 
 A query on the connection being migrated joins the version-change transaction, so a migration can
 read and rewrite rows between schema changes:

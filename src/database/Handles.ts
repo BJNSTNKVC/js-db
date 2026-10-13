@@ -84,6 +84,8 @@ export class Handles {
             error = thrown;
         }
 
-        return error instanceof DOMException && error.name === 'TransactionInactiveError';
+        // objectStore throws InvalidStateError only once the transaction has finished,
+        // which a browser can do some time before it dispatches complete.
+        return error instanceof DOMException && (error.name === 'TransactionInactiveError' || error.name === 'InvalidStateError');
     }
 }

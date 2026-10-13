@@ -21,7 +21,6 @@ import {
     UniqueConstraintViolationException,
 } from '../../src/exceptions';
 import { Env } from '../environment';
-import { Engine } from '../engines';
 import { ZONES } from '../zones';
 import type { MigrationConstructor, MigrationStatus } from '../../src/migrations/types';
 import type { ColumnSchema, TableSchema } from '../../src/schema/types';
@@ -1524,6 +1523,83 @@ describe('Querying inside a migration', (): void => {
         }, 2000);
     });
 
+    describe('after the transaction finished before its complete event', (): void => {
+        /**
+         * Make the transaction act as a browser's does once it has finished committing.
+         */
+        function finish(transaction: IDBTransaction): void {
+            const objectStore: IDBTransaction['objectStore'] = IDBTransaction.prototype.objectStore;
+            const index: IDBObjectStore['index'] = IDBObjectStore.prototype.index;
+            const abort: IDBTransaction['abort'] = IDBTransaction.prototype.abort;
+
+            vi.spyOn(IDBTransaction.prototype, 'objectStore').mockImplementation(function (this: IDBTransaction, name: string): IDBObjectStore {
+                if (this === transaction) {
+                    throw new DOMException("Failed to execute 'objectStore' on 'IDBTransaction': The transaction has finished.", 'InvalidStateError');
+                }
+
+                return objectStore.call(this, name);
+            });
+
+            vi.spyOn(IDBObjectStore.prototype, 'index').mockImplementation(function (this: IDBObjectStore, name: string): IDBIndex {
+                if (this.transaction === transaction) {
+                    throw new DOMException("Failed to execute 'index' on 'IDBObjectStore': The transaction has finished.", 'InvalidStateError');
+                }
+
+                return index.call(this, name);
+            });
+
+            vi.spyOn(IDBTransaction.prototype, 'abort').mockImplementation(function (this: IDBTransaction): void {
+                if (this === transaction) {
+                    throw new DOMException("Failed to execute 'abort' on 'IDBTransaction': The transaction has finished.", 'InvalidStateError');
+                }
+
+                abort.call(this);
+            });
+        }
+
+        test.each([
+            ['a schema call', (): Promise<unknown> => Schema.create('notes', (table: Blueprint): void => {
+                table.id();
+            }), false],
+            ['a query', (): Promise<unknown> => upgraded.table('users').get(), false],
+            ['a builder made before it finished', (early: Builder): Promise<unknown> => early.get(), false],
+            ['a DB.transaction joining the migration', (): Promise<unknown> => DB.transaction((transaction: Transaction): Promise<unknown> => transaction.table('users').get()), false],
+            ['a query whose exception the migration caught', (): Promise<unknown> => upgraded.table('users').get(), true],
+        ])('reports %s as a closed migration and leaves the migration unrecorded', async (_: string, attempt: (early: Builder) => Promise<unknown>, caught: boolean): Promise<void> => {
+            const database: string = `connection-${++sequence}`;
+            const thrown: unknown[] = [];
+
+            DB.configure({ default: 'app', connections: { app: { database } } });
+
+            try {
+                await expect(upgrade(async (): Promise<void> => {
+                    await upgraded.table('users').where('name', 'Alice').update({ age: 31 });
+
+                    const early: Builder = upgraded.table('users');
+
+                    finish(Migrator.alive().transaction);
+
+                    try {
+                        await attempt(early);
+                    } catch (error: unknown) {
+                        thrown.push(error);
+
+                        if (!caught) {
+                            throw error;
+                        }
+                    }
+                }, database)).rejects.toThrow(new MigrationTransactionClosedException('UpgradeUsers'));
+            } finally {
+                vi.restoreAllMocks();
+                DB.purge('app');
+            }
+
+            expect(thrown).toEqual([new MigrationTransactionClosedException('UpgradeUsers')]);
+            expect(thrown[0]).toBeInstanceOf(MigrationTransactionClosedException);
+            expect((await upgraded.status()).map((status: MigrationStatus): boolean => status.ran)).toEqual([true, false]);
+        }, 2000);
+    });
+
     test('leaves a query on another database to that database', async (): Promise<void> => {
         const other: Connection = connect([CreatePostsTable]);
 
@@ -1758,10 +1834,7 @@ describe('Querying inside a migration', (): void => {
             })).rejects.toBeInstanceOf(MigrationTransactionClosedException);
         }, 2000);
 
-        // Firefox can finish committing the upgrade before it dispatches complete,
-        // and the await on the other database lands in that window,
-        // where the activity check misses the close.
-        test.skipIf(Env.isEngine(Engine.Firefox))('leaves a transaction on another database to that database, whose await closes the upgrade', async (): Promise<void> => {
+        test('leaves a transaction on another database to that database, whose await closes the upgrade', async (): Promise<void> => {
             const other: Connection = connect([CreatePostsTable]);
 
             await other.migrate();

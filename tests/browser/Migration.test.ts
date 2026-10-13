@@ -6,8 +6,6 @@ import { Schema } from '../../src/schema/Schema';
 import { Blueprint } from '../../src/schema/Blueprint';
 import { DB } from '../../src/main';
 import { MigrationTransactionClosedException } from '../../src/exceptions';
-import { Env } from '../environment';
-import { Engine } from '../engines';
 import type { MigrationConstructor, MigrationStatus } from '../../src/migrations/types';
 
 const connections: Connection[] = [];
@@ -107,13 +105,8 @@ afterEach((): void => {
     }
 });
 
-describe.each([
-    // WebKit, and Firefox now and then, finish an upgrade's commit before a 0 ms timer,
-    // but dispatch complete only after it, which the check misses.
-    [0, Env.isEngine(Engine.Firefox, Engine.WebKit)],
-    [50, false],
-])('A migration that awaits a %i ms timer', (delay: number, skipped: boolean): void => {
-    test.skipIf(skipped)('throws from the next query and leaves the migration unrecorded', async (): Promise<void> => {
+describe.each([0, 50])('A migration that awaits a %i ms timer', (delay: number): void => {
+    test('throws from the next query and leaves the migration unrecorded', async (): Promise<void> => {
         const database: string = `browser-migrations-${++sequence}`;
         const thrown: unknown[] = [];
 
@@ -142,7 +135,7 @@ describe.each([
         }
     }, 2000);
 
-    test.skipIf(skipped)('throws from the next schema call', async (): Promise<void> => {
+    test('throws from the next schema call', async (): Promise<void> => {
         const Waiting: MigrationConstructor = migration('WaitingMigration', async (): Promise<void> => {
             await create('users');
             await elsewhere(delay);

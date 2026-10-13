@@ -4,8 +4,6 @@ import { Schema } from '../../src/schema/Schema';
 import { Blueprint } from '../../src/schema/Blueprint';
 import { DB } from '../../src/main';
 import { TransactionClosedException } from '../../src/exceptions';
-import { Env } from '../environment';
-import { Engine } from '../engines';
 import type { Transaction } from '../../src/database/Transaction';
 import type { DatabaseEvent } from '../../src/events';
 
@@ -76,13 +74,8 @@ afterEach((): void => {
     DB.purge('app');
 });
 
-describe.each([
-    // Every engine finishes committing before a 0 ms timer fires
-    // but dispatches complete only after it, which the check misses.
-    [0, Env.isEngine(Engine.Chromium, Engine.Firefox, Engine.WebKit)],
-    [50, false],
-])('A DB.transaction callback that awaits a %i ms timer', (delay: number, skipped: boolean): void => {
-    test.skipIf(skipped)('throws from the next query, rejects, and keeps the work committed before the await', async (): Promise<void> => {
+describe.each([0, 50])('A DB.transaction callback that awaits a %i ms timer', (delay: number): void => {
+    test('throws from the next query, rejects, and keeps the work committed before the await', async (): Promise<void> => {
         const [reason, seen]: [unknown, string[]] = await rejected(async (transaction: Transaction): Promise<void> => {
             await transaction.table<User>('users').insert({ name: 'Alice' });
             await elsewhere(delay);
@@ -91,11 +84,12 @@ describe.each([
 
         expect(reason).toEqual(new TransactionClosedException('app'));
         expect(reason).toBeInstanceOf(TransactionClosedException);
+        expect((reason as Error).cause).toBeUndefined();
         expect(seen).toEqual(['db:transaction-beginning', 'db:transaction-committed']);
         expect(await DB.table<User>('users').pluck('name')).toEqual(['Alice']);
     }, 2000);
 
-    test.skipIf(skipped)('rejects even when the callback catches the exception from a read', async (): Promise<void> => {
+    test('rejects even when the callback catches the exception from a read', async (): Promise<void> => {
         let caught: unknown = null;
 
         const [reason, seen]: [unknown, string[]] = await rejected(async (transaction: Transaction): Promise<string> => {
@@ -117,7 +111,7 @@ describe.each([
         expect(await DB.table<User>('users').pluck('name')).toEqual(['Alice']);
     }, 2000);
 
-    test.skipIf(skipped)('rejects once the callback settles, though it made no further query', async (): Promise<void> => {
+    test('rejects once the callback settles, though it made no further query', async (): Promise<void> => {
         const [reason, seen]: [unknown, string[]] = await rejected(async (transaction: Transaction): Promise<string> => {
             await transaction.table<User>('users').insert({ name: 'Alice' });
             await elsewhere(delay);

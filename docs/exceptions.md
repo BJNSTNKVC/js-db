@@ -20,6 +20,11 @@ true. All of them are exported from the package root.
 | `TransactionClosedException`          | A `DB.transaction` callback awaited something outside this package, letting the transaction commit early    |
 | `UniqueConstraintViolationException`  | A write or `Schema.coerce` collides with a unique index, named in the message, multi-entry indexes included |
 
+`TransactionClosedException` and `MigrationTransactionClosedException` also cover a transaction the
+browser has finished committing but has not yet announced as complete. Before 18.0.5 a query made
+then failed with IndexedDB's own `InvalidStateError` instead, and a `DB.transaction` whose callback
+caught it or made no further query resolved.
+
 `SchemaException` is the broad one, so here is every case that raises it:
 
 - `Schema.create`, `table`, `coerce`, `drop`, `dropIfExists` or `rename` called outside a migration

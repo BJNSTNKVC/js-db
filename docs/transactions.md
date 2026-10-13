@@ -79,14 +79,18 @@ await DB.transaction(async (transaction: Transaction): Promise<void> => {
 ```
 
 A browser stops taking requests the moment the callback awaits outside work, but writes the commit in
-the background. A query made before the commit lands throws `TransactionClosedException` all the
-same, and once the callback settles `DB.transaction` waits for the commit and rejects as above. Two
-cases end in a rollback instead, rejecting with their own failure: a browser that refuses that
-commit, such as for a full quota, which dispatches no transaction event, and a callback that lets
-the exception through while a write it left running still holds the transaction open, which
-dispatches `transaction-rolled-back`. Before 18.0.0 a refused commit dispatched
-`transaction-rolled-back` too. Before 9.1.1 such a query failed with IndexedDB's own `TransactionInactiveError`, and a
-callback that caught it or made no further query resolved as if nothing had happened.
+the background, and announces it some time after it has finished. A query made before the commit
+lands, or after it lands but before the browser announces it, throws `TransactionClosedException`
+all the same, and once the callback settles `DB.transaction` waits for the commit and rejects as
+above. Two cases end in a rollback instead, rejecting with their own failure: a browser that refuses
+that commit, such as for a full quota, which dispatches no transaction event, and a callback that
+lets the exception through while a write it left running still holds the transaction open, which
+dispatches `transaction-rolled-back`. Before 18.0.5 a query made after the commit landed but before
+it was announced failed with IndexedDB's own `InvalidStateError`, and a callback that caught it or
+made no further query resolved as if nothing had happened. Before 18.0.0 a refused commit dispatched
+`transaction-rolled-back` too. Before 9.1.1 a query made before the commit landed failed with
+IndexedDB's own `TransactionInactiveError`, and a callback that caught it or made no further query
+resolved as if nothing had happened.
 
 A `Transaction`, or a builder made from one, kept after its call has settled runs on its own, as a
 builder made afresh would: each query opens a transaction of its own, reaching any table whatever
