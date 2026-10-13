@@ -999,10 +999,8 @@ describe('Connection timezone', (): void => {
         expect(new Connection('app', { database: 'timezone-named', timezone }).timezone).toEqual(resolved);
     });
 
-    // WebKit's Intl keeps 'Etc/UTC' as it is,
-    // where other engines give 'UTC'.
-    test.skipIf(Env.isEngine(Engine.WebKit))('reads \'Etc/UTC\' as \'UTC\'', (): void => {
-        expect(new Connection('app', { database: 'timezone-named', timezone: 'Etc/UTC' }).timezone).toEqual('UTC');
+    test.each(['Etc/UTC', 'Etc/UCT', 'UCT', 'Etc/Universal', 'Universal', 'Etc/Zulu', 'Zulu', 'GMT', 'Etc/GMT', 'Etc/GMT0', 'Etc/GMT+0', 'Etc/GMT-0', 'Etc/Greenwich', 'Greenwich', 'GMT0'])('reads %o as \'UTC\'', (timezone: string): void => {
+        expect(new Connection('app', { database: 'timezone-named', timezone }).timezone).toEqual('UTC');
     });
 
     test('refuses a timezone Intl does not know when it is built, naming the connection', (): void => {

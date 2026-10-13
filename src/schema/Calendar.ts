@@ -2,6 +2,8 @@ const MOMENT: RegExp = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}
 
 const DAY: number = 86_400_000;
 
+const ALIASES: Set<string> = new Set<string>(['Etc/UTC', 'Etc/UCT', 'UCT', 'Etc/Universal', 'Universal', 'Etc/Zulu', 'Zulu', 'GMT', 'Etc/GMT', 'Etc/GMT0', 'Etc/GMT+0', 'Etc/GMT-0', 'Etc/Greenwich', 'Greenwich', 'GMT0']);
+
 export interface Parts {
     year: number;
     month: number;
@@ -26,7 +28,9 @@ export class Calendar {
             return timezone;
         }
 
-        return new Intl.DateTimeFormat('en-US', { timeZone: timezone }).resolvedOptions().timeZone;
+        const resolved: string = new Intl.DateTimeFormat('en-US', { timeZone: timezone }).resolvedOptions().timeZone;
+
+        return ALIASES.has(resolved) ? 'UTC' : resolved;
     }
 
     /**

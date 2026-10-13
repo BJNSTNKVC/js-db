@@ -73,11 +73,14 @@ code, or an IANA name such as `'America/New_York'`. It decides the moment a date
 with `Z` or an offset, keep naming their own moment under every setting. `DB.configure` throws
 `RangeError` for a name the browser does not know, naming the connection, and leaves the
 configuration before it in place. `DB.connection(name).timezone` gives the name the connection reads,
-as `Intl` spells it, so `'utc'` reads as `'UTC'`. [Dates and timezones](querying.md#dates-and-timezones)
-has the details. Before 8.0.0 the date parts, `whereTime` and `whereDate` read the device's timezone,
-as `'local'` still does. Before 12.0.0 a query read a date string in a form a write refuses, such as
-`'Jan 15 2024'` or `'2024/01/15'`, in the device's timezone whatever the setting. It now matches
-nothing, so pass a `Date` or an ISO string such as `'2024-01-15'`.
+as `Intl` spells it, so `'america/new_york'` reads as `'America/New_York'`. Every name for UTC, such
+as `'utc'`, `'Etc/UTC'`, `'Zulu'` or `'GMT'`, reads as `'UTC'` in every browser. Before 18.0.4 WebKit
+kept `'Etc/UTC'` and the other names for UTC as given, though the dates read and stored were the
+same. [Dates and timezones](querying.md#dates-and-timezones) has the details. Before 8.0.0 the date
+parts, `whereTime` and `whereDate` read the device's timezone, as `'local'` still does. Before
+12.0.0 a query read a date string in a form a write refuses, such as `'Jan 15 2024'` or
+`'2024/01/15'`, in the device's timezone whatever the setting. It now matches nothing, so pass a
+`Date` or an ISO string such as `'2024-01-15'`.
 
 `DB.migrate(name)` is idempotent. It opens the database and runs the migrations not yet recorded as
 run, and when every one already is, nothing runs. Calling it on every boot is the intended usage,

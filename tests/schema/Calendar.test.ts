@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { Calendar } from '../../src/schema/Calendar';
 import { Env } from '../environment';
-import { Engine } from '../engines';
 import { ZONES } from '../zones';
 import type { Parts } from '../../src/schema/Calendar';
+import type { MockInstance } from 'vitest';
 
 const zone: string = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+const ALIASES: string[] = ['Etc/UTC', 'Etc/UCT', 'UCT', 'Etc/Universal', 'Universal', 'Etc/Zulu', 'Zulu', 'GMT', 'Etc/GMT', 'Etc/GMT0', 'Etc/GMT+0', 'Etc/GMT-0', 'Etc/Greenwich', 'Greenwich', 'GMT0'];
 
 /**
  * List the parts of a moment in order, the month numbered from zero.
@@ -44,10 +46,17 @@ describe('Calendar.zone', (): void => {
         expect(Calendar.zone(timezone)).toEqual(resolved);
     });
 
-    // WebKit's Intl keeps 'Etc/UTC' as it is,
-    // where other engines give 'UTC'.
-    test.skipIf(Env.isEngine(Engine.WebKit))('resolves \'Etc/UTC\' to \'UTC\'', (): void => {
-        expect(Calendar.zone('Etc/UTC')).toEqual('UTC');
+    test.each([...ALIASES, 'etc/utc'])('resolves %o to \'UTC\'', (timezone: string): void => {
+        expect(Calendar.zone(timezone)).toEqual('UTC');
+    });
+
+    test.each(ALIASES)('reads %o as \'UTC\' when Intl keeps it as given', (timezone: string): void => {
+        const resolved: Intl.ResolvedDateTimeFormatOptions = new Intl.DateTimeFormat('en-US', { timeZone: 'UTC' }).resolvedOptions();
+        const spy: MockInstance = vi.spyOn(Intl.DateTimeFormat.prototype, 'resolvedOptions').mockReturnValue({ ...resolved, timeZone: timezone });
+
+        expect(Calendar.zone(timezone)).toEqual('UTC');
+
+        spy.mockRestore();
     });
 
     test.each(['America/NewYork', 'Local', ''])('refuses %o with the RangeError Intl throws', (timezone: string): void => {
