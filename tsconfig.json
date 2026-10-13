@@ -14,5 +14,6 @@
     "noEmit": true,
     "types": []
   },
-  "include": ["src", "tests", "vitest.config.ts"]
+  "include": ["src", "tests", "vitest.config.ts"],
+  "exclude": ["tests/browser/setup/run.ts"]
 }

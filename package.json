@@ -25,7 +25,7 @@
   "scripts": {
     "build": "tsup src/main.ts --format esm,cjs --dts --clean",
     "test": "vitest run --project node",
-    "test:browser": "vitest run --project browser",
+    "test:browser": "node tests/browser/setup/run.ts",
     "coverage": "vitest run --project node --coverage",
     "typecheck": "tsc --noEmit"
   },
@@ -49,6 +49,7 @@
   },
   "homepage": "https://github.com/BJNSTNKVC/js-db#readme",
   "devDependencies": {
+    "@types/node": "^26.6.5",
     "@vitest/browser": "^5.0.2",
     "@vitest/browser-playwright": "^5.0.2",
     "@vitest/coverage-v8": "^5.0.2",
