@@ -1,4 +1,4 @@
-import { beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { Connection } from '../../src/database/Connection';
 import { Migration } from '../../src/migrations/Migration';
 import { Migrator } from '../../src/migrations/Migrator';
@@ -778,6 +778,10 @@ describe('Writing through a join', (): void => {
         ]);
     });
 
+    afterEach((): void => {
+        writable.disconnect();
+    });
+
     test('deletes only the rows the join keeps', async (): Promise<void> => {
         expect(await joined('inner').where('active', false).delete()).toEqual(1);
         expect(await remaining()).toEqual(['Bob']);
@@ -1208,6 +1212,10 @@ describe('Joins across the types the columns hold', (): void => {
             { user_id: 2, author: '2', day: new Date('2024-02-01T00:00:00.000Z'), title: 'Third' },
             { user_id: null, author: null, day: null, title: 'Fourth' },
         ]);
+    });
+
+    afterEach((): void => {
+        authored.disconnect();
     });
 
     test('takes min and max of a date and a string column on a joined query in their own type', async (): Promise<void> => {

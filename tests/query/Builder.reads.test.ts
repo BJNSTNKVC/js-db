@@ -2229,6 +2229,10 @@ describe('Builder binary keys', (): void => {
         });
     });
 
+    afterEach((): void => {
+        binary.disconnect();
+    });
+
     test.each([
         ['a Uint8Array', (): IDBValidKey => new Uint8Array(A)],
         ['an ArrayBuffer', (): IDBValidKey => new Uint8Array(A).buffer],

@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { Predicate } from '../../src/query/Predicate';
+import { Env } from '../environment';
+import { ZONES } from '../zones';
 import type { Conjunction, Constraint, DatePart, Operator } from '../../src/query/types';
 
 /**
@@ -1274,9 +1276,9 @@ describe('Predicate date parts in the constraint\'s timezone', (): void => {
         vi.unstubAllEnvs();
     });
 
-    describe.each(['America/New_York', 'Asia/Tokyo', 'America/Santiago'])('with the process in %s', (process: string): void => {
+    describe.each(ZONES)('with the process in %s', (process: string): void => {
         test('reads the local day a held string names on a local connection', (): void => {
-            vi.stubEnv('TZ', process);
+            Env.moveTo(process);
 
             expect(matches([part('year', 2024, 'local'), part('month', 1, 'local'), part('day', 1, 'local')], { on: '2024-01-01' })).toEqual(true);
             expect(matches([part('day', 15, 'local')], { on: '2024-01-15' })).toEqual(true);
@@ -1284,14 +1286,14 @@ describe('Predicate date parts in the constraint\'s timezone', (): void => {
         });
 
         test('reads a held string with a time as the moment it names on a local connection', (): void => {
-            vi.stubEnv('TZ', process);
+            Env.moveTo(process);
 
             expect(matches([part('day', 15, 'local'), time('10:30:00', 'local')], { on: '2024-01-15T10:30' })).toEqual(true);
-            expect(matches([part('year', 2023, 'local')], { on: '2024-01-01T00:00:00Z' })).toEqual(process !== 'Asia/Tokyo');
+            expect(matches([part('year', 2023, 'local')], { on: '2024-01-01T00:00:00Z' })).toEqual(new Date('2024-01-01T00:00:00Z').getFullYear() === 2023);
         });
 
         test.each(['UTC', 'America/New_York'])('reads the day and time a held string names in %s', (timezone: string): void => {
-            vi.stubEnv('TZ', process);
+            Env.moveTo(process);
 
             expect(matches([part('year', 2024, timezone), part('month', 1, timezone), part('day', 15, timezone)], { on: '2024-01-15' })).toEqual(true);
             expect(matches([time('00:00:00', timezone)], { on: '2024-01-15' })).toEqual(true);
@@ -1299,7 +1301,7 @@ describe('Predicate date parts in the constraint\'s timezone', (): void => {
         });
 
         test('reads an instant by the day and time it falls on in the timezone, whatever the process', (): void => {
-            vi.stubEnv('TZ', process);
+            Env.moveTo(process);
 
             const evening: Date = new Date('2024-01-15T02:00:00Z');
 
@@ -1310,20 +1312,20 @@ describe('Predicate date parts in the constraint\'s timezone', (): void => {
         });
 
         test.each(['local', 'UTC', 'America/New_York'])('reads a day the calendar does not have as no date in %s', (timezone: string): void => {
-            vi.stubEnv('TZ', process);
+            Env.moveTo(process);
 
             expect(matches([part('month', 3, timezone)], { on: '2024-02-30' })).toEqual(false);
             expect(matches([nested([part('month', 3, timezone)], true)], { on: '2024-02-30' })).toEqual(false);
         });
 
         test('reads a day whose midnight Santiago skips from its first moment there', (): void => {
-            vi.stubEnv('TZ', process);
+            Env.moveTo(process);
 
             expect(matches([part('day', 8, 'America/Santiago'), time('01:00:00', 'America/Santiago')], { on: '2024-09-08' })).toEqual(true);
         });
 
         test('reads both moments of an hour Santiago repeats as the same time of day', (): void => {
-            vi.stubEnv('TZ', process);
+            Env.moveTo(process);
 
             expect(matches([part('day', 6, 'America/Santiago'), time('23:30:00', 'America/Santiago')], { on: new Date('2024-04-07T02:30:00Z') })).toEqual(true);
             expect(matches([part('day', 6, 'America/Santiago'), time('23:30:00', 'America/Santiago')], { on: new Date('2024-04-07T03:30:00Z') })).toEqual(true);
@@ -1331,7 +1333,7 @@ describe('Predicate date parts in the constraint\'s timezone', (): void => {
     });
 
     test('reads a day whose local midnight is skipped from its first moment', (): void => {
-        vi.stubEnv('TZ', 'America/Santiago');
+        Env.moveTo('America/Santiago');
 
         expect(matches([part('day', 8, 'local'), time('01:00:00', 'local')], { on: '2024-09-08' })).toEqual(true);
     });

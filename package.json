@@ -24,8 +24,9 @@
   "sideEffects": false,
   "scripts": {
     "build": "tsup src/main.ts --format esm,cjs --dts --clean",
-    "test": "vitest run",
-    "coverage": "vitest run --coverage",
+    "test": "vitest run --project node",
+    "test:browser": "vitest run --project browser",
+    "coverage": "vitest run --project node --coverage",
     "typecheck": "tsc --noEmit"
   },
   "repository": {
@@ -48,8 +49,11 @@
   },
   "homepage": "https://github.com/BJNSTNKVC/js-db#readme",
   "devDependencies": {
+    "@vitest/browser": "^5.0.2",
+    "@vitest/browser-playwright": "^5.0.2",
     "@vitest/coverage-v8": "^5.0.2",
     "fake-indexeddb": "^6.0.0",
+    "playwright": "^1.63.0",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vitest": "^5.0.2"

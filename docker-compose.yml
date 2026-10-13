@@ -1,0 +1,16 @@
+name: js-db
+
+services:
+  node:
+    container_name: js-db-node
+    build:
+      context: ./.docker
+      dockerfile: node.dockerfile
+      args:
+        - UID=${UID:-1000}
+        - GID=${GID:-1000}
+    volumes:
+      - .:/var/www/html:delegated
+    tmpfs:
+      - /tmp
+    command: sh -c "npm ci && sleep infinity"

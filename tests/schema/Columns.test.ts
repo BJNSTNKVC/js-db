@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { Connection } from '../../src/database/Connection';
 import { Migration } from '../../src/migrations/Migration';
 import { Schema } from '../../src/schema/Schema';
@@ -42,11 +42,13 @@ function items(): Builder<Item> {
 }
 
 beforeEach(async (): Promise<void> => {
-    connection?.disconnect();
-
     connection = new Connection('app', { database: `columns-${++sequence}`, migrations: [CreateItemsTable] });
 
     await connection.migrate();
+});
+
+afterEach((): void => {
+    connection.disconnect();
 });
 
 describe('Blueprint.decimal', (): void => {

@@ -7,6 +7,8 @@ import { MultipleRecordsFoundException, RecordsNotFoundException, SchemaExceptio
 import { Executor } from '../../src/query/Executor';
 import { DB } from '../../src/main';
 import { Dispatcher } from '../../src/events/Dispatcher';
+import { Env } from '../environment';
+import { ZONES } from '../zones';
 import type { Builder } from '../../src/query/Builder';
 import type { QueryExecuted } from '../../src/events';
 import type { DateOperator, Paginated } from '../../src/query/types';
@@ -347,8 +349,6 @@ describe('Builder.whereDate in the connection\'s timezone', (): void => {
     const zone: string = Intl.DateTimeFormat().resolvedOptions().timeZone;
     const connections: Map<string, Connection> = new Map<string, Connection>();
 
-    const PROCESSES: string[] = ['America/New_York', 'Asia/Tokyo', 'America/Santiago'];
-
     /**
      * Begin a query against the moments table on the connection set to the given timezone.
      */
@@ -372,7 +372,7 @@ describe('Builder.whereDate in the connection\'s timezone', (): void => {
      * Run the rest of the test with the process in the given timezone, and store the named moments in both columns through the connection set to another.
      */
     async function store(process: string, rows: Record<string, () => Date>, timezone: string = 'local'): Promise<void> {
-        vi.stubEnv('TZ', process);
+        Env.moveTo(process);
 
         await moments(timezone).truncate();
         await moments(timezone).insert(Object.entries(rows).map(([name, at]: [string, () => Date]): Omit<Moment, 'id'> => ({ name, indexed: at(), plain: at() })));
@@ -598,7 +598,7 @@ describe('Builder.whereDate in the connection\'s timezone', (): void => {
     ] as [string, Record<string, string>, string, string][])('on a connection set to %s', (timezone: string, instants: Record<string, string>, day: string, evening: string): void => {
         const ROWS: Record<string, () => Date> = Object.fromEntries(Object.entries(instants).map(([name, at]: [string, string]): [string, () => Date] => [name, (): Date => new Date(at)]));
 
-        describe.each(PROCESSES.flatMap((process: string): [string, 'indexed' | 'plain'][] => [[process, 'indexed'], [process, 'plain']]))('with the process in %s through the %s column', (process: string, column: 'indexed' | 'plain'): void => {
+        describe.each(ZONES.flatMap((process: string): [string, 'indexed' | 'plain'][] => [[process, 'indexed'], [process, 'plain']]))('with the process in %s through the %s column', (process: string, column: 'indexed' | 'plain'): void => {
             test.each(SPANS)('%s selects the moments on its side of the day in that timezone', async (operator: DateOperator, expected: string[]): Promise<void> => {
                 await store(process, ROWS, timezone);
 
@@ -620,7 +620,7 @@ describe('Builder.whereDate in the connection\'s timezone', (): void => {
         });
     });
 
-    describe.each(PROCESSES)('across the autumn change in Santiago with the process in %s', (process: string): void => {
+    describe.each(ZONES)('across the autumn change in Santiago with the process in %s', (process: string): void => {
         const AUTUMN: Record<string, () => Date> = {
             before: (): Date => new Date('2024-04-06T02:59:59.999Z'),
             first : (): Date => new Date('2024-04-06T03:00:00.000Z'),
@@ -903,8 +903,8 @@ describe('Rewriting dates stored before 7.0.0 as local days on a local connectio
         vi.unstubAllEnvs();
     });
 
-    test.each(['America/New_York', 'Asia/Tokyo', 'America/Santiago'])('moves each UTC midnight to the local day it names in %s, once however often it runs', async (timezone: string): Promise<void> => {
-        vi.stubEnv('TZ', timezone);
+    test.each(ZONES)('moves each UTC midnight to the local day it names in %s, once however often it runs', async (timezone: string): Promise<void> => {
+        Env.moveTo(timezone);
 
         const database: string = `builder-extras-rewritten-${++sequence}`;
 
@@ -1013,8 +1013,8 @@ describe('Moving dates written by 7.0.0 to UTC days', (): void => {
         vi.unstubAllEnvs();
     });
 
-    test.each(['America/New_York', 'Asia/Tokyo', 'America/Santiago'])('moves each local midnight to midnight UTC of that day in %s, once however often it runs', async (timezone: string): Promise<void> => {
-        vi.stubEnv('TZ', timezone);
+    test.each(ZONES)('moves each local midnight to midnight UTC of that day in %s, once however often it runs', async (timezone: string): Promise<void> => {
+        Env.moveTo(timezone);
 
         const database: string = `builder-extras-upgraded-${++sequence}`;
         const noon: Date = new Date(2024, 0, 15, 12);
@@ -1044,7 +1044,7 @@ describe('Moving dates written by 7.0.0 to UTC days', (): void => {
             ['unknown', null],
         ]);
         expect((await DB.table('birthdays').where('born', '2024-01-15').pluck('name')).sort()).toEqual(['before', 'seven', 'twin']);
-        expect((await DB.table('birthdays').whereDate('born', '2024-01-15').pluck('name')).sort()).toEqual(['before', 'noon', 'seven', 'twin']);
+        expect((await DB.table('birthdays').whereDate('born', '2024-01-15').pluck('name')).sort()).toEqual(noon.getUTCDate() === 15 ? ['before', 'noon', 'seven', 'twin'] : ['before', 'seven', 'twin']);
         expect((await DB.table('birthdays').whereDay('born', 8).pluck('name')).sort()).toEqual(['skipped']);
     }, 2000);
 });

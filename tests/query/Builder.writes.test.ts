@@ -9,6 +9,8 @@ import {
     SchemaException,
     UniqueConstraintViolationException,
 } from '../../src/exceptions';
+import { Env } from '../environment';
+import { ZONES } from '../zones';
 import type { Builder } from '../../src/query/Builder';
 import type { Transaction } from '../../src/database/Transaction';
 import type { QueryExecuted } from '../../src/events';
@@ -161,11 +163,13 @@ function users(): Builder<User> {
 }
 
 beforeEach(async (): Promise<void> => {
-    connection?.disconnect();
-
     connection = new Connection('app', { database: `builder-writes-${++sequence}`, migrations: [CreateUsersTable] });
 
     await connection.migrate();
+});
+
+afterEach((): void => {
+    connection.disconnect();
 });
 
 describe('Builder insert', (): void => {
@@ -1676,6 +1680,7 @@ describe('Builder writes of a date-only string', (): void => {
     }
 
     afterEach((): void => {
+        dated?.disconnect();
         vi.stubEnv('TZ', zone);
         vi.unstubAllEnvs();
     });
@@ -1685,9 +1690,9 @@ describe('Builder writes of a date-only string', (): void => {
             await connect('local');
         });
 
-        describe.each(['America/New_York', 'Asia/Tokyo', 'America/Santiago'])('in %s', (timezone: string): void => {
+        describe.each(ZONES)('in %s', (timezone: string): void => {
             beforeEach((): void => {
-                vi.stubEnv('TZ', timezone);
+                Env.moveTo(timezone);
             });
 
             test('stores it as the local day in a date and a datetime column, and a date-only default too', async (): Promise<void> => {
@@ -1739,7 +1744,7 @@ describe('Builder writes of a date-only string', (): void => {
         });
 
         test('stores a day whose midnight is skipped as its first moment', async (): Promise<void> => {
-            vi.stubEnv('TZ', 'America/Santiago');
+            Env.moveTo('America/Santiago');
 
             await birthdays().insert({ name: 'Alice', born: '2024-09-08' as unknown as Date });
 
@@ -1756,9 +1761,9 @@ describe('Builder writes of a date-only string', (): void => {
             await connect(timezone);
         });
 
-        describe.each(['America/New_York', 'Asia/Tokyo', 'America/Santiago'])('with the process in %s', (process: string): void => {
+        describe.each(ZONES)('with the process in %s', (process: string): void => {
             beforeEach((): void => {
-                vi.stubEnv('TZ', process);
+                Env.moveTo(process);
             });
 
             test('stores it as midnight in that timezone in a date and a datetime column, and a date-only default too', async (): Promise<void> => {
@@ -1838,7 +1843,7 @@ describe('Builder writes of a date-only string', (): void => {
     test('stores a day whose midnight Santiago skips as its first moment there, whatever the process', async (): Promise<void> => {
         await connect('America/Santiago');
 
-        vi.stubEnv('TZ', 'Asia/Tokyo');
+        Env.moveTo('Asia/Tokyo');
 
         await birthdays().insert({ name: 'Alice', born: '2024-09-08' as unknown as Date });
 

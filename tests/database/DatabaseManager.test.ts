@@ -65,6 +65,7 @@ beforeEach((): void => {
 });
 
 afterEach((): void => {
+    DB.configure({ default: 'app', connections: {} });
     DB.disableQueryLog();
     DB.flushQueryLog();
 });

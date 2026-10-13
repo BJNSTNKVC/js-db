@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { DB } from '../../src/main';
 import { Migration } from '../../src/migrations/Migration';
 import { Seeder } from '../../src/seeders/Seeder';
@@ -94,6 +94,10 @@ async function recorded(types: string[], callback: () => Promise<unknown>): Prom
 
 beforeEach((): void => {
     configure([UserSeeder]);
+});
+
+afterEach((): void => {
+    DB.configure({ default: 'app', connections: {} });
 });
 
 describe('DB.seed', (): void => {

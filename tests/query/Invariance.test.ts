@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { Connection } from '../../src/database/Connection';
 import { Migration } from '../../src/migrations/Migration';
 import { Migrator } from '../../src/migrations/Migrator';
@@ -1300,6 +1300,10 @@ beforeEach(async (): Promise<void> => {
     await connection.table<Item>('plain').insert(ROWS);
 });
 
+afterEach((): void => {
+    connection.disconnect();
+});
+
 describe.each(LOOKUPS)('whereIn with %s', (_: string, column: 'id' | 'role', values: unknown[]): void => {
     const expected: Item[] = sorted(kept(column, values));
 
@@ -1355,6 +1359,8 @@ describe.each([...CASES, ...EXTRAS, ...PARTS])('%s', (_: string, constrain: (que
 
 describe('ordering through an index that leaves records out', (): void => {
     beforeEach(async (): Promise<void> => {
+        connection.disconnect();
+
         connection = new Connection('app', { database: `invariance-loose-${++sequence}`, migrations: [CreateItemsTables, AddRankToItemsTables, AddTierToItemsTables], strict: false });
 
         await connection.migrate();
@@ -1400,6 +1406,8 @@ describe('ordering through an index that leaves records out', (): void => {
 
 describe('aggregating over every match', (): void => {
     beforeEach(async (): Promise<void> => {
+        connection.disconnect();
+
         connection = new Connection('app', { database: `invariance-weighed-${++sequence}`, migrations: [CreateItemsTables, AddWeightToItemsTables] });
 
         await connection.migrate();
@@ -1420,6 +1428,8 @@ describe('aggregating over every match', (): void => {
 
 describe('unique violations on a unique column both copies hold', (): void => {
     beforeEach(async (): Promise<void> => {
+        connection.disconnect();
+
         connection = new Connection('app', { database: `invariance-coded-${++sequence}`, migrations: [CreateItemsTables, AddCodeToItemsTables] });
 
         await connection.migrate();
@@ -1444,6 +1454,8 @@ describe('unique violations on a unique column both copies hold', (): void => {
 
 describe('a column holding arrays under a multi-entry index', (): void => {
     beforeEach(async (): Promise<void> => {
+        connection.disconnect();
+
         connection = new Connection('app', { database: `invariance-tagged-${++sequence}`, migrations: [CreateItemsTables, AddTagsToItemsTables] });
 
         await connection.migrate();
@@ -1527,6 +1539,8 @@ describe.each(INDEXINGS)('a JSON column under %s on one copy', (_: string, migra
      * Migrate a fresh database and write the rows into both copies.
      */
     async function hold(rows: Documented[]): Promise<void> {
+        connection.disconnect();
+
         connection = new Connection('app', { database: `invariance-documented-${++sequence}`, migrations: [CreateItemsTables, migration] });
 
         await connection.migrate();
@@ -1620,6 +1634,8 @@ describe.each(INDEXINGS)('a JSON column under %s on one copy', (_: string, migra
 
 describe.each(DECLARINGS)('%s holding values of every kind, indexed on one copy', (_: string, migration: MigrationConstructor): void => {
     beforeEach(async (): Promise<void> => {
+        connection.disconnect();
+
         connection = new Connection('app', { database: `invariance-kinded-${++sequence}`, migrations: [CreateItemsTables, migration] });
 
         await connection.migrate();
@@ -1662,6 +1678,8 @@ describe.each(DECLARINGS)('%s holding values of every kind, indexed on one copy'
 
 describe.each(DECLARINGS)('%s holding binary values, indexed on one copy', (_: string, migration: MigrationConstructor): void => {
     beforeEach(async (): Promise<void> => {
+        connection.disconnect();
+
         connection = new Connection('app', { database: `invariance-binary-${++sequence}`, migrations: [CreateItemsTables, migration] });
 
         await connection.migrate();
@@ -1709,6 +1727,8 @@ describe.each(DECLARINGS)('%s holding binary values, indexed on one copy', (_: s
 
 describe('counting through a join', (): void => {
     beforeEach(async (): Promise<void> => {
+        connection.disconnect();
+
         connection = new Connection('app', { database: `invariance-joined-${++sequence}`, migrations: [CreateItemsTables, CreateNotesTable] });
 
         await connection.migrate();
@@ -1798,6 +1818,8 @@ describe('a column holding values of another type', (): void => {
     }
 
     beforeEach(async (): Promise<void> => {
+        connection.disconnect();
+
         connection = new Connection('app', { database: `invariance-mixed-${++sequence}`, migrations: [CreateItemsTables] });
 
         await connection.migrate();
@@ -1961,6 +1983,8 @@ describe('a column holding values of another type', (): void => {
     });
 
     test('sees rows of another type planted after the table was last queried', async (): Promise<void> => {
+        connection.disconnect();
+
         connection = new Connection('app', { database: `invariance-mixed-${++sequence}`, migrations: [CreateItemsTables] });
 
         await connection.migrate();

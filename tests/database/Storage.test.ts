@@ -35,6 +35,7 @@ beforeEach((): void => {
 });
 
 afterEach((): void => {
+    DB.purge('app');
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
 });
