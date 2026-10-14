@@ -731,12 +731,28 @@ export class Executor<T> {
     }
 
     /**
-     * Collect the records a cursor over the planned source yields.
+     * Collect the records a walk over the planned source yields.
      */
     async #cursored(store: IDBObjectStore, plan: Plan, matches: (record: Record<string, unknown>) => boolean, fresh: ((record: T) => boolean) | null = null): Promise<Entry<T>[]> {
         const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index);
-        const collected: Entry<T>[] = [];
         const ceiling: number | null = plan.ordered && this.#query.limit !== null ? this.#query.offset + this.#query.limit : null;
+        const filtered: boolean = plan.residual.length > 0 || fresh !== null;
+        const skips: boolean = plan.ordered && this.#query.offset > 0 && !filtered;
+
+        // IndexedDB reads a count of 0 as no limit at all,
+        // so a ceiling of 0 keeps the cursor.
+        if (plan.direction === 'next' && !skips && (ceiling === null || (!filtered && ceiling > 0))) {
+            const [records, keys]: [T[], IDBValidKey[]] = await Promise.all([
+                Request.settle(source.getAll(plan.range, ceiling ?? undefined) as IDBRequest<T[]>),
+                Request.settle(source.getAllKeys(plan.range, ceiling ?? undefined)),
+            ]);
+
+            return records
+                .map((record: T, index: number): Entry<T> => ({ record, key: keys[index] as IDBValidKey }))
+                .filter((entry: Entry<T>): boolean => matches(entry.record as Record<string, unknown>) && (fresh === null || fresh(entry.record)));
+        }
+
+        const collected: Entry<T>[] = [];
 
         await Request.walk(source.openCursor(plan.range, plan.direction), (cursor: IDBCursorWithValue): boolean => {
             if (matches(cursor.value as Record<string, unknown>) && (fresh === null || fresh(cursor.value as T))) {

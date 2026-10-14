@@ -1124,6 +1124,54 @@ describe('Builder plans', (): void => {
     });
 });
 
+describe('Builder range walks', (): void => {
+    test('reads a forward index range up to the limit, in index order', async (): Promise<void> => {
+        expect(await planned(async (): Promise<void> => {
+            expect(await names(users().where('name', '>=', 'B').orderBy('name').limit(2))).toEqual(['Bob', 'Carol']);
+        })).toEqual(['index:users_name_index']);
+    });
+
+    test('reads a reverse index range up to the limit, in index order', async (): Promise<void> => {
+        expect(await planned(async (): Promise<void> => {
+            expect(await names(users().where('name', '<', 'E').orderBy('name', 'desc').limit(2))).toEqual(['Dave', 'Carol']);
+        })).toEqual(['index:users_name_index']);
+    });
+
+    test('fills the limit of a forward index walk with the records a residual matches', async (): Promise<void> => {
+        expect(await planned(async (): Promise<void> => {
+            expect(await names(users().where('role', 'member').orderBy('name').limit(2))).toEqual(['Bob', 'Dave']);
+        })).toEqual(['index:users_name_index']);
+    });
+
+    test('returns nothing from a forward index walk under a limit of 0', async (): Promise<void> => {
+        expect(await planned(async (): Promise<void> => {
+            expect(await users().orderBy('name').limit(0).get()).toEqual([]);
+        })).toEqual(['index:users_name_index']);
+    });
+
+    test('offsets a forward index walk that a residual narrows, without a limit', async (): Promise<void> => {
+        expect(await planned(async (): Promise<void> => {
+            expect(await names(users().where('role', 'member').orderBy('name').offset(1))).toEqual(['Dave', 'Erin']);
+        })).toEqual(['index:users_name_index']);
+    });
+
+    test('reads every record of the store that a residual matches, in key order', async (): Promise<void> => {
+        expect(await planned(async (): Promise<void> => {
+            expect(await names(users().where('role', 'member'))).toEqual(['Bob', 'Dave', 'Erin']);
+        })).toEqual(['scan']);
+    });
+
+    test('chunks a read sorted in memory, each record under its own key', async (): Promise<void> => {
+        const pages: string[][] = [];
+
+        await users().orderBy('role').orderBy('name').chunk(2, (records: User[]): void => {
+            pages.push(records.map((user: User): string => user.name));
+        });
+
+        expect(pages).toEqual([['Alice', 'Bob'], ['Dave', 'Erin'], ['Carol']]);
+    });
+});
+
 describe('Builder ordering through an index that leaves records out', (): void => {
     let loose: Connection;
 
@@ -1728,6 +1776,16 @@ describe('Builder distinct', (): void => {
     test('fills an ordered limit walked through an index with distinct rows', async (): Promise<void> => {
         expect(await roles().orderBy('visits', 'desc').explain()).toEqual('index:members_visits_index');
         expect(await roles().orderBy('visits', 'desc').limit(2).get()).toEqual([{ role: 'a' }, { role: 'b' }]);
+    });
+
+    test('keeps the first row of each value walking an index forward', async (): Promise<void> => {
+        expect(await roles().orderBy('visits').explain()).toEqual('index:members_visits_index');
+        expect(await roles().orderBy('visits').get()).toEqual([{ role: 'c' }, { role: 'a' }, { role: 'b' }]);
+    });
+
+    test('fills a forward ordered limit walked through an index with distinct rows', async (): Promise<void> => {
+        expect(await roles().orderBy('visits').explain()).toEqual('index:members_visits_index');
+        expect(await roles().orderBy('visits').limit(2).get()).toEqual([{ role: 'c' }, { role: 'a' }]);
     });
 
     test('fills a random limit with distinct rows', async (): Promise<void> => {
