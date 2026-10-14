@@ -4,7 +4,9 @@ IndexedDB is shared across tabs, which produces two situations worth handling:
 
 - Another tab holds an older version open, blocking an upgrade. The connection emits
   `database-blocked` and rejects with `DatabaseBlockedException`, so you can ask the user to close
-  the other tabs.
+  the other tabs. Once they do, the browser still carries out the blocked upgrade, and the
+  connection aborts it, so no migration runs and the database stays as it was. The next `open()`,
+  or the next query, runs the pending migrations and holds the only handle.
 - Another tab upgrades or deletes the database. The connection closes its own handle so it does not
   block that tab, then emits `database-version-changed`. Its `version` is the version the other tab
   is opening, or `null` when it is deleting the database.
@@ -16,6 +18,11 @@ whose open failed, such as with `MigrationMismatchException`, or that disconnect
 straight after opening, could likewise be reported as blocking an upgrade or delete for a moment.
 Before 18.0.3 Safari did the same to a `fresh()` made straight after a query outside
 `DB.transaction`.
+
+Before 18.0.6 the blocked upgrade ran the migrations once the other tab closed, after its open had
+rejected, and an open made meanwhile got a handle of its own. The connection could then keep a
+second handle that nothing closed, not even `disconnect()`, and that blocked every later upgrade or
+delete from another tab until the page was reloaded.
 
 The other tab is usually running newer code with more migrations, after a deploy. This tab can no
 longer open the database, and its next query would reject with `MigrationMismatchException`. Reload

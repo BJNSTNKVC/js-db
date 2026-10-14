@@ -6,9 +6,7 @@ import { Schema } from '../../src/schema/Schema';
 import { Blueprint } from '../../src/schema/Blueprint';
 import { DB } from '../../src/main';
 import { DatabaseBlockedException, MigrationMismatchException } from '../../src/exceptions';
-import { Env } from '../environment';
-import { Engine } from '../engines';
-import type { MigrationConstructor } from '../../src/migrations/types';
+import type { MigrationConstructor, MigrationStatus } from '../../src/migrations/types';
 import type { DatabaseBlocked, DatabaseVersionChanged } from '../../src/events';
 
 const connections: Connection[] = [];
@@ -71,6 +69,23 @@ async function tab(): Promise<string> {
  */
 function named(): string {
     return `browser-tabs-${++sequence}-${Date.now()}`;
+}
+
+/**
+ * Read the version a database is stored at, once the opens queued before it finish.
+ */
+function stored(database: string): Promise<number> {
+    return new Promise<number>((resolve: (version: number) => void, reject: (reason: unknown) => void): void => {
+        const request: IDBOpenDBRequest = indexedDB.open(database);
+
+        request.onsuccess = (): void => {
+            request.result.close();
+
+            resolve(request.result.version);
+        };
+
+        request.onerror = (): void => reject(request.error);
+    });
 }
 
 /**
@@ -154,9 +169,7 @@ describe('Another tab holding the database open', (): void => {
         expect(await connection.tables()).toEqual(['users']);
     });
 
-    // The blocked open's request still upgrades once the other tab closes,
-    // leaving the connection a second handle that nothing ever closes.
-    test.skipIf(Env.isEngine(Engine.Chromium, Engine.Firefox, Engine.WebKit))('leaves a tab that recovered from the block stepping aside for a later upgrade', async (): Promise<void> => {
+    test('leaves a tab that recovered from the block stepping aside for a later upgrade', async (): Promise<void> => {
         const database: string = named();
         const other: string = await tab();
 
@@ -170,6 +183,57 @@ describe('Another tab holding the database open', (): void => {
         await soon(connection.open());
 
         expect(await soon(commands.upgradeDatabase(other, database, 9))).toEqual(false);
+    });
+
+    test('runs none of the rejected open\'s migrations once that tab closes', async (): Promise<void> => {
+        const database: string = named();
+        const other: string = await tab();
+
+        await soon(commands.holdDatabase(other, database, 1));
+
+        const connection: Connection = connect([CreateUsersTable], database);
+
+        await expect(soon(connection.open())).rejects.toBeInstanceOf(DatabaseBlockedException);
+
+        await soon(commands.closeDatabase(other, database));
+
+        expect(await soon(connection.status())).toEqual([{ migration: 'create_users_table', ran: false, at: null }]);
+        expect(await soon(stored(database))).toEqual(1);
+    });
+
+    test('runs the migrations on the next open instead, made as soon as that tab closes', async (): Promise<void> => {
+        const database: string = named();
+        const other: string = await tab();
+
+        await soon(commands.holdDatabase(other, database, 1));
+
+        const connection: Connection = connect([CreateUsersTable], database);
+
+        await expect(soon(connection.open())).rejects.toBeInstanceOf(DatabaseBlockedException);
+
+        await soon(commands.closeDatabase(other, database));
+
+        expect(await soon(connection.migrate())).toEqual(['create_users_table']);
+        expect((await connection.status()).map((status: MigrationStatus): boolean => status.ran)).toEqual([true]);
+        expect((await connection.open()).version).toEqual(2);
+    });
+
+    test('leaves another tab\'s delete unblocked once the tab that recovered disconnects', async (): Promise<void> => {
+        const database: string = named();
+        const other: string = await tab();
+
+        await soon(commands.holdDatabase(other, database, 1));
+
+        const connection: Connection = connect([CreateUsersTable], database);
+
+        await expect(soon(connection.open())).rejects.toBeInstanceOf(DatabaseBlockedException);
+
+        await soon(commands.closeDatabase(other, database));
+        await soon(connection.open());
+
+        connection.disconnect();
+
+        expect(await soon(commands.deleteDatabase(other, database))).toEqual(false);
     });
 });
 

@@ -520,9 +520,19 @@ export class Connection {
             const request: IDBOpenDBRequest = indexedDB.open(this.#config.database, version);
             let runner: Promise<string[]> | null = null;
             let failure: unknown = null;
+            let blocked: boolean = false;
 
             request.onupgradeneeded = (): void => {
                 const transaction: IDBTransaction = request.transaction as IDBTransaction;
+
+                // A blocked request stays queued and upgrades once the other tab closes,
+                // long after the open rejected. Aborting the upgrade closes
+                // the handle the browser opened for it.
+                if (blocked) {
+                    transaction.abort();
+
+                    return;
+                }
 
                 // The request keeps hold of the transaction for a tick after it finishes, so
                 // the handle alone does not say whether there is still anything to abort.
@@ -563,6 +573,8 @@ export class Connection {
             };
 
             request.onblocked = (): void => {
+                blocked = true;
+
                 Dispatcher.dispatch(new DatabaseBlocked(this.#config.database));
 
                 reject(new DatabaseBlockedException(this.#config.database));

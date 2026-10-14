@@ -432,6 +432,40 @@ describe('Connection multi tab', (): void => {
         await blocked;
     });
 
+    test('keeps no second handle once the connection that was blocked opens again', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+
+        const held: IDBDatabase = await new Promise<IDBDatabase>((resolve: (value: IDBDatabase) => void, reject: (reason: unknown) => void): void => {
+            const request: IDBOpenDBRequest = indexedDB.open(database, 1);
+
+            request.onsuccess = (): void => resolve(request.result);
+            request.onerror = (): void => reject(request.error);
+        });
+
+        handles.push(held);
+
+        const connection: Connection = connect([CreateUsersTable], database);
+
+        await expect(connection.open()).rejects.toBeInstanceOf(DatabaseBlockedException);
+
+        held.close();
+
+        await connection.open();
+
+        await new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
+            const request: IDBOpenDBRequest = indexedDB.open(database, 9);
+
+            request.onsuccess = (): void => {
+                handles.push(request.result);
+
+                resolve();
+            };
+
+            request.onerror = (): void => reject(request.error);
+            request.onblocked = (): void => reject(new Error('A handle the connection kept blocked the upgrade.'));
+        });
+    });
+
     test('steps aside when another tab upgrades, rather than blocking it', async (): Promise<void> => {
         const database: string = `connection-${++sequence}`;
         const connection: Connection = connect([CreateUsersTable], database);
