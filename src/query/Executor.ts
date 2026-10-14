@@ -1,6 +1,6 @@
 import { QueryExecuted } from '../events';
 import { Dispatcher } from '../events/Dispatcher';
-import { SchemaException, UniqueConstraintViolationException } from '../exceptions';
+import { SchemaException } from '../exceptions';
 import { Handles } from '../database/Handles';
 import { Request } from '../database/Request';
 import { Migrator } from '../migrations/Migrator';
@@ -237,31 +237,9 @@ export class Executor<T> {
             const schema: TableSchema = await this.#connection.schema(this.#query.table);
             const store: IDBObjectStore = await this.#store('readwrite');
             const started: number = performance.now();
-
-            let inserted: number = 0;
-
-            for (const row of rows) {
-                try {
-                    await Writer.add(store, schema, this.#connection.strict, this.#connection.timezone, row as Record<string, unknown>);
-
-                    inserted++;
-                } catch (error: unknown) {
-                    if (ignore && error instanceof UniqueConstraintViolationException) {
-                        continue;
-                    }
-
-                    if (!ignore && this.#owns(store)) {
-                        try {
-                            store.transaction.abort();
-                        } catch {
-                            // A transaction that has already finished throws on abort,
-                            // which would take the place of the failure being reported.
-                        }
-                    }
-
-                    throw error;
-                }
-            }
+            const inserted: number = this.#owns(store)
+                ? await Writer.addAll(store, schema, this.#connection.strict, this.#connection.timezone, rows as Record<string, unknown>[], ignore)
+                : await Writer.addEach(store, schema, this.#connection.strict, this.#connection.timezone, rows as Record<string, unknown>[], ignore);
 
             this.#emit('insert', started, inserted);
 

@@ -142,6 +142,16 @@ function users(): Builder<User> {
     return connection.table<User>('users');
 }
 
+/**
+ * Build a hundred users whose fiftieth shares the tenth one's email.
+ */
+function hundred(): Partial<User>[] {
+    return Array.from({ length: 100 }, (_: unknown, position: number): Partial<User> => ({
+        name: `User ${position + 1}`,
+        email: `user${position === 49 ? 10 : position + 1}@example.com`,
+    }));
+}
+
 beforeEach(async (): Promise<void> => {
     connection = new Connection('app', { database: `builder-writes-${++sequence}`, migrations: [CreateUsersTable] });
 
@@ -267,6 +277,112 @@ describe('Builder insert', (): void => {
         ])).toEqual(2);
 
         expect(await users().orderBy('id').pluck('name')).toEqual(['Alice', 'Carol']);
+    });
+
+    test('writes no row of a hundred-row insert whose fiftieth row collides with an earlier one', async (): Promise<void> => {
+        await expect(users().insert(hundred())).rejects.toThrow(new UniqueConstraintViolationException('users', 'users_email_unique'));
+
+        expect(await users().count()).toEqual(0);
+    });
+
+    test('ignores the fiftieth row of a hundred-row insert and keeps the other 99 in order', async (): Promise<void> => {
+        expect(await users().insertOrIgnore(hundred())).toEqual(99);
+
+        expect(await users().orderBy('id').pluck('name')).toEqual(
+            hundred().filter((_: Partial<User>, position: number): boolean => position !== 49).map((user: Partial<User>): unknown => user.name),
+        );
+    });
+
+    test('keeps the 49 rows before the failure of a hundred-row insert caught inside a transaction', async (): Promise<void> => {
+        await connection.transaction(async (transaction: Transaction): Promise<void> => {
+            await expect(transaction.table<User>('users').insert(hundred())).rejects.toThrow(
+                new UniqueConstraintViolationException('users', 'users_email_unique'),
+            );
+        });
+
+        expect(await users().orderBy('id').pluck('name')).toEqual(hundred().slice(0, 49).map((user: Partial<User>): unknown => user.name));
+    });
+
+    test('reports the first of several failed rows of a multi-row insert', async (): Promise<void> => {
+        await expect(users().insert([
+            { id: 1, name: 'Alice', email: 'alice@example.com' },
+            { name: 'Bob', email: 'alice@example.com' },
+            { id: 1, name: 'Carol', email: 'carol@example.com' },
+        ])).rejects.toThrow(new UniqueConstraintViolationException('users', 'users_email_unique'));
+
+        expect(await users().count()).toEqual(0);
+    });
+
+    test('names the index a row collides on when a later row takes its key', async (): Promise<void> => {
+        await users().insert({ id: 1, name: 'Alice', email: 'alice@example.com' });
+
+        await expect(users().insert([
+            { id: 7, name: 'Bob', email: 'alice@example.com' },
+            { id: 7, name: 'Carol', email: 'carol@example.com' },
+        ])).rejects.toThrow(new UniqueConstraintViolationException('users', 'users_email_unique'));
+
+        expect(await users().pluck('name')).toEqual(['Alice']);
+    });
+
+    test('names the index a row collides on when a later row takes its value in an index checked before it', async (): Promise<void> => {
+        await connection.table('nullables').insert({ nickname: 'a', email: 'a@b.c' });
+
+        await expect(connection.table('nullables').insert([
+            { nickname: 'b', email: 'a@b.c' },
+            { nickname: 'b', email: 'b@b.c' },
+        ])).rejects.toThrow(new UniqueConstraintViolationException('nullables', 'nullables_email_unique'));
+
+        expect(await connection.table('nullables').pluck('nickname')).toEqual(['a']);
+    });
+
+    test('writes no row of a multi-row insertOrIgnore whose later row lacks a required column', async (): Promise<void> => {
+        await expect(users().insertOrIgnore([
+            { name: 'Alice', email: 'alice@example.com' },
+            { name: 'Bob', email: 'alice@example.com' },
+            { email: 'carol@example.com' },
+        ])).rejects.toBeInstanceOf(NotNullConstraintViolationException);
+
+        expect(await users().count()).toEqual(0);
+    });
+
+    test('writes no row of a multi-row insertOrIgnore whose later row cannot be stored', async (): Promise<void> => {
+        await expect(users().insertOrIgnore([
+            { name: 'Alice', email: 'alice@example.com' },
+            { name: 'Bob', email: 'bob@example.com', extra: (): void => {} } as Partial<User>,
+        ])).rejects.toHaveProperty('name', 'DataCloneError');
+
+        expect(await users().count()).toEqual(0);
+    });
+
+    test('writes no row of a multi-row insertOrIgnore whose later row fails for a reason other than a collision', async (): Promise<void> => {
+        const add: IDBObjectStore['add'] = IDBObjectStore.prototype.add;
+        let calls: number = 0;
+
+        vi.spyOn(IDBObjectStore.prototype, 'add').mockImplementation(function (this: IDBObjectStore, ...parameters: Parameters<IDBObjectStore['add']>): IDBRequest<IDBValidKey> {
+            const request: IDBRequest<IDBValidKey> = add.apply(this, parameters);
+
+            if (++calls !== 2) {
+                return request;
+            }
+
+            const failed: Partial<IDBRequest<IDBValidKey>> = { error: new DOMException('boom', 'UnknownError') };
+
+            request.onsuccess = (): void => {
+                (failed.onerror as ((event: Event) => void) | null)?.(new Event('error'));
+            };
+
+            return failed as IDBRequest<IDBValidKey>;
+        });
+
+        await expect(users().insertOrIgnore([
+            { name: 'Alice', email: 'alice@example.com' },
+            { name: 'Bob', email: 'bob@example.com' },
+            { name: 'Carol', email: 'carol@example.com' },
+        ])).rejects.toHaveProperty('name', 'UnknownError');
+
+        vi.restoreAllMocks();
+
+        expect(await users().count()).toEqual(0);
     });
 
     test('announces the insert', async (): Promise<void> => {
@@ -883,14 +999,14 @@ describe('Builder unattributable constraint violations', (): void => {
         await users().insert({ name: 'Alice', email: 'alice@example.com' });
 
         // Report every index as holding nothing, so the violation cannot be attributed.
-        const empty: MockInstance = vi.spyOn(IDBIndex.prototype, 'count').mockImplementation(function (this: IDBIndex): IDBRequest<number> {
-            const request: Partial<IDBRequest<number>> = { result: 0 };
+        const empty: MockInstance = vi.spyOn(IDBIndex.prototype, 'getKey').mockImplementation(function (this: IDBIndex): IDBRequest<IDBValidKey | undefined> {
+            const request: Partial<IDBRequest<IDBValidKey | undefined>> = { result: undefined };
 
             setTimeout((): void => {
                 (request.onsuccess as ((event: Event) => void) | null)?.(new Event('success'));
             }, 0);
 
-            return request as IDBRequest<number>;
+            return request as IDBRequest<IDBValidKey | undefined>;
         });
 
         await expect(users().insert({ name: 'Bob', email: 'alice@example.com' })).rejects.toBeInstanceOf(DOMException);

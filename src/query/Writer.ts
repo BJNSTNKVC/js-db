@@ -19,11 +19,94 @@ export class Writer {
     }
 
     /**
+     * Add the records one at a time, skipping collisions when told to.
+     */
+    static async addEach(store: IDBObjectStore, schema: TableSchema, strict: boolean, timezone: string, records: Record<string, unknown>[], ignore: boolean): Promise<number> {
+        let added: number = 0;
+
+        for (const record of records) {
+            try {
+                await this.add(store, schema, strict, timezone, record);
+
+                added++;
+            } catch (error: unknown) {
+                if (ignore && error instanceof UniqueConstraintViolationException) {
+                    continue;
+                }
+
+                throw error;
+            }
+        }
+
+        return added;
+    }
+
+    /**
+     * Add the records together, rolling back the transaction when one fails.
+     */
+    static async addAll(store: IDBObjectStore, schema: TableSchema, strict: boolean, timezone: string, records: Record<string, unknown>[], ignore: boolean): Promise<number> {
+        const prepared: Record<string, unknown>[] = records.map((record: Record<string, unknown>): Record<string, unknown> => Enforcer.insertable(record, schema, strict, timezone, new Date()));
+        const requests: Promise<IDBValidKey>[] = [];
+
+        let failure: { error: unknown } | null = null;
+
+        for (const record of prepared) {
+            try {
+                requests.push(Request.settle(store.add(record), true));
+            } catch (error: unknown) {
+                failure = { error };
+
+                break;
+            }
+        }
+
+        const outcomes: PromiseSettledResult<IDBValidKey>[] = await Promise.allSettled(requests);
+
+        let written: Map<string, number> | null = null;
+        let added: number = 0;
+
+        for (const [position, outcome] of outcomes.entries()) {
+            if (outcome.status === 'fulfilled') {
+                added++;
+
+                continue;
+            }
+
+            // The rows sent after a failed one have landed by the time it is traced,
+            // so a key one of them holds is not the one it collided with.
+            const positions: Map<string, number> = written ??= this.#written(outcomes);
+            const later: (key: IDBValidKey) => boolean = (key: IDBValidKey): boolean => (positions.get(Signature.value(key)) ?? -1) > position;
+            const error: unknown = await this.attributed(store, schema, prepared[position] as Record<string, unknown>, null, outcome.reason, later);
+
+            if (ignore && error instanceof UniqueConstraintViolationException) {
+                continue;
+            }
+
+            failure = { error };
+
+            break;
+        }
+
+        if (failure !== null) {
+            try {
+                store.transaction.abort();
+            } catch {
+                // A transaction that has already finished throws on abort,
+                // which would take the place of the failure being reported.
+            }
+
+            throw failure.error;
+        }
+
+        return added;
+    }
+
+    /**
      * Get the error a failed write reports, naming the violated unique index.
      */
-    static async attributed(store: IDBObjectStore, schema: TableSchema, record: Record<string, unknown>, previous: Record<string, unknown> | null, error: unknown): Promise<unknown> {
+    static async attributed(store: IDBObjectStore, schema: TableSchema, record: Record<string, unknown>, previous: Record<string, unknown> | null, error: unknown, later: (key: IDBValidKey) => boolean = (): boolean => false): Promise<unknown> {
         if (error instanceof DOMException && error.name === 'ConstraintError') {
-            const index: string | null = await this.#violated(store, schema, record, previous);
+            const index: string | null = await this.#violated(store, schema, record, previous, later);
 
             if (index !== null) {
                 return new UniqueConstraintViolationException(schema.table, index);
@@ -168,18 +251,20 @@ export class Writer {
     /**
      * Find the unique index the record collides with, if any.
      */
-    static async #violated(store: IDBObjectStore, schema: TableSchema, record: Record<string, unknown>, previous: Record<string, unknown> | null): Promise<string | null> {
+    static async #violated(store: IDBObjectStore, schema: TableSchema, record: Record<string, unknown>, previous: Record<string, unknown> | null, later: (key: IDBValidKey) => boolean): Promise<string | null> {
         // A generated key is absent from the record,
         // and an absent value is not a valid range.
         if (previous === null && schema.key !== null && this.#keyable(record[schema.key])) {
-            if (await Request.settle(store.count(IDBKeyRange.only(record[schema.key] as IDBValidKey))) > 0) {
+            const key: IDBValidKey = record[schema.key] as IDBValidKey;
+
+            if (!later(key) && await Request.settle(store.count(IDBKeyRange.only(key))) > 0) {
                 return schema.key;
             }
         }
 
         for (const index of schema.indexes.filter((candidate: IndexSchema): boolean => candidate.unique)) {
             if (index.multiEntry) {
-                if (await this.#collides(store, index, record, previous)) {
+                if (await this.#collides(store, index, record, previous, later)) {
                     return index.name;
                 }
 
@@ -196,9 +281,7 @@ export class Writer {
                 continue;
             }
 
-            const key: IDBValidKey = this.#keyOf(index.columns, record);
-
-            if (await Request.settle(store.index(index.name).count(IDBKeyRange.only(key))) > 0) {
+            if (await this.#held(store, index, this.#keyOf(index.columns, record), later)) {
                 return index.name;
             }
         }
@@ -209,7 +292,7 @@ export class Writer {
     /**
      * Determine whether another record holds an entry this record adds.
      */
-    static async #collides(store: IDBObjectStore, index: IndexSchema, record: Record<string, unknown>, previous: Record<string, unknown> | null): Promise<boolean> {
+    static async #collides(store: IDBObjectStore, index: IndexSchema, record: Record<string, unknown>, previous: Record<string, unknown> | null, later: (key: IDBValidKey) => boolean): Promise<boolean> {
         const column: string = index.columns[0] as string;
         const held: IDBValidKey[] = previous === null ? [] : this.#entries(previous[column]);
 
@@ -218,12 +301,30 @@ export class Writer {
                 continue;
             }
 
-            if (await Request.settle(store.index(index.name).count(IDBKeyRange.only(entry))) > 0) {
+            if (await this.#held(store, index, entry, later)) {
                 return true;
             }
         }
 
         return false;
+    }
+
+    /**
+     * Determine whether a record written before the failed one holds the index key.
+     */
+    static async #held(store: IDBObjectStore, index: IndexSchema, key: IDBValidKey, later: (key: IDBValidKey) => boolean): Promise<boolean> {
+        const holder: IDBValidKey | undefined = await Request.settle(store.index(index.name).getKey(IDBKeyRange.only(key)));
+
+        return holder !== undefined && !later(holder);
+    }
+
+    /**
+     * Map each key the writes stored to the position of the record holding it.
+     */
+    static #written(outcomes: PromiseSettledResult<IDBValidKey>[]): Map<string, number> {
+        return new Map<string, number>(outcomes.flatMap(
+            (outcome: PromiseSettledResult<IDBValidKey>, position: number): [string, number][] => outcome.status === 'fulfilled' ? [[Signature.value(outcome.value), position]] : [],
+        ));
     }
 
     /**
