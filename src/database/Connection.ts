@@ -282,9 +282,9 @@ export class Connection {
         let aborting: boolean = false;
         let resolved: boolean = false;
 
-        // An untolerated request failure bubbles here and takes the transaction
-        // down with it, which happens before our own catch runs.
-        // Aborting again would then throw.
+        // An untolerated request failure bubbles here, and the transaction aborts
+        // once the failure has been dispatched, after which aborting again throws.
+        // A browser runs the catches awaiting the request before it gets here.
         handle.onerror = (): void => {
             aborting = true;
         };

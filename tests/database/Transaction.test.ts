@@ -872,8 +872,8 @@ describe('Transaction that went inactive before it completed', (): void => {
         expect(read).not.toHaveBeenCalled();
     });
 
-    // A browser delivers the failed request's error before the abort event,
-    // so the check still runs once on the aborting transaction.
+    // A browser runs the callback's catch before the failed request's error reaches the transaction,
+    // which stays active until then, so the check still runs once.
     test.skipIf(Env.isEngine(Engine.Chromium, Engine.Firefox, Engine.WebKit))('makes no check once the transaction has aborted', async (): Promise<void> => {
         const read: MockInstance = vi.spyOn(IDBObjectStore.prototype, 'get');
 
