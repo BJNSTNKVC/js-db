@@ -679,9 +679,10 @@ export class Executor<T> {
         const matches: (record: Record<string, unknown>) => boolean = Predicate.compile(plan.residual);
         const first: ((row: Record<string, unknown>) => boolean) | null = this.#deduplicates(schema, distinct) ? this.#fresh() : null;
         const fresh: ((record: T) => boolean) | null = first === null ? null : (record: T): boolean => first(this.#projected(record) as Record<string, unknown>);
+        const skipped: number = plan.ordered && plan.residual.length === 0 && fresh === null ? this.#query.offset : 0;
 
         const collected: Entry<T>[] = plan.values === null
-            ? await this.#cursored(store, plan, matches, plan.ordered ? fresh : null)
+            ? await this.#cursored(store, plan, matches, plan.ordered ? fresh : null, skipped)
             : await this.#points(store, plan, matches);
 
         const ordered: Entry<T>[] = plan.ordered ? collected : this.#sorted(collected);
@@ -690,7 +691,7 @@ export class Executor<T> {
             ? ordered
             : ordered.filter((entry: Entry<T>): boolean => fresh(entry.record));
 
-        const paged: Entry<T>[] = this.#paged(unique);
+        const paged: Entry<T>[] = this.#paged(unique, this.#query.offset - skipped);
 
         this.#emit(Planner.describe(plan), started, paged.length);
 
@@ -733,15 +734,14 @@ export class Executor<T> {
     /**
      * Collect the records a walk over the planned source yields.
      */
-    async #cursored(store: IDBObjectStore, plan: Plan, matches: (record: Record<string, unknown>) => boolean, fresh: ((record: T) => boolean) | null = null): Promise<Entry<T>[]> {
+    async #cursored(store: IDBObjectStore, plan: Plan, matches: (record: Record<string, unknown>) => boolean, fresh: ((record: T) => boolean) | null = null, skip: number = 0): Promise<Entry<T>[]> {
         const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index);
-        const ceiling: number | null = plan.ordered && this.#query.limit !== null ? this.#query.offset + this.#query.limit : null;
+        const ceiling: number | null = plan.ordered && this.#query.limit !== null ? this.#query.offset - skip + this.#query.limit : null;
         const filtered: boolean = plan.residual.length > 0 || fresh !== null;
-        const skips: boolean = plan.ordered && this.#query.offset > 0 && !filtered;
 
         // IndexedDB reads a count of 0 as no limit at all,
         // so a ceiling of 0 keeps the cursor.
-        if (plan.direction === 'next' && !skips && (ceiling === null || (!filtered && ceiling > 0))) {
+        if (plan.direction === 'next' && skip === 0 && (ceiling === null || (!filtered && ceiling > 0))) {
             const [records, keys]: [T[], IDBValidKey[]] = await Promise.all([
                 Request.settle(source.getAll(plan.range, ceiling ?? undefined) as IDBRequest<T[]>),
                 Request.settle(source.getAllKeys(plan.range, ceiling ?? undefined)),
@@ -760,7 +760,7 @@ export class Executor<T> {
             }
 
             return ceiling === null || collected.length < ceiling;
-        });
+        }, skip);
 
         return collected;
     }
@@ -825,9 +825,7 @@ export class Executor<T> {
     /**
      * Apply the offset and limit to the collected records.
      */
-    #paged<R>(collected: R[]): R[] {
-        const from: number = this.#query.offset;
-
+    #paged<R>(collected: R[], from: number = this.#query.offset): R[] {
         return this.#query.limit === null ? collected.slice(from) : collected.slice(from, from + this.#query.limit);
     }
 

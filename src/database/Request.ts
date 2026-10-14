@@ -24,15 +24,28 @@ export class Request {
     }
 
     /**
-     * Walk a cursor, calling back for each record until told to stop.
+     * Walk a cursor past the skipped records, calling back until told to stop.
      */
-    static walk<T extends IDBCursor>(request: IDBRequest<T | null>, callback: (cursor: T) => boolean | void): Promise<void> {
+    static walk<T extends IDBCursor>(request: IDBRequest<T | null>, callback: (cursor: T) => boolean | void, skip: number = 0): Promise<void> {
+        let skipping: number = skip;
+
         return new Promise<void>((resolve: () => void, reject: (reason: unknown) => void): void => {
             request.onsuccess = (): void => {
                 const cursor: T | null = request.result;
 
                 if (cursor === null) {
                     resolve();
+
+                    return;
+                }
+
+                // A cursor advances by an unsigned long at most and throws past it,
+                // so a larger skip is taken in several steps.
+                if (skipping > 0) {
+                    const step: number = Math.min(skipping, 2 ** 32 - 1);
+
+                    skipping -= step;
+                    cursor.advance(step);
 
                     return;
                 }

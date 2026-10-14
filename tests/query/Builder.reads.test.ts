@@ -1155,6 +1155,62 @@ describe('Builder range walks', (): void => {
         })).toEqual(['index:users_name_index']);
     });
 
+    test('returns nothing from an ordered index walk offset past every record', async (): Promise<void> => {
+        expect(await planned(async (): Promise<void> => {
+            expect(await users().orderBy('name').offset(10).limit(2).get()).toEqual([]);
+            expect(await users().orderBy('name').offset(5).get()).toEqual([]);
+        })).toEqual(['index:users_name_index', 'index:users_name_index']);
+    });
+
+    test('returns only the last record from an ordered index walk offset to it', async (): Promise<void> => {
+        expect(await planned(async (): Promise<void> => {
+            expect(await names(users().orderBy('name').offset(4).limit(2))).toEqual(['Erin']);
+        })).toEqual(['index:users_name_index']);
+    });
+
+    test('offsets a forward index range without a limit, in index order', async (): Promise<void> => {
+        expect(await planned(async (): Promise<void> => {
+            expect(await names(users().where('name', '>=', 'B').orderBy('name').offset(1))).toEqual(['Carol', 'Dave', 'Erin']);
+        })).toEqual(['index:users_name_index']);
+    });
+
+    test('offsets a reverse index walk up to the limit, in index order', async (): Promise<void> => {
+        expect(await planned(async (): Promise<void> => {
+            expect(await names(users().orderBy('name', 'desc').offset(1).limit(2))).toEqual(['Dave', 'Carol']);
+        })).toEqual(['index:users_name_index']);
+    });
+
+    test('returns nothing from an offset index walk under a limit of 0', async (): Promise<void> => {
+        expect(await planned(async (): Promise<void> => {
+            expect(await users().orderBy('name').offset(2).limit(0).get()).toEqual([]);
+        })).toEqual(['index:users_name_index']);
+    });
+
+    test('returns nothing from an ordered index walk offset by 2 ** 32 or more', async (): Promise<void> => {
+        expect(await planned(async (): Promise<void> => {
+            expect(await users().orderBy('name').offset(2 ** 32).limit(1).get()).toEqual([]);
+            expect(await users().orderBy('name', 'desc').offset(2 ** 32 + 1).get()).toEqual([]);
+        })).toEqual(['index:users_name_index', 'index:users_name_index']);
+    }, 2000);
+
+    test('announces the page an offset index walk returns', async (): Promise<void> => {
+        const seen: [string, number][] = [];
+        const listener: (event: Event) => void = ((event: QueryExecuted): void => {
+            seen.push([event.plan, event.records]);
+        }) as (event: Event) => void;
+
+        Dispatcher.listen('db:query', listener);
+
+        try {
+            expect(await names(users().orderBy('name').offset(1).limit(2))).toEqual(['Bob', 'Carol']);
+            expect(await names(users().orderBy('name', 'desc').offset(3))).toEqual(['Bob', 'Alice']);
+        } finally {
+            Dispatcher.forget('db:query', listener);
+        }
+
+        expect(seen).toEqual([['index:users_name_index', 2], ['index:users_name_index', 2]]);
+    });
+
     test('reads every record of the store that a residual matches, in key order', async (): Promise<void> => {
         expect(await planned(async (): Promise<void> => {
             expect(await names(users().where('role', 'member'))).toEqual(['Bob', 'Dave', 'Erin']);
