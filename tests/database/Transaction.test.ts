@@ -272,6 +272,18 @@ describe('Connection transaction', (): void => {
 
         expect(await connection.table<User>('users').value('role')).toEqual('owner');
     });
+
+    test('keeps the rows before a failed multi-row insert the callback catches', async (): Promise<void> => {
+        await connection.transaction(async (transaction: Transaction): Promise<void> => {
+            await expect(transaction.table('tags').insert([
+                { slug: 'a', label: 'x' },
+                { slug: 'b', label: 'x' },
+                { slug: 'c', label: 'y' },
+            ])).rejects.toThrow(new UniqueConstraintViolationException('tags', 'tags_label_unique'));
+        });
+
+        expect(await connection.table('tags').pluck('slug')).toEqual(['a']);
+    });
 });
 
 describe('Connection nested transaction', (): void => {

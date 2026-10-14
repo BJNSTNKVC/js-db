@@ -239,6 +239,36 @@ describe('Builder insert', (): void => {
         );
     });
 
+    test('writes no row of a multi-row insert whose second row collides', async (): Promise<void> => {
+        await expect(users().insert([
+            { name: 'Alice', email: 'alice@example.com' },
+            { name: 'Bob', email: 'alice@example.com' },
+            { name: 'Carol', email: 'carol@example.com' },
+        ])).rejects.toThrow(new UniqueConstraintViolationException('users', 'users_email_unique'));
+
+        expect(await users().count()).toEqual(0);
+    });
+
+    test('writes no row of a multi-row insert whose second row lacks a required column', async (): Promise<void> => {
+        await expect(users().insert([
+            { name: 'Alice', email: 'alice@example.com' },
+            { email: 'bob@example.com' },
+            { name: 'Carol', email: 'carol@example.com' },
+        ])).rejects.toBeInstanceOf(NotNullConstraintViolationException);
+
+        expect(await users().count()).toEqual(0);
+    });
+
+    test('ignores the colliding row of a multi-row insert and keeps the others', async (): Promise<void> => {
+        expect(await users().insertOrIgnore([
+            { name: 'Alice', email: 'alice@example.com' },
+            { name: 'Bob', email: 'alice@example.com' },
+            { name: 'Carol', email: 'carol@example.com' },
+        ])).toEqual(2);
+
+        expect(await users().orderBy('id').pluck('name')).toEqual(['Alice', 'Carol']);
+    });
+
     test('announces the insert', async (): Promise<void> => {
         const seen: string[] = [];
 

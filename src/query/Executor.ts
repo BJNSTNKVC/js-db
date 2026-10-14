@@ -246,9 +246,20 @@ export class Executor<T> {
 
                     inserted++;
                 } catch (error: unknown) {
-                    if (!ignore || !(error instanceof UniqueConstraintViolationException)) {
-                        throw error;
+                    if (ignore && error instanceof UniqueConstraintViolationException) {
+                        continue;
                     }
+
+                    if (!ignore && this.#owns(store)) {
+                        try {
+                            store.transaction.abort();
+                        } catch {
+                            // A transaction that has already finished throws on abort,
+                            // which would take the place of the failure being reported.
+                        }
+                    }
+
+                    throw error;
                 }
             }
 

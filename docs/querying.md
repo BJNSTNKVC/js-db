@@ -693,7 +693,9 @@ skips the record. A unique multi-entry index is violated when another record hol
 the array, while one array may repeat its own elements. A value IndexedDB cannot use as a key, such
 as an object, is in no index and collides with nothing, so a collision beside it still names the
 index that collided. An `update`, `increment` or `decrement` that collides on any of the
-records it matches writes none of them. Inside `DB.transaction`, the exception aborts the whole
+records it matches writes none of them. A multi-row `insert` that fails on any row, whether it
+collides or lacks a required column, writes none of them, as an `update` does. Before 18.0.7
+it kept the rows before the failure. Inside `DB.transaction`, the exception aborts the whole
 transaction as it leaves the callback. IndexedDB cannot undo one write alone, so a callback that
 catches it keeps whatever the failed write changed before the collision.
 
