@@ -51,7 +51,7 @@ caught it or made no further query resolved.
 - declaring an index over a column the table does not have once the blueprint is applied, over a
   boolean column, or over a column whose name is not a JavaScript identifier
 - `upsert` whose conflict target is neither the key path nor a unique index
-- `update`, `upsert`, `increment` or `decrement` touching the key path
+- `update`, `increment`, `decrement` or an `upsert` on a unique index touching the key path
 - a qualified column naming a table the query does not read: on a query without a join any table
   but its own, on a joined query any table it does not join
 - a record to insert naming one column twice, once qualified with its table and once not

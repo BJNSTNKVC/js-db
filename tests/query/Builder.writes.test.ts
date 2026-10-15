@@ -572,6 +572,65 @@ describe('Builder upsert', (): void => {
 
         await expect(users().upsert([{ id: 9, email: 'alice@example.com' } as Partial<User>], 'email')).rejects.toBeInstanceOf(SchemaException);
     });
+
+    test('merges only the named columns through the key path, keeping the rest and the creation time', async (): Promise<void> => {
+        const created: Date = new Date('2020-01-15T10:00:00.000Z');
+
+        await users().insert({ name: 'Alice', email: 'alice@example.com', role: 'admin', visits: 3, nickname: 'al', created_at: created });
+
+        expect(await users().upsert([{ id: 1, name: 'Alicia', email: 'other@example.com' }], 'id', ['name'])).toEqual(1);
+
+        const alice: User = await users().firstOrFail();
+
+        expect(alice).toMatchObject({ id: 1, name: 'Alicia', email: 'alice@example.com', role: 'admin', visits: 3, nickname: 'al', created_at: created });
+        expect((alice.updated_at as Date).getTime()).toBeGreaterThan(created.getTime());
+        expect(await users().count()).toEqual(1);
+    });
+
+    test('merges the columns the row gives through the key path when none are named, keeping the rest', async (): Promise<void> => {
+        const created: Date = new Date('2020-01-15T10:00:00.000Z');
+
+        await users().insert({ name: 'Alice', email: 'alice@example.com', role: 'admin', visits: 3, nickname: 'al', created_at: created });
+
+        expect(await users().upsert([{ id: 1, name: 'Alicia', email: 'alicia@example.com' }], 'id')).toEqual(1);
+
+        expect(await users().firstOrFail()).toMatchObject({ id: 1, name: 'Alicia', email: 'alicia@example.com', role: 'admin', visits: 3, nickname: 'al', created_at: created });
+        expect(await users().count()).toEqual(1);
+    });
+
+    test('merges the other named columns when the key path is named among them', async (): Promise<void> => {
+        await users().insert({ name: 'Alice', email: 'alice@example.com', role: 'admin' });
+
+        expect(await users().upsert([{ id: 1, name: 'Alicia', email: 'alice@example.com' }], 'id', ['id', 'name'])).toEqual(1);
+
+        expect(await users().firstOrFail()).toMatchObject({ id: 1, name: 'Alicia', role: 'admin' });
+    });
+
+    test('inserts through the key path when the row holds no key on an incrementing table', async (): Promise<void> => {
+        await users().insert({ name: 'Alice', email: 'alice@example.com', role: 'admin' });
+
+        expect(await users().upsert([{ name: 'Bob', email: 'bob@example.com' }], 'id', ['name'])).toEqual(1);
+
+        expect(await users().select('id', 'name', 'role').orderBy('id').get()).toEqual([
+            { id: 1, name: 'Alice', role: 'admin' },
+            { id: 2, name: 'Bob', role: 'member' },
+        ]);
+    });
+
+    test('names the unique index a record merged through the key path collides on', async (): Promise<void> => {
+        await users().insert([
+            { name: 'Alice', email: 'alice@example.com' },
+            { name: 'Bob', email: 'bob@example.com' },
+        ]);
+
+        const before: User[] = await users().orderBy('id').get();
+
+        await expect(users().upsert([{ id: 2, name: 'Bobby', email: 'alice@example.com' }], 'id', ['email'])).rejects.toThrow(
+            new UniqueConstraintViolationException('users', 'users_email_unique'),
+        );
+
+        expect(await users().orderBy('id').get()).toEqual(before);
+    });
 });
 
 describe('Builder increment and decrement', (): void => {

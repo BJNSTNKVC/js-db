@@ -709,6 +709,12 @@ column merges into the record holding 5 rather than inserting a second one. A co
 inserted. A blank string in a nullable number column is such a key, and so is a value IndexedDB
 cannot use as a key, such as an object or a boolean.
 
+An `upsert` on the key path merges as one on a unique index does. It writes only the columns its
+update list names, or every column the row gives when there is none, touches `updated_at`, and keeps
+`created_at` and every other column. A row whose key no record holds, or that gives none on an
+incrementing table, is inserted. Before 18.0.13 it replaced the record, resetting the columns the
+row left out to their defaults or `null` and stamping `created_at` again.
+
 On a unique multi-entry index, `upsert` looks the record up by the elements of its array, a value
 that is not an array counting as a single element. When no record holds any of them, it inserts,
 as it does for an empty array. When one record does, it merges into that record. When several
@@ -721,7 +727,9 @@ await DB.table<Post>('posts').upsert([{ title: 'Updated', tags: ['news'] }], 'ta
 await DB.table<Post>('posts').upsert([{ title: 'Both', tags: ['news', 'sport'] }], 'tags'); // throws
 ```
 
-The key path may not be updated, so `update`, `upsert` and `increment` all refuse it.
+The key path may not be updated, so `update`, `increment` and an `upsert` on a unique index all
+refuse it. An `upsert` on the key path leaves it out of what it writes, since the record already
+holds that key.
 
 `update`, `delete`, `increment` and `decrement` honor `orderBy` together with `limit` and
 `offset`, so they touch the same records a read of the query would return, whether or not an index

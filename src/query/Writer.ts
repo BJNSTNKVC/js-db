@@ -8,13 +8,13 @@ export class Writer {
     /**
      * Add a record to the store, naming any unique index it violates.
      */
-    static async add(store: IDBObjectStore, schema: TableSchema, strict: boolean, timezone: string, record: Record<string, unknown>): Promise<IDBValidKey> {
+    static async add(store: IDBObjectStore, schema: TableSchema, strict: boolean, timezone: string, record: Record<string, unknown>, rollback: boolean = false): Promise<IDBValidKey> {
         const prepared: Record<string, unknown> = Enforcer.insertable(record, schema, strict, timezone, new Date());
 
         try {
             return await Request.settle(store.add(prepared), true);
         } catch (error: unknown) {
-            throw await this.attributed(store, schema, prepared, null, error);
+            throw await this.failed(store, schema, prepared, null, error, rollback);
         }
     }
 
@@ -165,23 +165,50 @@ export class Writer {
      * Insert a record, or merge it into the one it conflicts with.
      */
     static async merge(store: IDBObjectStore, schema: TableSchema, strict: boolean, timezone: string, columns: string[], target: IndexSchema | null, value: Record<string, unknown>, update: string[] | undefined, rollback: boolean): Promise<void> {
-        if (target === null) {
-            const record: Record<string, unknown> = Enforcer.insertable(value, schema, strict, timezone, new Date());
+        const existing: Record<string, unknown> | undefined = target === null
+            ? await this.#stored(store, schema, strict, timezone, value)
+            : await this.#conflicting(store, schema, strict, timezone, columns, target, value, rollback);
 
-            try {
-                await Request.settle(store.put(record), true);
-            } catch (error: unknown) {
-                const key: unknown = record[schema.key as string];
-                const previous: Record<string, unknown> | undefined = this.#keyable(key)
-                    ? await Request.settle(store.get(key as IDBValidKey) as IDBRequest<Record<string, unknown> | undefined>)
-                    : undefined;
-
-                throw await this.failed(store, schema, record, previous ?? null, error, rollback);
-            }
+        if (existing === undefined) {
+            await this.add(store, schema, strict, timezone, value, target === null && rollback);
 
             return;
         }
 
+        const changes: Record<string, unknown> = update === undefined
+            ? { ...value }
+            : Object.fromEntries(update.map((column: string): [string, unknown] => [column, value[column]]));
+
+        if (target === null) {
+            delete changes[schema.key as string];
+        }
+
+        const record: Record<string, unknown> = { ...existing, ...this.changes(changes, schema, strict, timezone) };
+
+        try {
+            await Request.settle(store.put(record), true);
+        } catch (error: unknown) {
+            throw await this.failed(store, schema, record, existing, error, rollback);
+        }
+    }
+
+    /**
+     * Get the record stored under the key the row gives, if any.
+     */
+    static async #stored(store: IDBObjectStore, schema: TableSchema, strict: boolean, timezone: string, value: Record<string, unknown>): Promise<Record<string, unknown> | undefined> {
+        const column: string = schema.key as string;
+
+        // A row leaving out a key the database generates has none to coerce,
+        // where a strict connection would refuse the absence as null.
+        const key: unknown = Object.hasOwn(value, column) ? Enforcer.field(value[column], column, schema, strict, timezone) : undefined;
+
+        return this.#keyable(key) ? Request.settle(store.get(key as IDBValidKey) as IDBRequest<Record<string, unknown> | undefined>) : undefined;
+    }
+
+    /**
+     * Get the one record holding the row's values in the unique index, if any.
+     */
+    static async #conflicting(store: IDBObjectStore, schema: TableSchema, strict: boolean, timezone: string, columns: string[], target: IndexSchema, value: Record<string, unknown>, rollback: boolean): Promise<Record<string, unknown> | undefined> {
         const prepared: Record<string, unknown> = Enforcer.updatable(
             Object.fromEntries(columns.map((column: string): [string, unknown] => [column, value[column]])),
             schema,
@@ -195,32 +222,12 @@ export class Writer {
             : [this.#keyOf(columns, prepared)].filter((key: IDBValidKey): boolean => this.#keyable(key));
 
         if (entries.length === 0) {
-            await this.add(store, schema, strict, timezone, value);
-
-            return;
+            return undefined;
         }
 
-        const existing: Record<string, unknown> | undefined = target.multiEntry
-            ? await this.#holder(store, schema, target, entries, rollback)
-            : await Request.settle(store.index(target.name).get(IDBKeyRange.only(entries[0] as IDBValidKey)) as IDBRequest<Record<string, unknown> | undefined>);
-
-        if (existing === undefined) {
-            await this.add(store, schema, strict, timezone, value);
-
-            return;
-        }
-
-        const changes: Record<string, unknown> = update === undefined
-            ? value
-            : Object.fromEntries(update.map((column: string): [string, unknown] => [column, value[column]]));
-
-        const record: Record<string, unknown> = { ...existing, ...this.changes(changes, schema, strict, timezone) };
-
-        try {
-            await Request.settle(store.put(record), true);
-        } catch (error: unknown) {
-            throw await this.failed(store, schema, record, existing, error, rollback);
-        }
+        return target.multiEntry
+            ? this.#holder(store, schema, target, entries, rollback)
+            : Request.settle(store.index(target.name).get(IDBKeyRange.only(entries[0] as IDBValidKey)) as IDBRequest<Record<string, unknown> | undefined>);
     }
 
     /**
