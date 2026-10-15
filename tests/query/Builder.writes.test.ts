@@ -633,6 +633,111 @@ describe('Builder upsert', (): void => {
     });
 });
 
+describe('Builder upsert of several rows', (): void => {
+    afterEach((): void => {
+        vi.restoreAllMocks();
+    });
+
+    test('writes no row of a multi-row upsert whose second row inserts and collides on another unique index', async (): Promise<void> => {
+        await expect(connection.table('nullables').upsert([
+            { nickname: 'al', email: 'alice@example.com' },
+            { nickname: 'al', email: 'bob@example.com' },
+        ], 'email')).rejects.toThrow(new UniqueConstraintViolationException('nullables', 'nullables_nickname_unique'));
+
+        expect(await connection.table('nullables').count()).toEqual(0);
+    });
+
+    test('writes no row of a multi-row upsert whose second row lacks a required column', async (): Promise<void> => {
+        await expect(users().upsert([
+            { name: 'Alice', email: 'alice@example.com' },
+            { email: 'bob@example.com' },
+        ], 'email')).rejects.toBeInstanceOf(NotNullConstraintViolationException);
+
+        expect(await users().count()).toEqual(0);
+    });
+
+    test('writes no row of a multi-row upsert by key path whose second row lacks a required column', async (): Promise<void> => {
+        await expect(users().upsert([
+            { id: 1, name: 'Alice', email: 'alice@example.com' },
+            { id: 2, email: 'bob@example.com' },
+        ], 'id')).rejects.toBeInstanceOf(NotNullConstraintViolationException);
+
+        expect(await users().count()).toEqual(0);
+    });
+
+    test('writes no row of a multi-row upsert by key path whose second row collides on email', async (): Promise<void> => {
+        await expect(users().upsert([
+            { id: 1, name: 'Alice', email: 'alice@example.com' },
+            { id: 2, name: 'Bob', email: 'alice@example.com' },
+        ], 'id')).rejects.toThrow(new UniqueConstraintViolationException('users', 'users_email_unique'));
+
+        expect(await users().count()).toEqual(0);
+    });
+
+    test('leaves every record as it was when a later row of a multi-row upsert merges and collides', async (): Promise<void> => {
+        await connection.table('nullables').insert([
+            { nickname: 'al', email: 'alice@example.com' },
+            { nickname: 'bo', email: 'bob@example.com' },
+        ]);
+
+        const before: Record<string, unknown>[] = await connection.table('nullables').orderBy('id').get();
+
+        await expect(connection.table('nullables').upsert([
+            { nickname: 'cy', email: 'carol@example.com' },
+            { nickname: 'al', email: 'bob@example.com' },
+        ], 'email')).rejects.toThrow(new UniqueConstraintViolationException('nullables', 'nullables_nickname_unique'));
+
+        expect(await connection.table('nullables').orderBy('id').get()).toEqual(before);
+    });
+
+    test('leaves every record as it was when a later row of a multi-row upsert merges into the key path', async (): Promise<void> => {
+        await users().insert({ name: 'Alice', email: 'alice@example.com' });
+
+        const before: User[] = await users().orderBy('id').get();
+
+        await expect(users().upsert([
+            { name: 'Bob', email: 'bob@example.com' },
+            { id: 9, email: 'alice@example.com' } as Partial<User>,
+        ], 'email')).rejects.toBeInstanceOf(SchemaException);
+
+        expect(await users().orderBy('id').get()).toEqual(before);
+    });
+
+    test('settles a failed multi-row upsert only once its transaction has aborted', async (): Promise<void> => {
+        const transaction: IDBDatabase['transaction'] = IDBDatabase.prototype.transaction;
+        const ended: string[] = [];
+
+        vi.spyOn(IDBDatabase.prototype, 'transaction').mockImplementation(function (this: IDBDatabase, names: string | string[], mode?: IDBTransactionMode): IDBTransaction {
+            const opened: IDBTransaction = transaction.call(this, names, mode);
+
+            if (mode === 'readwrite') {
+                opened.addEventListener('complete', (): number => ended.push('complete'));
+                opened.addEventListener('abort', (): number => ended.push('abort'));
+            }
+
+            return opened;
+        });
+
+        await expect(users().upsert([
+            { name: 'Alice', email: 'alice@example.com' },
+            { email: 'bob@example.com' },
+        ], 'email')).rejects.toBeInstanceOf(NotNullConstraintViolationException);
+
+        expect(ended).toEqual(['abort']);
+    });
+
+    test('reports the failure of a multi-row upsert whose transaction has already finished', async (): Promise<void> => {
+        vi.spyOn(IDBTransaction.prototype, 'abort').mockImplementation((): never => {
+            throw new DOMException("Failed to execute 'abort' on 'IDBTransaction': The transaction has finished.", 'InvalidStateError');
+        });
+
+        await expect(users().upsert([
+            { id: 1, name: 'Alice', email: 'alice@example.com' },
+            { id: 2, name: 'Bob', email: 'alice@example.com' },
+        ], 'id')).rejects.toThrow(new UniqueConstraintViolationException('users', 'users_email_unique'));
+    });
+});
+
 describe('Builder increment and decrement', (): void => {
     beforeEach(async (): Promise<void> => {
         await users().insert([

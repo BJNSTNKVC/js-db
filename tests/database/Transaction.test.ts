@@ -37,6 +37,7 @@ class CreateTables extends Migration {
         await Schema.create('tags', (table: Blueprint): void => {
             table.uuid('slug').primary();
             table.string('label').unique();
+            table.string('code').nullable().unique();
         });
 
         await Schema.create('posts', (table: Blueprint): void => {
@@ -280,6 +281,17 @@ describe('Connection transaction', (): void => {
                 { slug: 'b', label: 'x' },
                 { slug: 'c', label: 'y' },
             ])).rejects.toThrow(new UniqueConstraintViolationException('tags', 'tags_label_unique'));
+        });
+
+        expect(await connection.table('tags').pluck('slug')).toEqual(['a']);
+    });
+
+    test('keeps the rows before a failed multi-row upsert the callback catches', async (): Promise<void> => {
+        await connection.transaction(async (transaction: Transaction): Promise<void> => {
+            await expect(transaction.table('tags').upsert([
+                { slug: 'a', label: 'x', code: 'c' },
+                { slug: 'b', label: 'y', code: 'c' },
+            ], 'label')).rejects.toThrow(new UniqueConstraintViolationException('tags', 'tags_code_unique'));
         });
 
         expect(await connection.table('tags').pluck('slug')).toEqual(['a']);

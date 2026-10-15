@@ -280,8 +280,16 @@ export class Executor<T> {
             const store: IDBObjectStore = await this.#store('readwrite');
             const started: number = performance.now();
 
-            for (const value of values) {
-                await Writer.merge(store, schema, this.#connection.strict, this.#connection.timezone, columns, target, value as Record<string, unknown>, update, this.#owns(store));
+            try {
+                for (const value of values) {
+                    await Writer.merge(store, schema, this.#connection.strict, this.#connection.timezone, columns, target, value as Record<string, unknown>, update);
+                }
+            } catch (error: unknown) {
+                if (this.#owns(store)) {
+                    Writer.rollback(store);
+                }
+
+                throw error;
             }
 
             this.#emit('upsert', started, values.length);

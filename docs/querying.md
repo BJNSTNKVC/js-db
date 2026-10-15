@@ -697,7 +697,11 @@ records it matches writes none of them. A multi-row `insert` that fails on any r
 collides or lacks a required column, writes none of them, as an `update` does. Before 18.0.7
 it kept the rows before the failure. `insertOrIgnore` skips only the rows that collide, so one
 whose row fails for any other reason writes none of them either. Before 18.0.8 it kept the rows
-before that one. Inside `DB.transaction`, the exception aborts the whole
+before that one. A multi-row `upsert` that fails on any row writes none of them, as an `insert`
+does. Before 18.0.14 it kept the rows before the failure, unless the failing row collided as it
+merged into a record or matched several records on a multi-entry index. One on the key path also
+rolled back a row that collided, through `put` before 18.0.13 and through its insert since.
+Inside `DB.transaction`, the exception aborts the whole
 transaction as it leaves the callback. IndexedDB cannot undo one write alone, so a callback that
 catches it keeps whatever the failed write changed before the collision.
 

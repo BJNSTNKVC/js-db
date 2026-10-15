@@ -8,13 +8,13 @@ export class Writer {
     /**
      * Add a record to the store, naming any unique index it violates.
      */
-    static async add(store: IDBObjectStore, schema: TableSchema, strict: boolean, timezone: string, record: Record<string, unknown>, rollback: boolean = false): Promise<IDBValidKey> {
+    static async add(store: IDBObjectStore, schema: TableSchema, strict: boolean, timezone: string, record: Record<string, unknown>): Promise<IDBValidKey> {
         const prepared: Record<string, unknown> = Enforcer.insertable(record, schema, strict, timezone, new Date());
 
         try {
             return await Request.settle(store.add(prepared), true);
         } catch (error: unknown) {
-            throw await this.failed(store, schema, prepared, null, error, rollback);
+            throw await this.attributed(store, schema, prepared, null, error);
         }
     }
 
@@ -88,17 +88,24 @@ export class Writer {
         }
 
         if (failure !== null) {
-            try {
-                store.transaction.abort();
-            } catch {
-                // A transaction that has already finished throws on abort,
-                // which would take the place of the failure being reported.
-            }
+            this.rollback(store);
 
             throw failure.error;
         }
 
         return added;
+    }
+
+    /**
+     * Roll back the store's transaction, unless it has already finished.
+     */
+    static rollback(store: IDBObjectStore): void {
+        try {
+            store.transaction.abort();
+        } catch {
+            // A transaction that has already finished throws on abort,
+            // which would take the place of the failure being reported.
+        }
     }
 
     /**
@@ -164,13 +171,13 @@ export class Writer {
     /**
      * Insert a record, or merge it into the one it conflicts with.
      */
-    static async merge(store: IDBObjectStore, schema: TableSchema, strict: boolean, timezone: string, columns: string[], target: IndexSchema | null, value: Record<string, unknown>, update: string[] | undefined, rollback: boolean): Promise<void> {
+    static async merge(store: IDBObjectStore, schema: TableSchema, strict: boolean, timezone: string, columns: string[], target: IndexSchema | null, value: Record<string, unknown>, update: string[] | undefined): Promise<void> {
         const existing: Record<string, unknown> | undefined = target === null
             ? await this.#stored(store, schema, strict, timezone, value)
-            : await this.#conflicting(store, schema, strict, timezone, columns, target, value, rollback);
+            : await this.#conflicting(store, schema, strict, timezone, columns, target, value);
 
         if (existing === undefined) {
-            await this.add(store, schema, strict, timezone, value, target === null && rollback);
+            await this.add(store, schema, strict, timezone, value);
 
             return;
         }
@@ -188,7 +195,7 @@ export class Writer {
         try {
             await Request.settle(store.put(record), true);
         } catch (error: unknown) {
-            throw await this.failed(store, schema, record, existing, error, rollback);
+            throw await this.attributed(store, schema, record, existing, error);
         }
     }
 
@@ -208,7 +215,7 @@ export class Writer {
     /**
      * Get the one record holding the row's values in the unique index, if any.
      */
-    static async #conflicting(store: IDBObjectStore, schema: TableSchema, strict: boolean, timezone: string, columns: string[], target: IndexSchema, value: Record<string, unknown>, rollback: boolean): Promise<Record<string, unknown> | undefined> {
+    static async #conflicting(store: IDBObjectStore, schema: TableSchema, strict: boolean, timezone: string, columns: string[], target: IndexSchema, value: Record<string, unknown>): Promise<Record<string, unknown> | undefined> {
         const prepared: Record<string, unknown> = Enforcer.updatable(
             Object.fromEntries(columns.map((column: string): [string, unknown] => [column, value[column]])),
             schema,
@@ -226,14 +233,14 @@ export class Writer {
         }
 
         return target.multiEntry
-            ? this.#holder(store, schema, target, entries, rollback)
+            ? this.#holder(store, schema, target, entries)
             : Request.settle(store.index(target.name).get(IDBKeyRange.only(entries[0] as IDBValidKey)) as IDBRequest<Record<string, unknown> | undefined>);
     }
 
     /**
      * Get the one record holding any of the multi-entry index entries.
      */
-    static async #holder(store: IDBObjectStore, schema: TableSchema, index: IndexSchema, entries: IDBValidKey[], rollback: boolean): Promise<Record<string, unknown> | undefined> {
+    static async #holder(store: IDBObjectStore, schema: TableSchema, index: IndexSchema, entries: IDBValidKey[]): Promise<Record<string, unknown> | undefined> {
         const keys: IDBValidKey[] = [];
 
         for (const entry of entries) {
@@ -245,10 +252,6 @@ export class Writer {
         }
 
         if (keys.length > 1) {
-            if (rollback) {
-                store.transaction.abort();
-            }
-
             throw new UniqueConstraintViolationException(schema.table, index.name);
         }
 

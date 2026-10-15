@@ -1,6 +1,6 @@
 {
   "name": "@bjnstnkvc/db",
-  "version": "18.0.13",
+  "version": "18.0.14",
   "description": "TypeScript database layer for IndexedDB with an API modeled on Laravel.",
   "type": "module",
   "main": "./dist/main.cjs",
