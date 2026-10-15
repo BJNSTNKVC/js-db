@@ -150,14 +150,17 @@ export class Executor<T> {
             const schema: TableSchema = await this.#connection.schema(this.#query.table);
             const store: IDBObjectStore = await this.#store('readonly');
             const plan: Plan = await this.#planned(schema, store);
-
-            if (plan.residual.length > 0 || plan.values !== null || this.#deduplicates(schema, this.#query.distinct)) {
-                return (await this.records()).length;
-            }
-
             const started: number = performance.now();
             const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index);
-            const count: number = await Request.settle(source.count(plan.range ?? undefined));
+            const fresh: ((row: Record<string, unknown>) => boolean) | null = this.#deduplicates(schema, this.#query.distinct) ? this.#fresh() : null;
+            const ranges: (IDBKeyRange | undefined)[] = plan.values === null
+                ? [plan.range ?? undefined]
+                : plan.values.map((value: unknown): IDBKeyRange => IDBKeyRange.only(value as IDBValidKey));
+
+            const count: number = plan.residual.length > 0 || fresh !== null
+                ? await this.#counted(source, ranges, Predicate.compile(plan.residual), fresh)
+                : (await Promise.all(ranges.map((range: IDBKeyRange | undefined): Promise<number> => Request.settle(source.count(range)))))
+                    .reduce((carry: number, held: number): number => carry + held, 0);
 
             this.#emit(Planner.describe(plan), started, count);
 
@@ -784,6 +787,17 @@ export class Executor<T> {
         }
 
         return collected;
+    }
+
+    /**
+     * Count the records the ranges hold that pass the filters.
+     */
+    async #counted(source: IDBObjectStore | IDBIndex, ranges: (IDBKeyRange | undefined)[], matches: (record: Record<string, unknown>) => boolean, fresh: ((row: Record<string, unknown>) => boolean) | null): Promise<number> {
+        const read: T[][] = await Promise.all(ranges.map((range: IDBKeyRange | undefined): Promise<T[]> => Request.settle(source.getAll(range) as IDBRequest<T[]>)));
+
+        return read.flat().filter((record: T): boolean => {
+            return matches(record as Record<string, unknown>) && (fresh === null || fresh(this.#projected(record) as Record<string, unknown>));
+        }).length;
     }
 
     /**

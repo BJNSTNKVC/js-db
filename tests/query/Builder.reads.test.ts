@@ -825,6 +825,62 @@ describe('Builder terminals', (): void => {
         expect(await users().whereIn('email', ['alice@example.com', 'bob@example.com']).count()).toEqual(2);
     });
 
+    test('counts point lookups a residual constraint narrows, each repeated value once', async (): Promise<void> => {
+        expect(await users().whereIn('age', [25, 30, 25]).where('role', 'member').count()).toEqual(2);
+    });
+
+    test('counts point lookups holding null by the values that are not null', async (): Promise<void> => {
+        expect(await users().whereIn('age', [30, null]).count()).toEqual(1);
+    });
+
+    test('counts nothing when no record matches', async (): Promise<void> => {
+        expect(await users().where('role', 'nobody').count()).toEqual(0);
+        expect(await users().whereIn('age', [99, 100]).count()).toEqual(0);
+        expect(await users().whereIn('age', [99, 100]).where('role', 'member').count()).toEqual(0);
+    });
+
+    test('counts a filtered query inside a transaction', async (): Promise<void> => {
+        const counts: number[] = await connection.transaction(async (transaction: Transaction): Promise<number[]> => {
+            return [
+                await transaction.table<User>('users').where('role', 'member').count(),
+                await transaction.table<User>('users').whereIn('age', [25, 30]).count(),
+                await transaction.table<User>('users').whereIn('age', [25, 30]).where('role', 'member').count(),
+            ];
+        });
+
+        expect(counts).toEqual([3, 3, 2]);
+    });
+
+    test('announces a filtered count once, under its plan, with the count', async (): Promise<void> => {
+        const seen: [string, number][] = [];
+        const listener: (event: Event) => void = ((event: QueryExecuted): void => {
+            seen.push([event.plan, event.records]);
+        }) as (event: Event) => void;
+
+        Dispatcher.listen('db:query', listener);
+
+        try {
+            await users().where('age', '>=', 25).where('role', 'member').count();
+            await users().whereIn('email', ['alice@example.com', 'bob@example.com']).count();
+            await users().whereIn('id', [1, 2]).where('role', 'member').count();
+            await users().where('role', 'member').count();
+        } finally {
+            Dispatcher.forget('db:query', listener);
+        }
+
+        expect(seen).toEqual([['index:users_age_index', 2], ['index:users_email_unique', 2], ['key', 1], ['scan', 3]]);
+    });
+
+    test('probes the plan of a filtered count once', async (): Promise<void> => {
+        const stores: MockInstance = vi.spyOn(IDBObjectStore.prototype, 'openKeyCursor');
+        const indexes: MockInstance = vi.spyOn(IDBIndex.prototype, 'openKeyCursor');
+
+        expect(await users().where('age', '>=', 25).where('role', 'member').count()).toEqual(2);
+        expect(await users().whereIn('id', [1, 2, 3]).where('role', 'member').count()).toEqual(1);
+        expect(indexes).toHaveBeenCalledTimes(2);
+        expect(stores).toHaveBeenCalledTimes(2);
+    });
+
     test('sums a column', async (): Promise<void> => {
         expect(await users().sum('age')).toEqual(115);
     });
@@ -1863,6 +1919,15 @@ describe('Builder distinct', (): void => {
         expect(await roles().count()).toEqual(3);
         expect(await roles().where('visits', '>=', 3).count()).toEqual(2);
         expect(await roles().limit(1).offset(5).count()).toEqual(3);
+    });
+
+    test('counts the distinct rows of an aliased select', async (): Promise<void> => {
+        expect(await table().select('role as r').distinct().count()).toEqual(3);
+        expect(await table().select('role as r', 'visits').distinct().where('visits', '>=', 3).count()).toEqual(3);
+    });
+
+    test('counts the distinct rows of point lookups', async (): Promise<void> => {
+        expect(await roles().whereIn('visits', [5, 3, 5]).count()).toEqual(2);
     });
 
     test('pages through the distinct rows without repeating one', async (): Promise<void> => {
