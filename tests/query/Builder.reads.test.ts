@@ -1149,6 +1149,13 @@ describe('Builder range walks', (): void => {
         })).toEqual(['index:users_name_index']);
     });
 
+    test('reads every record of a forward index walk under a limit of 2 ** 32 or more', async (): Promise<void> => {
+        expect(await planned(async (): Promise<void> => {
+            expect(await names(users().orderBy('name').limit(2 ** 32))).toEqual(['Alice', 'Bob', 'Carol', 'Dave', 'Erin']);
+            expect(await names(users().where('name', '>=', 'B').orderBy('name').limit(Number.MAX_SAFE_INTEGER))).toEqual(['Bob', 'Carol', 'Dave', 'Erin']);
+        })).toEqual(['index:users_name_index', 'index:users_name_index']);
+    });
+
     test('offsets a forward index walk that a residual narrows, without a limit', async (): Promise<void> => {
         expect(await planned(async (): Promise<void> => {
             expect(await names(users().where('role', 'member').orderBy('name').offset(1))).toEqual(['Dave', 'Erin']);

@@ -740,8 +740,9 @@ export class Executor<T> {
         const filtered: boolean = plan.residual.length > 0 || fresh !== null;
 
         // IndexedDB reads a count of 0 as no limit at all,
-        // so a ceiling of 0 keeps the cursor.
-        if (plan.direction === 'next' && skip === 0 && (ceiling === null || (!filtered && ceiling > 0))) {
+        // and getAll throws on a count of 2^32 or more,
+        // so either ceiling keeps the cursor.
+        if (plan.direction === 'next' && skip === 0 && (ceiling === null || (!filtered && ceiling > 0 && ceiling < 2 ** 32))) {
             const [records, keys]: [T[], IDBValidKey[]] = await Promise.all([
                 Request.settle(source.getAll(plan.range, ceiling ?? undefined) as IDBRequest<T[]>),
                 Request.settle(source.getAllKeys(plan.range, ceiling ?? undefined)),
