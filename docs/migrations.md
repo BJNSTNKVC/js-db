@@ -46,6 +46,12 @@ which throws `SchemaException`. Rebuild such a database with `DB.fresh(name)`, o
 check `Schema.hasTable` first. Before 16.0.0 no later open ran it or any migration after it, and
 `DB.status` listed them as not run for good.
 
+Connections migrate one at a time, so an open that needs an upgrade waits for another connection's
+upgrade to finish, whether it succeeds or fails, and then runs its own. An open with nothing to
+migrate never waits. Booting with `Promise.all([DB.migrate('app'), DB.migrate('reporting')])` runs
+the two upgrades in turn, each in its own database. Before 18.0.15 two upgrades at once could fail
+with `MigrationTransactionClosedException` or `SchemaException`, or write into each other's database.
+
 ## Migrations are forward-only
 
 IndexedDB versions cannot decrease, so there is no `down()`, no `rollback()` and no batches. To
@@ -124,7 +130,8 @@ and checked against them. A write that fails, such as one breaking a unique inde
 migration and rolls back the whole upgrade, rows and schema alike. `DB.table` resolves the default
 connection, so a migration registered on another connection names it, as in
 `DB.connection('reporting').table('events')`. A query on a different database is not part of the
-upgrade, and awaiting it ends the transaction like any other promise.
+upgrade, and awaiting it ends the transaction like any other promise. When that database still has
+migrations to run, its open waits for this upgrade to finish, so the migration never settles.
 
 `DB.transaction` on the connection being migrated joins the upgrade too, so a seeder or helper that
 wraps its writes in one can run inside a migration. Its callback runs in the version-change

@@ -490,7 +490,12 @@ export class Connection {
 
         database.close();
 
-        return this.#upgrade(migrations, Math.max(database.version + 1, Migrator.version(migrations)));
+        const version: number = Math.max(database.version + 1, Migrator.version(migrations));
+        const upgraded: IDBDatabase | null = await Migrator.isolated((): Promise<IDBDatabase | null> => this.#upgrade(migrations, version));
+
+        // An upgrade another tab got ahead of settles as null, and the open starts over here,
+        // outside the upgrade in flight, which it would otherwise wait for.
+        return upgraded ?? this.#connect();
     }
 
     /**
@@ -515,10 +520,11 @@ export class Connection {
     /**
      * Open the database at a higher version, running the pending migrations.
      */
-    #upgrade(migrations: MigrationConstructor[], version: number): Promise<IDBDatabase> {
-        return new Promise<IDBDatabase>((resolve: (database: IDBDatabase) => void, reject: (reason: unknown) => void): void => {
+    #upgrade(migrations: MigrationConstructor[], version: number): Promise<IDBDatabase | null> {
+        let runner: Promise<string[]> | null = null;
+
+        const opened: Promise<IDBDatabase | null> = new Promise<IDBDatabase | null>((resolve: (database: IDBDatabase | null) => void, reject: (reason: unknown) => void): void => {
             const request: IDBOpenDBRequest = indexedDB.open(this.#config.database, version);
-            let runner: Promise<string[]> | null = null;
             let failure: unknown = null;
             let blocked: boolean = false;
 
@@ -590,7 +596,7 @@ export class Connection {
                 // Another tab upgraded the database since its records were read,
                 // so the open starts over from the version that tab left.
                 if (request.error?.name === 'VersionError') {
-                    this.#connect().then(resolve, reject);
+                    resolve(null);
 
                     return;
                 }
@@ -602,6 +608,10 @@ export class Connection {
                 this.#ready(request.result, runner).then(resolve, reject);
             };
         });
+
+        // A transaction aborted under a migration rejects the open while the migration
+        // still runs, so the open settles only once the migration has stopped.
+        return opened.finally((): Promise<unknown> => Promise.allSettled([runner]));
     }
 
     /**

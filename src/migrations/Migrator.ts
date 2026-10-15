@@ -25,10 +25,35 @@ export class Migrator {
     static #context: MigrationContext | null = null;
 
     /**
+     * The upgrade in flight, settled once it has fulfilled or rejected.
+     */
+    static #upgrading: Promise<void> | null = null;
+
+    /**
      * Get the context of the migration currently running.
      */
     static context(): MigrationContext | null {
         return this.#context;
+    }
+
+    /**
+     * Run an upgrade once the one in flight, if any, has settled.
+     */
+    static isolated<T>(upgrade: () => Promise<T>): Promise<T> {
+        const previous: Promise<void> | null = this.#upgrading;
+        const running: Promise<T> = previous === null ? upgrade() : previous.then(upgrade);
+
+        const release: () => void = (): void => {
+            if (this.#upgrading === settled) {
+                this.#upgrading = null;
+            }
+        };
+
+        const settled: Promise<void> = running.then(release, release);
+
+        this.#upgrading = settled;
+
+        return running;
     }
 
     /**
