@@ -855,6 +855,80 @@ describe('Connection version change event', (): void => {
     });
 });
 
+describe('Connection handle closed by the browser', (): void => {
+    /**
+     * Close a handle and fire its close event, as a browser does.
+     */
+    async function forceClose(handle: IDBDatabase, ...running: IDBTransaction[]): Promise<void> {
+        const aborted: Promise<unknown>[] = running.map((transaction: IDBTransaction): Promise<unknown> => new Promise<unknown>((resolve: (event: Event) => void): void => {
+            transaction.addEventListener('abort', resolve);
+        }));
+
+        running.forEach((transaction: IDBTransaction): void => transaction.abort());
+
+        await Promise.all(aborted);
+
+        handle.close();
+
+        // fake-indexeddb dispatches only events of its own classes,
+        // which IDBVersionChangeEvent is under Node.
+        handle.dispatchEvent(new IDBVersionChangeEvent('close'));
+    }
+
+    const USER: Record<string, unknown> = { name: 'Alice', email: 'alice@example.com' };
+
+    afterEach((): void => {
+        vi.restoreAllMocks();
+    });
+
+    test('reopens the database on the next query', async (): Promise<void> => {
+        const connection: Connection = connect([CreateUsersTable]);
+
+        await connection.table('users').insert(USER);
+        await forceClose(await connection.open());
+
+        expect(await connection.table('users').count()).toEqual(1);
+    });
+
+    test('migrates the database again once it was deleted', async (): Promise<void> => {
+        const database: string = `connection-${++sequence}`;
+        const connection: Connection = connect([CreateUsersTable], database);
+
+        await connection.table('users').insert(USER);
+        await forceClose(await connection.open());
+        await drop(database);
+
+        expect(await connection.table('users').count()).toEqual(0);
+    });
+
+    test('keeps the handle that replaced the closed one', async (): Promise<void> => {
+        const connection: Connection = connect([CreateUsersTable]);
+        const closed: IDBDatabase = await connection.open();
+
+        connection.disconnect();
+
+        const replaced: IDBDatabase = await connection.open();
+
+        await forceClose(closed);
+
+        expect(await connection.open()).toBe(replaced);
+    });
+
+    test('rejects a transaction it aborted and opens a fresh one for the next call', async (): Promise<void> => {
+        const connection: Connection = connect([CreateUsersTable]);
+        const handle: IDBDatabase = await connection.open();
+        const opened: MockInstance<IDBDatabase['transaction']> = vi.spyOn(IDBDatabase.prototype, 'transaction');
+
+        await expect(connection.transaction(async (transaction: Transaction): Promise<number> => {
+            await forceClose(handle, ...opened.mock.results.map((result: { value: unknown }): IDBTransaction => result.value as IDBTransaction));
+
+            return transaction.table('users').count();
+        })).rejects.toThrow();
+
+        expect(await connection.transaction((transaction: Transaction): Promise<number> => transaction.table('users').count())).toEqual(0);
+    });
+});
+
 describe('Connection fresh', (): void => {
     test('deletes the database and replays every migration', async (): Promise<void> => {
         const connection: Connection = connect([CreateUsersTable]);

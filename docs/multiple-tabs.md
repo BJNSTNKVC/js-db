@@ -1,6 +1,7 @@
 # Multiple tabs
 
-IndexedDB is shared across tabs, which produces two situations worth handling:
+IndexedDB is shared across tabs, and the browser can close it under a page, which produces three
+situations worth handling:
 
 - Another tab holds an older version open, blocking an upgrade. The connection emits
   `database-blocked` and rejects with `DatabaseBlockedException`, so you can ask the user to close
@@ -10,6 +11,10 @@ IndexedDB is shared across tabs, which produces two situations worth handling:
 - Another tab upgrades or deletes the database. The connection closes its own handle so it does not
   block that tab, then emits `database-version-changed`. Its `version` is the version the other tab
   is opening, or `null` when it is deleting the database.
+- The browser closes the connection's handle itself, when the user clears the site's data or its
+  storage fails. The connection drops the handle, and the next query opens the database again,
+  running the migrations if the data was cleared. A query or `DB.transaction` the close aborted
+  rejects with its own error and is not run again.
 
 Before 18.0.2 a tab could report itself as the one blocking. Safari did it on every upgrade, and other
 browsers now and then under load: the open emitted `database-blocked` and rejected with
@@ -23,6 +28,9 @@ Before 18.0.6 the blocked upgrade ran the migrations once the other tab closed, 
 rejected, and an open made meanwhile got a handle of its own. The connection could then keep a
 second handle that nothing closed, not even `disconnect()`, and that blocked every later upgrade or
 delete from another tab until the page was reloaded.
+
+Before 18.0.16 the connection kept a handle the browser had closed, and every query threw
+`InvalidStateError` until the page was reloaded.
 
 The other tab is usually running newer code with more migrations, after a deploy. This tab can no
 longer open the database, and its next query would reject with `MigrationMismatchException`. Reload

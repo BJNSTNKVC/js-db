@@ -683,6 +683,12 @@ export class Connection {
                 Dispatcher.dispatch(new DatabaseVersionChanged(this.#config.database, event.newVersion));
             };
 
+            database.onclose = (): void => {
+                if (this.#database === database) {
+                    this.disconnect();
+                }
+            };
+
             return database;
         } catch (error: unknown) {
             database.close();
