@@ -27,6 +27,7 @@ type Change = (record: Record<string, unknown>) => Record<string, unknown>;
 type Writes = {
     last: Promise<void>;
     failure: { record: Record<string, unknown>; previous: Record<string, unknown>; error: unknown } | null;
+    later: { key: IDBValidKey; previous: Record<string, unknown> }[];
 };
 
 export class Executor<T> {
@@ -318,7 +319,7 @@ export class Executor<T> {
 
             const arranged: boolean = this.#query.random || this.#query.orders.length > 0;
             const collects: boolean = !plan.ordered && arranged && (limit !== null || offset > 0);
-            const writes: Writes = { last: Promise.resolve(), failure: null };
+            const writes: Writes = { last: Promise.resolve(), failure: null, later: [] };
             const apply: (cursor: IDBCursorWithValue) => void = this.#writer(change, writes);
 
             let seen: number = 0;
@@ -329,17 +330,13 @@ export class Executor<T> {
                     ? await this.#cursored(store, plan, matches)
                     : await this.#points(store, plan, matches);
 
-                for (const entry of this.#paged(this.#sorted(collected))) {
-                    if (writes.failure !== null) {
-                        break;
-                    }
+                const keys: IDBValidKey[] = this.#paged(this.#sorted(collected)).map((entry: Entry<T>): IDBValidKey => entry.key);
 
-                    await Request.walk(store.openCursor(IDBKeyRange.only(entry.key)), (cursor: IDBCursorWithValue): void => {
-                        apply(cursor);
+                await this.#byKey(store, keys, (cursor: IDBCursorWithValue): void => {
+                    apply(cursor);
 
-                        affected++;
-                    });
-                }
+                    affected++;
+                }, (): boolean => writes.failure !== null);
 
                 await this.#landed(store, schema, writes);
 
@@ -368,20 +365,20 @@ export class Executor<T> {
                 return ceiling === null || seen < ceiling;
             };
 
+            const stopped: () => boolean = (): boolean => writes.failure !== null || (ceiling !== null && seen >= ceiling);
             const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index);
-            const moves: boolean = plan.index !== null && this.#moves(schema, plan.index, changes);
-            const lookups: unknown[] | null = moves ? await this.#keys(source, plan) : plan.values;
-            const target: IDBObjectStore | IDBIndex = moves ? store : source;
 
-            if (lookups === null) {
+            if (plan.index !== null && this.#moves(schema, plan.index, changes)) {
+                await this.#byKey(store, await this.#keys(source, plan), (cursor: IDBCursorWithValue): boolean => !stopped() && visit(cursor), stopped);
+            } else if (plan.values === null) {
                 await Request.walk(source.openCursor(plan.range, plan.direction), visit);
             } else {
-                for (const value of lookups) {
-                    if (writes.failure !== null || (ceiling !== null && seen >= ceiling)) {
+                for (const value of plan.values) {
+                    if (stopped()) {
                         break;
                     }
 
-                    await Request.walk(target.openCursor(IDBKeyRange.only(value as IDBValidKey)), visit);
+                    await Request.walk(source.openCursor(IDBKeyRange.only(value as IDBValidKey)), visit);
                 }
             }
 
@@ -1059,7 +1056,7 @@ export class Executor<T> {
         const store: IDBObjectStore = stores(this.#query.table);
         const started: number = performance.now();
         const keys: Set<IDBValidKey> = new Set<IDBValidKey>();
-        const writes: Writes = { last: Promise.resolve(), failure: null };
+        const writes: Writes = { last: Promise.resolve(), failure: null, later: [] };
         const apply: (cursor: IDBCursorWithValue) => void = this.#writer(change, writes);
 
         for (const row of await this.#combined(tables, constraints, stores)) {
@@ -1070,17 +1067,11 @@ export class Executor<T> {
 
         let affected: number = 0;
 
-        for (const key of keys) {
-            if (writes.failure !== null) {
-                break;
-            }
+        await this.#byKey(store, keys, (cursor: IDBCursorWithValue): void => {
+            apply(cursor);
 
-            await Request.walk(store.openCursor(IDBKeyRange.only(key)), (cursor: IDBCursorWithValue): void => {
-                apply(cursor);
-
-                affected++;
-            });
-        }
+            affected++;
+        }, (): boolean => writes.failure !== null);
 
         await this.#landed(store, await this.#connection.schema(this.#query.table), writes);
 
@@ -1100,6 +1091,7 @@ export class Executor<T> {
                 return;
             }
 
+            const key: IDBValidKey = cursor.primaryKey;
             const previous: Record<string, unknown> = cursor.value as Record<string, unknown>;
 
             let record: Record<string, unknown>;
@@ -1107,15 +1099,45 @@ export class Executor<T> {
             try {
                 record = change(previous);
             } catch (error: unknown) {
-                writes.failure ??= { record: previous, previous, error };
+                // Cursors opened together all succeed before the first write lands,
+                // so a change that fails waits for the write before it,
+                // whose own failure comes first in key order.
+                writes.last = writes.last.then((): void => {
+                    writes.failure ??= { record: previous, previous, error };
+                });
 
                 return;
             }
 
-            writes.last = Request.settle(cursor.update(record), true).then((): void => undefined, (error: unknown): void => {
-                writes.failure = { record, previous, error };
+            writes.last = Request.settle(cursor.update(record), true).then((): void => {
+                // Writes land in the order they were sent,
+                // so one landing after a failure came after it.
+                if (writes.failure !== null) {
+                    writes.later.push({ key, previous });
+                }
+            }, (error: unknown): void => {
+                writes.failure ??= { record, previous, error };
             });
         };
+    }
+
+    /**
+     * Walk a cursor to each key, all at once when the write opened its transaction.
+     */
+    async #byKey(store: IDBObjectStore, keys: Iterable<IDBValidKey>, visit: (cursor: IDBCursorWithValue) => boolean | void, done: () => boolean): Promise<void> {
+        if (this.#owns(store)) {
+            await Promise.all(Array.from(keys, (key: IDBValidKey): Promise<void> => Request.walk(store.openCursor(IDBKeyRange.only(key)), visit)));
+
+            return;
+        }
+
+        for (const key of keys) {
+            if (done()) {
+                break;
+            }
+
+            await Request.walk(store.openCursor(IDBKeyRange.only(key)), visit);
+        }
     }
 
     /**
@@ -1128,7 +1150,7 @@ export class Executor<T> {
         await writes.last;
 
         if (writes.failure !== null) {
-            throw await Writer.failed(store, schema, writes.failure.record, writes.failure.previous, writes.failure.error, this.#owns(store));
+            throw await Writer.failed(store, schema, writes.failure.record, writes.failure.previous, writes.failure.error, this.#owns(store), writes.later);
         }
     }
 

@@ -38,6 +38,14 @@ interface Entry {
     position: number;
 }
 
+interface Badge {
+    id: number;
+    name: string;
+    team: string;
+    slot: string | null;
+    rank: number;
+}
+
 class CreateUsersTable extends Migration {
     /**
      * Run the migration.
@@ -115,6 +123,22 @@ class CreateUsersTable extends Migration {
             table.id();
             table.string('label');
             table.integer('seat').nullable().unique();
+        });
+    }
+}
+
+class CreateBadgesTable extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        await Schema.create('badges', (table: Blueprint): void => {
+            table.id();
+            table.string('name');
+            table.string('team');
+            table.string('slot').nullable();
+            table.integer('rank').unique();
+            table.unique(['team', 'slot']);
         });
     }
 }
@@ -1048,6 +1072,256 @@ describe('Builder writes in a random order', (): void => {
     test('touches every match without shuffling when nothing limits the write', async (): Promise<void> => {
         expect(await users().inRandomOrder().update({ role: 'owner' })).toEqual(3);
         expect(Math.random).not.toHaveBeenCalled();
+    });
+});
+
+describe('Builder writes sent by key together', (): void => {
+    type Write = (badges: Builder<Badge>) => Promise<number>;
+
+    let keyed: Connection;
+
+    /**
+     * Begin a query against the badges table.
+     */
+    function badges(): Builder<Badge> {
+        return keyed.table<Badge>('badges');
+    }
+
+    /**
+     * Get every badge, in key order.
+     */
+    async function held(): Promise<Badge[]> {
+        return badges().orderBy('id').get();
+    }
+
+    /**
+     * Store a rank no write would, straight into a badge.
+     */
+    async function corrupt(id: number, rank: unknown): Promise<void> {
+        const transaction: IDBTransaction = (await keyed.open()).transaction('badges', 'readwrite');
+        const store: IDBObjectStore = transaction.objectStore('badges');
+        const request: IDBRequest<Badge> = store.get(id) as IDBRequest<Badge>;
+
+        request.onsuccess = (): void => {
+            store.put({ ...request.result, rank });
+        };
+
+        await new Promise<void>((resolve: () => void): void => {
+            transaction.oncomplete = (): void => resolve();
+        });
+    }
+
+    /**
+     * Collect the plan and record count the next query announces.
+     */
+    function announced(): [string, number][] {
+        const seen: [string, number][] = [];
+
+        Dispatcher.listen('db:query', ((event: QueryExecuted): void => {
+            seen.push([event.plan, event.records]);
+        }) as (event: Event) => void, true);
+
+        return seen;
+    }
+
+    /**
+     * Record how many store cursors were open when each one first succeeded.
+     */
+    function opened(): number[] {
+        const open: IDBObjectStore['openCursor'] = IDBObjectStore.prototype.openCursor;
+        const seen: number[] = [];
+
+        let calls: number = 0;
+
+        vi.spyOn(IDBObjectStore.prototype, 'openCursor').mockImplementation(function (this: IDBObjectStore, ...parameters: Parameters<IDBObjectStore['openCursor']>): IDBRequest<IDBCursorWithValue | null> {
+            const request: IDBRequest<IDBCursorWithValue | null> = open.apply(this, parameters);
+
+            const succeeded: () => void = (): void => {
+                request.removeEventListener('success', succeeded);
+                seen.push(calls);
+            };
+
+            calls++;
+            request.addEventListener('success', succeeded);
+
+            return request;
+        });
+
+        return seen;
+    }
+
+    const COLLIDING: [string, Write, string, (number | string | null)[][]][] = [
+        [
+            'a collected and sorted update',
+            (query: Builder<Badge>): Promise<number> => query.orderBy('name').limit(4).update({ slot: 'x' }),
+            'badges_team_slot_unique',
+            [[null, 40], ['x', 10], [null, 30], ['x', 20], ['x', 31]],
+        ],
+        [
+            'a collected and sorted increment',
+            (query: Builder<Badge>): Promise<number> => query.orderBy('name').limit(4).increment('rank'),
+            'badges_rank_unique',
+            [[null, 40], [null, 11], [null, 30], [null, 21], ['x', 31]],
+        ],
+        [
+            'an increment moving records along the index it walks',
+            (query: Builder<Badge>): Promise<number> => query.where('rank', '>=', 10).increment('rank'),
+            'badges_rank_unique',
+            [[null, 40], [null, 11], [null, 30], [null, 21], ['x', 31]],
+        ],
+    ];
+
+    beforeEach(async (): Promise<void> => {
+        keyed = new Connection('app', { database: `builder-writes-badges-${++sequence}`, migrations: [CreateBadgesTable] });
+
+        await keyed.migrate();
+        await badges().insert([
+            { name: 'Dora', team: 'c', rank: 40 },
+            { name: 'Ann', team: 'a', rank: 10 },
+            { name: 'Cleo', team: 'c', rank: 30 },
+            { name: 'Bea', team: 'b', rank: 20 },
+            { name: 'Eve', team: 'c', slot: 'x', rank: 31 },
+        ]);
+    });
+
+    afterEach((): void => {
+        vi.restoreAllMocks();
+        keyed.disconnect();
+    });
+
+    test.each(COLLIDING)('%s whose third record collides names the index and writes none of them', async (_: string, write: Write, index: string): Promise<void> => {
+        const before: Badge[] = await held();
+
+        await expect(write(badges())).rejects.toThrow(new UniqueConstraintViolationException('badges', index));
+
+        expect(await held()).toEqual(before);
+    });
+
+    test.each(COLLIDING)('%s whose third record collides inside a transaction that catches it keeps the first two', async (_: string, write: Write, index: string, kept: (number | string | null)[][]): Promise<void> => {
+        await keyed.transaction(async (transaction: Transaction): Promise<void> => {
+            await expect(write(transaction.table<Badge>('badges'))).rejects.toThrow(new UniqueConstraintViolationException('badges', index));
+        });
+
+        expect((await held()).map((badge: Badge): (number | string | null)[] => [badge.slot, badge.rank])).toEqual(kept);
+    });
+
+    test('throws the failure of the second record when the step of the third cannot be written', async (): Promise<void> => {
+        await corrupt(5, 21);
+        await corrupt(3, 'high');
+
+        const before: Badge[] = await held();
+
+        await expect(badges().orderBy('name').limit(4).increment('rank')).rejects.toThrow(new UniqueConstraintViolationException('badges', 'badges_rank_unique'));
+
+        expect(await held()).toEqual(before);
+    });
+
+    test('throws the failure of the second record when the third collides', async (): Promise<void> => {
+        await corrupt(4, 'high');
+
+        const before: Badge[] = await held();
+
+        await expect(badges().orderBy('name').limit(4).increment('rank')).rejects.toThrow(TypeError);
+
+        expect(await held()).toEqual(before);
+    });
+
+    test('names the index a record collides on though a later record takes its value on another', async (): Promise<void> => {
+        await expect(badges().orderBy('name').limit(4).increment('rank', 1, { slot: 'z' })).rejects.toThrow(new UniqueConstraintViolationException('badges', 'badges_rank_unique'));
+    });
+
+    test('names a multi-entry index a record collides on though the holder is written after it', async (): Promise<void> => {
+        await connection.table('tagged').insert([
+            { title: 'b', tags: ['p'] },
+            { title: 'a', tags: ['q'] },
+            { title: 'c', tags: ['r'] },
+        ]);
+
+        await expect(connection.table('tagged').orderBy('title').limit(3).update({ tags: ['p'] })).rejects.toThrow(new UniqueConstraintViolationException('tagged', 'tagged_tags_unique'));
+    });
+
+    test('updates the first records in the requested order and announces them', async (): Promise<void> => {
+        const seen: [string, number][] = announced();
+
+        expect(await badges().orderBy('name').limit(3).update({ slot: 'y' })).toEqual(3);
+        expect(seen).toEqual([['scan', 3]]);
+        expect((await held()).map((badge: Badge): string | null => badge.slot)).toEqual([null, 'y', 'y', 'y', 'x']);
+    });
+
+    test('increments the first records in the requested order and announces them', async (): Promise<void> => {
+        const seen: [string, number][] = announced();
+
+        expect(await badges().orderBy('name', 'desc').limit(2).increment('rank', 100)).toEqual(2);
+        expect(seen).toEqual([['scan', 2]]);
+        expect((await held()).map((badge: Badge): number => badge.rank)).toEqual([140, 10, 30, 20, 131]);
+    });
+
+    test('deletes the first records in the requested order and announces them', async (): Promise<void> => {
+        const seen: [string, number][] = announced();
+
+        expect(await badges().orderBy('name').offset(1).limit(2).delete()).toEqual(2);
+        expect(seen).toEqual([['scan', 2]]);
+        expect(await badges().orderBy('id').pluck('name')).toEqual(['Dora', 'Ann', 'Eve']);
+    });
+
+    test('moves every record along the index it walks and announces them', async (): Promise<void> => {
+        const seen: [string, number][] = announced();
+
+        expect(await badges().where('rank', '>=', 20).increment('rank', 100)).toEqual(4);
+        expect(seen).toEqual([['index:badges_rank_unique', 4]]);
+        expect((await held()).map((badge: Badge): number => badge.rank)).toEqual([140, 10, 130, 120, 131]);
+    });
+
+    test('moves only the matching records past the offset and up to the limit along the index it walks', async (): Promise<void> => {
+        const seen: [string, number][] = announced();
+
+        expect(await badges().where('rank', '>=', 10).where('team', '!=', 'b').orderBy('rank').offset(1).limit(2).increment('rank', 100)).toEqual(2);
+        expect(seen).toEqual([['index:badges_rank_unique', 2]]);
+        expect((await held()).map((badge: Badge): number => badge.rank)).toEqual([40, 10, 130, 20, 131]);
+    });
+
+    test('moves only the matching records up to the limit along the index it walks inside a transaction', async (): Promise<void> => {
+        await keyed.transaction(async (transaction: Transaction): Promise<void> => {
+            expect(await transaction.table<Badge>('badges').where('rank', '>=', 10).where('team', '!=', 'b').orderBy('rank').limit(2).increment('rank', 100)).toEqual(2);
+        });
+
+        expect((await held()).map((badge: Badge): number => badge.rank)).toEqual([40, 110, 130, 20, 31]);
+    });
+
+    test('deletes through a join each record once and announces them', async (): Promise<void> => {
+        await users().insert([
+            { name: 'Alice', email: 'alice@example.com' },
+            { name: 'Bob', email: 'bob@example.com' },
+            { name: 'Carol', email: 'carol@example.com' },
+        ]);
+
+        await connection.table('pairs').insert([
+            { left: 'Alice', right: 'b' },
+            { left: 'Alice', right: 'c' },
+            { left: 'Bob', right: 'b' },
+        ]);
+
+        const seen: [string, number][] = announced();
+
+        expect(await users().join('pairs', 'pairs.left', '=', 'users.name').delete()).toEqual(2);
+        expect(seen).toEqual([['join', 2]]);
+        expect(await users().pluck('name')).toEqual(['Carol']);
+    });
+
+    test('opens the cursor of every key before the first succeeds in a transaction of its own', async (): Promise<void> => {
+        const seen: number[] = opened();
+
+        expect(await badges().orderBy('name').limit(3).update({ slot: 'y' })).toEqual(3);
+        expect(seen).toEqual([3, 3, 3]);
+    });
+
+    test('opens the cursor of each key after the one before inside a transaction', async (): Promise<void> => {
+        await keyed.transaction(async (transaction: Transaction): Promise<void> => {
+            const seen: number[] = opened();
+
+            expect(await transaction.table<Badge>('badges').orderBy('name').limit(3).update({ slot: 'y' })).toEqual(3);
+            expect(seen).toEqual([1, 2, 3]);
+        });
     });
 });
 
