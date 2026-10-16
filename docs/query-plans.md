@@ -23,6 +23,12 @@ Each resolves to a description of the plan chosen:
   short-circuit the scan, on a `distinct` query once it has met enough distinct rows. Nullable
   columns are excluded because an IndexedDB index drops records with no value for its key path,
   which would silently lose rows, and so are multi-entry indexes, described below.
+- A `limit` short-circuits the walk whenever the result follows it: with no order, when the records
+  come back in the order the key path or the index reads them, or with an order an index serves.
+  So `first()`, `exists()`, `sole()` and `value()` stop at the records they need, a `whereIn` stops
+  looking up values once it holds enough, and the offset of a range or a scan is stepped over
+  without reading the records it skips, unless a residual or `distinct` must check them. A random order, or one sorted in
+  memory, reads the whole match first. Before 18.0.17 a read with no order read the whole range.
 - A non-nullable column can still lack values: a loose connection stores `null` where a required
   value is missing, a column added by `Schema.table` without a default before 4.0.0 left every row
   already in the table without it, and an index on a boolean column, which a database migrated

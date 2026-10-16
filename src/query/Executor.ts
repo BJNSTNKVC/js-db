@@ -690,15 +690,17 @@ export class Executor<T> {
         const matches: (record: Record<string, unknown>) => boolean = Predicate.compile(plan.residual);
         const first: ((row: Record<string, unknown>) => boolean) | null = this.#deduplicates(schema, distinct) ? this.#fresh() : null;
         const fresh: ((record: T) => boolean) | null = first === null ? null : (record: T): boolean => first(this.#projected(record) as Record<string, unknown>);
-        const skipped: number = plan.ordered && plan.residual.length === 0 && fresh === null ? this.#query.offset : 0;
+        const follows: boolean = plan.ordered || (this.#query.orders.length === 0 && !this.#query.random);
+        const skipped: number = follows && plan.values === null && plan.residual.length === 0 && fresh === null ? this.#query.offset : 0;
+        const ceiling: number | null = follows && this.#query.limit !== null ? this.#query.offset - skipped + this.#query.limit : null;
 
         const collected: Entry<T>[] = plan.values === null
-            ? await this.#cursored(store, plan, matches, plan.ordered ? fresh : null, skipped)
-            : await this.#points(store, plan, matches);
+            ? await this.#cursored(store, plan, matches, follows ? fresh : null, skipped, ceiling)
+            : await this.#points(store, plan, matches, follows ? fresh : null, ceiling);
 
-        const ordered: Entry<T>[] = plan.ordered ? collected : this.#sorted(collected);
+        const ordered: Entry<T>[] = follows ? collected : this.#sorted(collected);
 
-        const unique: Entry<T>[] = fresh === null || plan.ordered
+        const unique: Entry<T>[] = fresh === null || follows
             ? ordered
             : ordered.filter((entry: Entry<T>): boolean => fresh(entry.record));
 
@@ -745,9 +747,8 @@ export class Executor<T> {
     /**
      * Collect the records a walk over the planned source yields.
      */
-    async #cursored(store: IDBObjectStore, plan: Plan, matches: (record: Record<string, unknown>) => boolean, fresh: ((record: T) => boolean) | null = null, skip: number = 0): Promise<Entry<T>[]> {
+    async #cursored(store: IDBObjectStore, plan: Plan, matches: (record: Record<string, unknown>) => boolean, fresh: ((record: T) => boolean) | null = null, skip: number = 0, ceiling: number | null = null): Promise<Entry<T>[]> {
         const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index);
-        const ceiling: number | null = plan.ordered && this.#query.limit !== null ? this.#query.offset - skip + this.#query.limit : null;
         const filtered: boolean = plan.residual.length > 0 || fresh !== null;
 
         // IndexedDB reads a count of 0 as no limit at all,
@@ -780,17 +781,23 @@ export class Executor<T> {
     /**
      * Collect the records the planned point lookups yield.
      */
-    async #points(store: IDBObjectStore, plan: Plan, matches: (record: Record<string, unknown>) => boolean): Promise<Entry<T>[]> {
+    async #points(store: IDBObjectStore, plan: Plan, matches: (record: Record<string, unknown>) => boolean, fresh: ((record: T) => boolean) | null = null, ceiling: number | null = null): Promise<Entry<T>[]> {
         const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index);
         const collected: Entry<T>[] = [];
 
         for (const value of plan.values as unknown[]) {
+            if (ceiling !== null && collected.length >= ceiling) {
+                break;
+            }
+
             const range: IDBKeyRange = IDBKeyRange.only(value as IDBValidKey);
 
-            await Request.walk(source.openCursor(range), (cursor: IDBCursorWithValue): void => {
-                if (matches(cursor.value as Record<string, unknown>)) {
+            await Request.walk(source.openCursor(range), (cursor: IDBCursorWithValue): boolean => {
+                if (matches(cursor.value as Record<string, unknown>) && (fresh === null || fresh(cursor.value as T))) {
                     collected.push({ record: cursor.value as T, key: cursor.primaryKey });
                 }
+
+                return ceiling === null || collected.length < ceiling;
             });
         }
 

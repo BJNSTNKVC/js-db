@@ -1289,6 +1289,74 @@ describe('Builder range walks', (): void => {
 
         expect(pages).toEqual([['Alice', 'Bob'], ['Dave', 'Erin'], ['Carol']]);
     });
+
+    test('returns the first record of an unordered scan, in key order', async (): Promise<void> => {
+        expect(await planned(async (): Promise<void> => {
+            expect((await users().first())?.name).toEqual('Alice');
+        })).toEqual(['scan']);
+    });
+
+    test('returns the first record of an unordered key range, in key order', async (): Promise<void> => {
+        expect(await planned(async (): Promise<void> => {
+            expect((await users().where('id', '>', 2).first())?.name).toEqual('Carol');
+        })).toEqual(['key']);
+    });
+
+    test('returns the first record of an unordered index range, in index order', async (): Promise<void> => {
+        expect(await planned(async (): Promise<void> => {
+            expect((await users().where('age', '>=', 25).first())?.name).toEqual('Bob');
+        })).toEqual(['index:users_age_index']);
+    });
+
+    test('fills the limit of an unordered scan with the records a residual matches', async (): Promise<void> => {
+        expect(await planned(async (): Promise<void> => {
+            expect(await names(users().where('role', 'member').limit(2))).toEqual(['Bob', 'Dave']);
+            expect(await names(users().where('role', 'member').offset(1).limit(1))).toEqual(['Dave']);
+        })).toEqual(['scan', 'scan']);
+    });
+
+    test('offsets an unordered scan up to the limit, in key order', async (): Promise<void> => {
+        expect(await planned(async (): Promise<void> => {
+            expect(await names(users().offset(1).limit(2))).toEqual(['Bob', 'Carol']);
+            expect(await names(users().where('age', '>=', 25).offset(1).limit(2))).toEqual(['Erin', 'Alice']);
+        })).toEqual(['scan', 'index:users_age_index']);
+    });
+
+    test('offsets an unordered scan without a limit, in key order', async (): Promise<void> => {
+        expect(await planned(async (): Promise<void> => {
+            expect(await names(users().offset(3))).toEqual(['Dave', 'Erin']);
+            expect(await users().offset(5).get()).toEqual([]);
+        })).toEqual(['scan', 'scan']);
+    });
+
+    test('fills the limit of an unordered whereIn in the order of its values', async (): Promise<void> => {
+        expect(await planned(async (): Promise<void> => {
+            expect(await names(users().whereIn('id', [4, 2, 5]).limit(2))).toEqual(['Dave', 'Bob']);
+            expect(await names(users().whereIn('age', [25, 35]).limit(2))).toEqual(['Bob', 'Erin']);
+            expect(await names(users().whereIn('age', [25, 35]).offset(1).limit(2))).toEqual(['Erin', 'Carol']);
+            expect(await users().whereIn('id', [4, 2]).limit(0).get()).toEqual([]);
+        })).toEqual(['key', 'index:users_age_index', 'index:users_age_index', 'key']);
+    });
+
+    test('fills the limit of an unordered distinct read with distinct rows', async (): Promise<void> => {
+        expect(await users().select('role').distinct().limit(2).get()).toEqual([{ role: 'admin' }, { role: 'member' }]);
+        expect(await users().select('role').distinct().offset(1).limit(2).get()).toEqual([{ role: 'member' }, { role: 'owner' }]);
+        expect(await users().select('role').whereIn('age', [25, 30]).distinct().limit(2).get()).toEqual([{ role: 'member' }, { role: 'admin' }]);
+    });
+
+    test('shuffles the whole match for the first record of a random read', async (): Promise<void> => {
+        vi.spyOn(Math, 'random').mockReturnValue(0);
+
+        expect((await users().inRandomOrder().first())?.name).toEqual('Bob');
+    });
+
+    test('asks for one record for the first record of an unordered scan', async (): Promise<void> => {
+        const read: MockInstance = vi.spyOn(IDBObjectStore.prototype, 'getAll');
+
+        expect((await users().first())?.name).toEqual('Alice');
+
+        expect(read.mock.calls.filter((_: unknown[], call: number): boolean => (read.mock.contexts[call] as IDBObjectStore).name === 'users')).toEqual([[null, 1]]);
+    });
 });
 
 describe('Builder ordering through an index that leaves records out', (): void => {
