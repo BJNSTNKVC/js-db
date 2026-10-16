@@ -279,6 +279,38 @@ function bound(): void {
     });
 }
 
+/**
+ * Walk a query with chunk, lazy and each, collecting the names each delivers.
+ */
+async function walked(query: () => Builder<User>, size: number): Promise<{ chunk: string[][]; lazy: string[]; each: string[] }> {
+    const walk: { chunk: string[][]; lazy: string[]; each: string[] } = { chunk: [], lazy: [], each: [] };
+
+    await query().chunk(size, (records: User[]): void => {
+        walk.chunk.push(records.map((user: User): string => user.name));
+    });
+
+    for await (const user of query().lazy(size)) {
+        walk.lazy.push(user.name);
+    }
+
+    await query().each((user: User): void => {
+        walk.each.push(user.name);
+    });
+
+    return walk;
+}
+
+/**
+ * Get the calls a spy took on the users store or one of its indexes.
+ */
+function onUsers(spy: MockInstance): unknown[][] {
+    return spy.mock.calls.filter((_: unknown[], call: number): boolean => {
+        const source: IDBObjectStore | IDBIndex = spy.mock.contexts[call] as IDBObjectStore | IDBIndex;
+
+        return (source instanceof IDBIndex ? source.objectStore : source).name === 'users';
+    });
+}
+
 beforeAll(async (): Promise<void> => {
     connection = new Connection('app', { database: 'builder-reads', migrations: [CreateUsersTable] });
 
@@ -1356,6 +1388,127 @@ describe('Builder range walks', (): void => {
         expect((await users().first())?.name).toEqual('Alice');
 
         expect(read.mock.calls.filter((_: unknown[], call: number): boolean => (read.mock.contexts[call] as IDBObjectStore).name === 'users')).toEqual([[null, 1]]);
+    });
+});
+
+describe('Builder walks over keys', (): void => {
+    test('delivers every record of a chunked scan, in key order', async (): Promise<void> => {
+        expect(await planned(async (): Promise<void> => {
+            expect(await walked(users, 2)).toEqual({
+                chunk: [['Alice', 'Bob'], ['Carol', 'Dave'], ['Erin']],
+                lazy : ['Alice', 'Bob', 'Carol', 'Dave', 'Erin'],
+                each : ['Alice', 'Bob', 'Carol', 'Dave', 'Erin'],
+            });
+        })).toEqual(['scan', 'scan', 'scan']);
+    });
+
+    test('delivers the records of a key range, in key order', async (): Promise<void> => {
+        expect(await planned(async (): Promise<void> => {
+            expect(await walked((): Builder<User> => users().where('id', '>', 2), 2)).toEqual({
+                chunk: [['Carol', 'Dave'], ['Erin']],
+                lazy : ['Carol', 'Dave', 'Erin'],
+                each : ['Carol', 'Dave', 'Erin'],
+            });
+        })).toEqual(['key', 'key', 'key']);
+    });
+
+    test('delivers the records of an index range in both directions, in index order', async (): Promise<void> => {
+        expect(await planned(async (): Promise<void> => {
+            expect((await walked((): Builder<User> => users().where('name', '>=', 'B').orderBy('name'), 2)).chunk).toEqual([['Bob', 'Carol'], ['Dave', 'Erin']]);
+            expect((await walked((): Builder<User> => users().where('name', '<', 'E').orderBy('name', 'desc'), 2)).chunk).toEqual([['Dave', 'Carol'], ['Bob', 'Alice']]);
+            expect((await walked((): Builder<User> => users().where('age', '>=', 25), 3)).chunk).toEqual([['Bob', 'Erin', 'Alice'], ['Carol']]);
+        })).toEqual([...Array(3).fill('index:users_name_index'), ...Array(3).fill('index:users_name_index'), ...Array(3).fill('index:users_age_index')]);
+    });
+
+    test('delivers the page an offset walk leaves', async (): Promise<void> => {
+        expect((await walked((): Builder<User> => users().offset(1).limit(3), 2)).chunk).toEqual([['Bob', 'Carol'], ['Dave']]);
+        expect((await walked((): Builder<User> => users().offset(3), 2)).lazy).toEqual(['Dave', 'Erin']);
+        expect((await walked((): Builder<User> => users().orderBy('name', 'desc').offset(1), 2)).chunk).toEqual([['Dave', 'Carol'], ['Bob', 'Alice']]);
+        expect((await walked((): Builder<User> => users().where('age', '>=', 25).offset(1).limit(2), 1)).each).toEqual(['Erin', 'Alice']);
+    });
+
+    test('delivers the records of a whereIn in the order of its values', async (): Promise<void> => {
+        expect(await planned(async (): Promise<void> => {
+            expect(await walked((): Builder<User> => users().whereIn('id', [4, 2, 5]), 2)).toEqual({
+                chunk: [['Dave', 'Bob'], ['Erin']],
+                lazy : ['Dave', 'Bob', 'Erin'],
+                each : ['Dave', 'Bob', 'Erin'],
+            });
+            expect((await walked((): Builder<User> => users().whereIn('age', [25, 35]).limit(2), 2)).chunk).toEqual([['Bob', 'Erin']]);
+            expect((await walked((): Builder<User> => users().whereIn('age', [25, 35]).offset(1).limit(2), 2)).chunk).toEqual([['Erin', 'Carol']]);
+        })).toEqual([...Array(3).fill('key'), ...Array(6).fill('index:users_age_index')]);
+    });
+
+    test('delivers nothing from a walk under a limit of 0', async (): Promise<void> => {
+        expect(await walked((): Builder<User> => users().limit(0), 2)).toEqual({ chunk: [], lazy: [], each: [] });
+        expect((await walked((): Builder<User> => users().orderBy('name', 'desc').limit(0), 2)).chunk).toEqual([]);
+        expect((await walked((): Builder<User> => users().whereIn('id', [4, 2]).limit(0), 2)).chunk).toEqual([]);
+    });
+
+    test('delivers nothing from a walk offset past every record', async (): Promise<void> => {
+        expect(await walked((): Builder<User> => users().offset(5), 2)).toEqual({ chunk: [], lazy: [], each: [] });
+        expect((await walked((): Builder<User> => users().orderBy('name').offset(10).limit(2), 2)).chunk).toEqual([]);
+        expect((await walked((): Builder<User> => users().offset(2 ** 32).limit(1), 2)).chunk).toEqual([]);
+    }, 2000);
+
+    test('delivers every record of a walk under a limit of 2 ** 32', async (): Promise<void> => {
+        expect((await walked((): Builder<User> => users().limit(2 ** 32), 2)).chunk).toEqual([['Alice', 'Bob'], ['Carol', 'Dave'], ['Erin']]);
+        expect((await walked((): Builder<User> => users().orderBy('name').limit(2 ** 32), 5)).lazy).toEqual(['Alice', 'Bob', 'Carol', 'Dave', 'Erin']);
+        expect((await walked((): Builder<User> => users().whereIn('id', [3, 1]).limit(2 ** 32), 1)).each).toEqual(['Carol', 'Alice']);
+    });
+
+    test('delivers the records a residual or a distinct read leaves', async (): Promise<void> => {
+        const roles: string[][] = [];
+
+        expect(await walked((): Builder<User> => users().where('role', 'member'), 2)).toEqual({
+            chunk: [['Bob', 'Dave'], ['Erin']],
+            lazy : ['Bob', 'Dave', 'Erin'],
+            each : ['Bob', 'Dave', 'Erin'],
+        });
+
+        expect((await walked((): Builder<User> => users().where('role', 'member').orderBy('name').offset(1).limit(1), 2)).chunk).toEqual([['Dave']]);
+
+        await users().select('role').distinct().chunk(2, (records: User[]): void => {
+            roles.push(records.map((user: User): string => user.role));
+        });
+
+        expect(roles).toEqual([['admin', 'member'], ['owner']]);
+    });
+
+    test('announces the plan and the keys a walk pages over', async (): Promise<void> => {
+        const seen: [string, number][] = [];
+        const listener: (event: Event) => void = ((event: QueryExecuted): void => {
+            seen.push([event.plan, event.records]);
+        }) as (event: Event) => void;
+
+        Dispatcher.listen('db:query', listener);
+
+        try {
+            await users().offset(1).limit(3).chunk(2, (): void => {});
+            await users().orderBy('name', 'desc').offset(3).chunk(2, (): void => {});
+            await users().whereIn('age', [25, 35]).limit(2).chunk(2, (): void => {});
+        } finally {
+            Dispatcher.forget('db:query', listener);
+        }
+
+        expect(seen).toEqual([['scan', 3], ['index:users_name_index', 2], ['index:users_age_index', 2]]);
+    });
+
+    test('reads records only for the pages a chunked walk delivers', async (): Promise<void> => {
+        const reads: MockInstance[] = [
+            vi.spyOn(IDBObjectStore.prototype, 'getAll'),
+            vi.spyOn(IDBIndex.prototype, 'getAll'),
+            vi.spyOn(IDBObjectStore.prototype, 'openCursor'),
+            vi.spyOn(IDBIndex.prototype, 'openCursor'),
+        ];
+
+        const fetched: MockInstance = vi.spyOn(IDBObjectStore.prototype, 'get');
+
+        await users().chunk(2, (): boolean => false);
+        await users().where('name', '<', 'E').orderBy('name', 'desc').chunk(1, (): boolean => false);
+
+        expect(reads.map(onUsers)).toEqual([[], [], [], []]);
+        expect(onUsers(fetched)).toEqual([[1], [2], [4]]);
     });
 });
 

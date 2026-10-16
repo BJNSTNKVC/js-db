@@ -82,7 +82,7 @@ export class Executor<T> {
      */
     async keys(): Promise<IDBValidKey[]> {
         return this.#settled(async (): Promise<IDBValidKey[]> => {
-            return (await this.#matched()).keys;
+            return (await this.#matched(this.#query.distinct, true)).keys;
         });
     }
 
@@ -370,7 +370,7 @@ export class Executor<T> {
 
             const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index);
             const moves: boolean = plan.index !== null && this.#moves(schema, plan.index, changes);
-            const lookups: unknown[] | null = moves ? await this.#keys(source as IDBIndex, plan) : plan.values;
+            const lookups: unknown[] | null = moves ? await this.#keys(source, plan) : plan.values;
             const target: IDBObjectStore | IDBIndex = moves ? store : source;
 
             if (lookups === null) {
@@ -674,9 +674,9 @@ export class Executor<T> {
     }
 
     /**
-     * Run the query, collecting the matching records and their keys.
+     * Run the query, collecting the matching keys and, unless told not to, records.
      */
-    async #matched(distinct: boolean = this.#query.distinct): Promise<{ records: T[]; keys: IDBValidKey[] }> {
+    async #matched(distinct: boolean = this.#query.distinct, bare: boolean = false): Promise<{ records: T[]; keys: IDBValidKey[] }> {
         if (this.#query.joins.length > 0) {
             const rows: Record<string, unknown>[] = await this.#joined(distinct);
 
@@ -693,6 +693,15 @@ export class Executor<T> {
         const follows: boolean = plan.ordered || (this.#query.orders.length === 0 && !this.#query.random);
         const skipped: number = follows && plan.values === null && plan.residual.length === 0 && fresh === null ? this.#query.offset : 0;
         const ceiling: number | null = follows && this.#query.limit !== null ? this.#query.offset - skipped + this.#query.limit : null;
+
+        if (bare && follows && plan.residual.length === 0 && fresh === null) {
+            const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index);
+            const keys: IDBValidKey[] = this.#paged(await this.#keys(source, plan, skipped, ceiling), this.#query.offset - skipped);
+
+            this.#emit(Planner.describe(plan), started, keys.length);
+
+            return { records: [], keys };
+        }
 
         const collected: Entry<T>[] = plan.values === null
             ? await this.#cursored(store, plan, matches, follows ? fresh : null, skipped, ceiling)
@@ -723,25 +732,46 @@ export class Executor<T> {
     }
 
     /**
-     * Collect the primary keys a planned index walk reaches, in order.
+     * Collect the primary keys a planned walk reaches, in order.
      */
-    async #keys(index: IDBIndex, plan: Plan): Promise<IDBValidKey[]> {
-        const keys: IDBValidKey[] = [];
-        const collect: (cursor: IDBCursor) => void = (cursor: IDBCursor): void => {
-            keys.push(cursor.primaryKey);
-        };
+    async #keys(source: IDBObjectStore | IDBIndex, plan: Plan, skip: number = 0, ceiling: number | null = null): Promise<IDBValidKey[]> {
+        if (plan.values === null && this.#batched(plan, skip, ceiling, false)) {
+            return Request.settle(source.getAllKeys(plan.range, ceiling ?? undefined));
+        }
+
+        let keys: IDBValidKey[] = [];
 
         if (plan.values === null) {
-            await Request.walk(index.openKeyCursor(plan.range, plan.direction), collect);
+            await Request.walk(source.openKeyCursor(plan.range, plan.direction), (cursor: IDBCursor): boolean => {
+                keys.push(cursor.primaryKey);
+
+                return ceiling === null || keys.length < ceiling;
+            }, skip);
 
             return keys;
         }
 
         for (const value of plan.values) {
-            await Request.walk(index.openKeyCursor(IDBKeyRange.only(value as IDBValidKey)), collect);
+            if (ceiling !== null && keys.length >= ceiling) {
+                break;
+            }
+
+            const left: number | undefined = ceiling === null || ceiling - keys.length >= 2 ** 32 ? undefined : ceiling - keys.length;
+
+            keys = keys.concat(await Request.settle(source.getAllKeys(IDBKeyRange.only(value as IDBValidKey), left)));
         }
 
         return keys;
+    }
+
+    /**
+     * Determine whether one getAll can read what a walk would collect.
+     */
+    #batched(plan: Plan, skip: number, ceiling: number | null, filtered: boolean): boolean {
+        // IndexedDB reads a count of 0 as no limit at all,
+        // and getAll throws on a count of 2^32 or more,
+        // so either ceiling keeps the cursor.
+        return plan.direction === 'next' && skip === 0 && (ceiling === null || (!filtered && ceiling > 0 && ceiling < 2 ** 32));
     }
 
     /**
@@ -749,12 +779,8 @@ export class Executor<T> {
      */
     async #cursored(store: IDBObjectStore, plan: Plan, matches: (record: Record<string, unknown>) => boolean, fresh: ((record: T) => boolean) | null = null, skip: number = 0, ceiling: number | null = null): Promise<Entry<T>[]> {
         const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index);
-        const filtered: boolean = plan.residual.length > 0 || fresh !== null;
 
-        // IndexedDB reads a count of 0 as no limit at all,
-        // and getAll throws on a count of 2^32 or more,
-        // so either ceiling keeps the cursor.
-        if (plan.direction === 'next' && skip === 0 && (ceiling === null || (!filtered && ceiling > 0 && ceiling < 2 ** 32))) {
+        if (this.#batched(plan, skip, ceiling, plan.residual.length > 0 || fresh !== null)) {
             const [records, keys]: [T[], IDBValidKey[]] = await Promise.all([
                 Request.settle(source.getAll(plan.range, ceiling ?? undefined) as IDBRequest<T[]>),
                 Request.settle(source.getAllKeys(plan.range, ceiling ?? undefined)),
