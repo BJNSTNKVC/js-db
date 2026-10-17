@@ -30,6 +30,26 @@ await DB.transaction(async (transaction: Transaction): Promise<void> => {
 A nested `DB.transaction` **joins** the one already running. IndexedDB has no savepoints, so there is
 no partial rollback.
 
+So does any `DB.transaction` made on a connection while another is running there, whether it was
+called from inside the callback or from elsewhere in the app, since browsers cannot tell the two
+apart. A call counts as running from the moment it is made, so two calls made in the same tick share
+one transaction. A joined call resolves or rejects with its own callback, but its writes commit or
+roll back with the whole transaction, whatever its own call returns. It ignores its own
+`options.tables` and reaches only the tables of the transaction it joined. Before 19.0.1, a call
+made in the same tick as another opened a transaction of its own, and the first call's nested calls
+joined the second's.
+
+```ts
+const saving: Promise<void> = DB.transaction(async (transaction: Transaction): Promise<void> => {
+    await transaction.table<User>('users').insert({ name: 'John' });
+});
+
+// Joins the transaction above, and rolls back with it if that callback throws.
+const logging: Promise<void> = DB.transaction(async (transaction: Transaction): Promise<void> => {
+    await transaction.table('logs').insert({ message: 'Saved John' });
+});
+```
+
 Inside a migration, `DB.transaction` on the connection being migrated joins the migration's
 version-change transaction the same way. It ignores `options.tables`, dispatches no transaction
 events, and an error it throws fails the migration, rolling back the whole upgrade. While a migration

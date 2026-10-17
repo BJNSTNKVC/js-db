@@ -348,6 +348,160 @@ describe('Connection nested transaction', (): void => {
     });
 });
 
+describe('Transaction calls made side by side', (): void => {
+    let opened: () => number;
+
+    beforeEach((): void => {
+        const spy: MockInstance<IDBDatabase['transaction']> = vi.spyOn(IDBDatabase.prototype, 'transaction');
+
+        opened = (): number => spy.mock.calls.filter((call: Parameters<IDBDatabase['transaction']>): boolean => call[1] === 'readwrite').length;
+    });
+
+    afterEach((): void => {
+        vi.restoreAllMocks();
+    });
+
+    /**
+     * Get the names stored in the users table, in order.
+     */
+    function stored(): Promise<string[]> {
+        return connection.table<User>('users').orderBy('name').pluck('name');
+    }
+
+    test('joins a call made in the same tick, rolling it back with the first that fails after it', async (): Promise<void> => {
+        const failure: Error = new Error('Nope.');
+        let second: Promise<void> = Promise.resolve();
+
+        const first: Promise<void> = connection.transaction(async (transaction: Transaction): Promise<void> => {
+            await transaction.table<User>('users').insert({ name: 'A first' });
+            await second;
+
+            throw failure;
+        });
+
+        second = connection.transaction(async (transaction: Transaction): Promise<void> => {
+            await transaction.table<User>('users').insert({ name: 'A second' });
+        });
+
+        const outcomes: PromiseSettledResult<void>[] = await Promise.allSettled([first, second]);
+
+        expect(opened()).toEqual(1);
+        expect(outcomes).toEqual([{ status: 'rejected', reason: failure }, { status: 'fulfilled', value: undefined }]);
+        expect(await stored()).toEqual([]);
+    }, 2000);
+
+    test('joins a call made in the same tick, committing what it wrote though it fails', async (): Promise<void> => {
+        const failure: Error = new Error('Nope.');
+
+        const first: Promise<void> = connection.transaction(async (transaction: Transaction): Promise<void> => {
+            await transaction.table<User>('users').insert({ name: 'B first' });
+        });
+
+        const second: Promise<void> = connection.transaction(async (transaction: Transaction): Promise<void> => {
+            await transaction.table<User>('users').insert({ name: 'B second' });
+
+            throw failure;
+        });
+
+        const outcomes: PromiseSettledResult<void>[] = await Promise.allSettled([first, second]);
+
+        expect(opened()).toEqual(1);
+        expect(outcomes).toEqual([{ status: 'fulfilled', value: undefined }, { status: 'rejected', reason: failure }]);
+        expect(await stored()).toEqual(['B first', 'B second']);
+    }, 2000);
+
+    test('joins a call made while the first runs, rolling it back with the first', async (): Promise<void> => {
+        const failure: Error = new Error('Nope.');
+        let second: Promise<void> = Promise.resolve();
+
+        const first: Promise<void> = connection.transaction(async (transaction: Transaction): Promise<void> => {
+            await transaction.table<User>('users').insert({ name: 'C first' });
+
+            second = connection.transaction(async (joined: Transaction): Promise<void> => {
+                await joined.table<User>('users').insert({ name: 'C second' });
+            });
+
+            await second;
+
+            throw failure;
+        });
+
+        await expect(first).rejects.toBe(failure);
+        await expect(second).resolves.toBeUndefined();
+
+        expect(opened()).toEqual(1);
+        expect(await stored()).toEqual([]);
+    }, 2000);
+
+    test('joins a call made while the first runs, committing what it wrote though it fails', async (): Promise<void> => {
+        const failure: Error = new Error('Nope.');
+        let second: Promise<PromiseSettledResult<void>[]> = Promise.resolve([]);
+
+        await connection.transaction(async (transaction: Transaction): Promise<void> => {
+            await transaction.table<User>('users').insert({ name: 'D first' });
+
+            second = Promise.allSettled([connection.transaction(async (joined: Transaction): Promise<void> => {
+                await joined.table<User>('users').insert({ name: 'D second' });
+
+                throw failure;
+            })]);
+        });
+
+        expect(await second).toEqual([{ status: 'rejected', reason: failure }]);
+        expect(opened()).toEqual(1);
+        expect(await stored()).toEqual(['D first', 'D second']);
+    }, 2000);
+
+    test('keeps a nested call in its own transaction when a sibling is made in the same tick', async (): Promise<void> => {
+        const failure: Error = new Error('Nope.');
+
+        const outer: Promise<void> = connection.transaction(async (transaction: Transaction): Promise<void> => {
+            await transaction.table<User>('users').insert({ name: 'E outer' });
+
+            await connection.transaction(async (nested: Transaction): Promise<void> => {
+                await nested.table<User>('users').insert({ name: 'E nested' });
+            });
+
+            throw failure;
+        });
+
+        const sibling: Promise<void> = connection.transaction(async (transaction: Transaction): Promise<void> => {
+            await transaction.table<User>('users').insert({ name: 'E sibling' });
+        });
+
+        const outcomes: PromiseSettledResult<void>[] = await Promise.allSettled([outer, sibling]);
+
+        expect(outcomes).toEqual([{ status: 'rejected', reason: failure }, { status: 'fulfilled', value: undefined }]);
+        expect(opened()).toEqual(1);
+        expect(await stored()).toEqual([]);
+    }, 2000);
+
+    test('rejects a call joining a claim whose open failed, and opens afresh for the next', async (): Promise<void> => {
+        const failure: Error = new Error('Nope.');
+
+        vi.spyOn(connection, 'open').mockRejectedValueOnce(failure);
+
+        const first: Promise<void> = connection.transaction(async (transaction: Transaction): Promise<void> => {
+            await transaction.table<User>('users').insert({ name: 'first' });
+        });
+
+        const second: Promise<void> = connection.transaction(async (transaction: Transaction): Promise<void> => {
+            await transaction.table<User>('users').insert({ name: 'second' });
+        });
+
+        const outcomes: PromiseSettledResult<void>[] = await Promise.allSettled([first, second]);
+
+        expect(outcomes).toEqual([{ status: 'rejected', reason: failure }, { status: 'rejected', reason: failure }]);
+
+        await connection.transaction(async (transaction: Transaction): Promise<void> => {
+            await transaction.table<User>('users').insert({ name: 'next' });
+        });
+
+        expect(opened()).toEqual(1);
+        expect(await stored()).toEqual(['next']);
+    }, 2000);
+});
+
 describe('Transaction events', (): void => {
     test('announces a commit', async (): Promise<void> => {
         const seen: string[] = await recorded(['db:transaction-beginning', 'db:transaction-committed', 'db:transaction-rolled-back'], async (): Promise<unknown> => {

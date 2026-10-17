@@ -129,8 +129,9 @@ await DB.transaction(async (transaction: Transaction): Promise<void> => {
   The read side works anywhere. See [Schema outside a migration](docs/schema.md#schema-outside-a-migration).
 - **Column types are enforced by this package at write time**, because IndexedDB stores whole
   objects and checks nothing itself. See [Defining a schema](docs/schema.md).
-- **There is no `beginTransaction()`, `commit()` or `rollBack()`**, and a nested transaction joins
-  the running one, since IndexedDB has no savepoints. See [Transactions](docs/transactions.md).
+- **There is no `beginTransaction()`, `commit()` or `rollBack()`**, and a transaction made while
+  another runs on the connection joins it, since IndexedDB has no savepoints. See
+  [Transactions](docs/transactions.md).
 - **Joins and grouping run in memory**, writes through a join reach the base table only, and
   aggregates are named in a typed object rather than raw SQL. See [Joins](docs/joins.md) and
   [Grouping](docs/grouping.md).

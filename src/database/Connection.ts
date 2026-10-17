@@ -60,9 +60,9 @@ export class Connection {
     #schemas: Map<string, TableSchema> = new Map<string, TableSchema>();
 
     /**
-     * The transaction currently running, so a nested call joins it.
+     * The transaction claimed or running, so every call made meanwhile joins it.
      */
-    #active: Transaction | null = null;
+    #active: Promise<IDBTransaction> | null = null;
 
     /**
      * The names of the migrations run by the last open.
@@ -257,11 +257,13 @@ export class Connection {
      * Run the callback inside a transaction, committing when it resolves.
      */
     async transaction<R>(callback: (transaction: Transaction) => R | Promise<R>, options: TransactionOptions = {}): Promise<R> {
-        // A nested call joins the transaction already running rather than opening a second
+        // A call made while another is claimed or running joins it rather than opening a second
         // one. IndexedDB has no savepoints, so there is no way to roll back only part of
         // one, and two overlapping transactions over the same stores would deadlock.
+        // A claim settles in microtasks once its transaction exists, so the callback
+        // still runs while the transaction is active.
         if (this.#active !== null) {
-            return callback(this.#active);
+            return callback(new Transaction(this, await this.#active));
         }
 
         const migration: MigrationContext | null = this.#migration();
@@ -270,9 +272,22 @@ export class Connection {
             return callback(new Transaction(this, migration.transaction));
         }
 
-        const database: IDBDatabase = await this.open();
-        const tables: string[] = options.tables ?? Array.from(database.objectStoreNames);
-        const handle: IDBTransaction = database.transaction(tables, 'readwrite');
+        const claim: Promise<IDBTransaction> = this.open().then((database: IDBDatabase): IDBTransaction => {
+            return database.transaction(options.tables ?? Array.from(database.objectStoreNames), 'readwrite');
+        });
+
+        this.#active = claim;
+
+        let handle: IDBTransaction;
+
+        try {
+            handle = await claim;
+        } catch (error: unknown) {
+            this.#active = null;
+
+            throw error;
+        }
+
         const transaction: Transaction = new Transaction(this, handle);
 
         Handles.open(handle, this.#name);
@@ -309,8 +324,6 @@ export class Connection {
             // A deliberate abort rejects this too, and the
             // original failure is the one worth throwing.
         });
-
-        this.#active = transaction;
 
         Dispatcher.dispatch(new TransactionBeginning(this.#name));
 
