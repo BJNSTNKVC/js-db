@@ -714,6 +714,20 @@ Inside `DB.transaction`, the exception aborts the whole
 transaction as it leaves the callback. IndexedDB cannot undo one write alone, so a callback that
 catches it keeps whatever the failed write changed before the collision.
 
+`updateOrInsert` checks for a matching record and then writes, as two steps with nothing held
+between them. Two calls made at once for the same attributes can both find
+nothing and both insert, inside `DB.transaction` as well as outside. On a table with a unique index
+over the attributes the second throws `UniqueConstraintViolationException`, and on one without the
+record is stored twice. Await one call before making the next, or give the attributes a unique index
+and catch the exception, as `createOrFirst` does.
+
+```ts
+await Promise.all([
+    DB.table<User>('users').updateOrInsert({ email: 'john@example.com' }, { name: 'John' }),
+    DB.table<User>('users').updateOrInsert({ email: 'john@example.com' }, { name: 'Johnny' }),
+]); // the second throws, since email is unique
+```
+
 `upsert` requires its conflict target to be the key path or a unique index, because IndexedDB cannot
 enforce anything else. Any other column throws `SchemaException`. The conflict key is coerced the way
 an insert coerces it before it is looked up, so `upsert([{ code: '5' }], 'code')` on an integer

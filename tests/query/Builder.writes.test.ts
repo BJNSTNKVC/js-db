@@ -38,6 +38,12 @@ interface Entry {
     position: number;
 }
 
+interface Guest {
+    id: number;
+    name: string;
+    email: string;
+}
+
 interface Badge {
     id: number;
     name: string;
@@ -123,6 +129,12 @@ class CreateUsersTable extends Migration {
             table.id();
             table.string('label');
             table.integer('seat').nullable().unique();
+        });
+
+        await Schema.create('guests', (table: Blueprint): void => {
+            table.id();
+            table.string('name');
+            table.string('email');
         });
     }
 }
@@ -528,6 +540,36 @@ describe('Builder updateOrInsert', (): void => {
 
     test('inserts with only the attributes when no values are given', async (): Promise<void> => {
         expect(await users().updateOrInsert({ name: 'Alice', email: 'alice@example.com' })).toEqual(true);
+    });
+
+    test('lets two calls made at once collide on a unique index', async (): Promise<void> => {
+        const outcomes: PromiseSettledResult<boolean>[] = await Promise.allSettled([
+            users().updateOrInsert({ email: 'a@x' }, { name: 'A' }),
+            users().updateOrInsert({ email: 'a@x' }, { name: 'B' }),
+        ]);
+
+        expect(outcomes[0]).toEqual({ status: 'fulfilled', value: true });
+        expect((outcomes[1] as PromiseRejectedResult).reason).toBeInstanceOf(UniqueConstraintViolationException);
+        expect(await users().pluck('name')).toEqual(['A']);
+    });
+
+    test('lets two calls made at once write the record twice without a unique index', async (): Promise<void> => {
+        expect(await Promise.all([
+            connection.table<Guest>('guests').updateOrInsert({ email: 'a@x' }, { name: 'A' }),
+            connection.table<Guest>('guests').updateOrInsert({ email: 'a@x' }, { name: 'B' }),
+        ])).toEqual([true, true]);
+        expect(await connection.table<Guest>('guests').pluck('name')).toEqual(['A', 'B']);
+    });
+
+    test('lets two calls made at once inside a transaction write the record twice', async (): Promise<void> => {
+        await connection.transaction(async (transaction: Transaction): Promise<void> => {
+            expect(await Promise.all([
+                transaction.table<Guest>('guests').updateOrInsert({ email: 'a@x' }, { name: 'A' }),
+                transaction.table<Guest>('guests').updateOrInsert({ email: 'a@x' }, { name: 'B' }),
+            ])).toEqual([true, true]);
+        });
+
+        expect(await connection.table<Guest>('guests').pluck('name')).toEqual(['A', 'B']);
     });
 });
 
