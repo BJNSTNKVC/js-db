@@ -1121,6 +1121,123 @@ describe('Builder chunking', (): void => {
     });
 });
 
+describe('Builder each in pages', (): void => {
+    interface Walker {
+        id: number;
+        name: string;
+    }
+
+    class CreateWalkersTable extends Migration {
+        /**
+         * Run the migration.
+         */
+        override async up(): Promise<void> {
+            await Schema.create('walkers', (table: Blueprint): void => {
+                table.id();
+                table.string('name');
+            });
+        }
+    }
+
+    let paged: Connection;
+    let sequence: number = 0;
+
+    /**
+     * Begin a query against the walkers table.
+     */
+    function walkers(): Builder<Walker> {
+        return paged.table<Walker>('walkers');
+    }
+
+    /**
+     * Walk the walkers with each, letting Alice's callback change the table first.
+     */
+    async function walk(change: () => Promise<unknown>, size?: number): Promise<string[]> {
+        const seen: string[] = [];
+
+        await walkers().each(async (walker: Walker): Promise<void> => {
+            seen.push(walker.name);
+
+            if (walker.name === 'Alice') {
+                await change();
+            }
+        }, size);
+
+        return seen;
+    }
+
+    beforeEach(async (): Promise<void> => {
+        paged = new Connection('app', { database: `builder-reads-each-${++sequence}`, migrations: [CreateWalkersTable] });
+
+        await paged.migrate();
+        await walkers().insert([{ name: 'Alice' }, { name: 'Bob' }, { name: 'Carol' }]);
+    });
+
+    afterEach((): void => {
+        paged.disconnect();
+    });
+
+    test('fetches a page of 1000 records at once', async (): Promise<void> => {
+        await walkers().insert(Array.from({ length: 998 }, (_: unknown, index: number): Partial<Walker> => ({ name: `w${index}` })));
+
+        const fetched: MockInstance = vi.spyOn(Executor.prototype, 'fetch');
+        let delivered: number = 0;
+
+        await walkers().each((): void => {
+            delivered++;
+        });
+
+        expect(delivered).toEqual(1001);
+        expect(fetched.mock.calls.map((call: unknown[]): number => (call[0] as IDBValidKey[]).length)).toEqual([1000, 1]);
+    });
+
+    test('skips a record an earlier callback deleted, and delivers one it changed as changed, with a size of 1', async (): Promise<void> => {
+        expect(await walk((): Promise<number> => walkers().where('name', 'Bob').delete(), 1)).toEqual(['Alice', 'Carol']);
+        expect(await walk((): Promise<number> => walkers().where('name', 'Carol').update({ name: 'Caroline' }), 1)).toEqual(['Alice', 'Caroline']);
+    });
+
+    test('delivers a record an earlier callback on its page deleted or changed, as fetched', async (): Promise<void> => {
+        expect(await walk((): Promise<number> => walkers().where('name', 'Carol').update({ name: 'Caroline' }))).toEqual(['Alice', 'Bob', 'Carol']);
+        expect(await walk((): Promise<number> => walkers().where('name', 'Bob').delete())).toEqual(['Alice', 'Bob', 'Caroline']);
+        expect(await walkers().pluck('name')).toEqual(['Alice', 'Caroline']);
+    });
+
+    test.each([0, -1, 1.5, NaN])('refuses an each size of %s', async (size: number): Promise<void> => {
+        const seen: string[] = [];
+
+        bound();
+
+        await expect(walkers().each((walker: Walker): void => {
+            seen.push(walker.name);
+        }, size)).rejects.toThrow(SchemaException);
+
+        expect(seen).toEqual([]);
+    });
+
+    test('counts the index across the walk rather than within each page', async (): Promise<void> => {
+        const seen: [number, string][] = [];
+
+        await walkers().each((walker: Walker, index: number): void => {
+            seen.push([index, walker.name]);
+        }, 2);
+
+        expect(seen).toEqual([[0, 'Alice'], [1, 'Bob'], [2, 'Carol']]);
+    });
+
+    test('stops partway through a page when the callback returns false', async (): Promise<void> => {
+        const seen: string[] = [];
+
+        const completed: boolean = await walkers().each((walker: Walker): boolean => {
+            seen.push(walker.name);
+
+            return walker.name !== 'Bob';
+        }, 3);
+
+        expect(completed).toEqual(false);
+        expect(seen).toEqual(['Alice', 'Bob']);
+    });
+});
+
 describe('Builder plans', (): void => {
     test.each([
         ['key', (query: Builder<User>): Builder<User> => query.where('id', 1)],

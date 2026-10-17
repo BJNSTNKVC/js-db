@@ -947,12 +947,20 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Walk the records matching the query one at a time.
+     * Walk the records matching the query one at a time, fetched in pages.
      */
-    async each(callback: (record: T, index: number) => unknown): Promise<boolean> {
+    async each(callback: (record: T, index: number) => unknown, size: number = 1000): Promise<boolean> {
         let index: number = 0;
 
-        return this.chunk(1, async (records: T[]): Promise<unknown> => callback(records[0] as T, index++));
+        return this.chunk(size, async (records: T[]): Promise<boolean> => {
+            for (const record of records) {
+                if (await callback(record, index++) === false) {
+                    return false;
+                }
+            }
+
+            return true;
+        });
     }
 
     /**

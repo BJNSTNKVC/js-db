@@ -606,7 +606,8 @@ As Laravel's paginator does, `paginate` reads a page that is below 1 or not a wh
 whole number of at least 1 throws `SchemaException`.
 
 `chunk` and `each` walk the result a page at a time, and stop early when the callback returns
-`false`:
+`false`. `each` calls back once per record, with its index across the whole walk, and fetches its
+pages 1000 records at a time unless given a size, as Laravel's does:
 
 ```ts
 await DB.table<User>('users').orderBy('id').chunk(100, async (records: User[], page: number): Promise<void> => {
@@ -616,6 +617,10 @@ await DB.table<User>('users').orderBy('id').chunk(100, async (records: User[], p
 await DB.table<User>('users').each((user: User, index: number): void => {
     console.log(index, user.name);
 });
+
+await DB.table<User>('users').each((user: User): void => {
+    console.log(user.name);
+}, 200);
 ```
 
 `chunk`, `each` and `lazy` decide which records match when the walk starts, and fetch each page
@@ -625,6 +630,10 @@ starts matching during the walk is not picked up. Since records can drop out, an
 shorter than the size asked for. A page left empty is skipped, and the page numbers stay
 consecutive.
 
+`each` fetches a page once, as Laravel's does, so a record that a callback earlier on the same page
+changes or deletes is still delivered, as it was fetched. Before 19.0.0 `each` fetched every record
+on its own, just before its callback. Pass a size of 1, as in `each(callback, 1)`, to keep that.
+
 On a `distinct` query, a walk delivers each distinct row once, fetching it through the first record
 that holds it, so its pages are full and no page repeats a row another delivered. A row that a write
 during the walk makes repeat one already delivered is not delivered again, and a row whose first
@@ -632,8 +641,8 @@ record stops matching before its page arrives is left out, as any record that st
 Besides the keys, such a walk holds what each row it delivered looks like, unless it reads whole
 records from a table with a key column, which can never repeat.
 
-`chunk` and `lazy` throw `SchemaException` for a size that is not a whole number of at least 1, as
-Laravel's `lazy` does, since a walk in pages of nothing would never end.
+`chunk`, `each` and `lazy` throw `SchemaException` for a size that is not a whole number of at
+least 1, as Laravel's `lazy` does, since a walk in pages of nothing would never end.
 
 ## Writes
 
