@@ -2838,3 +2838,93 @@ describe('Builder binary keys', (): void => {
         expect(joined.map((row: Record<string, unknown>): unknown => row['name'])).toEqual(['a', 'c']);
     });
 });
+
+describe('Builder values IndexedDB cannot hold as keys', (): void => {
+    class CreateHoldersTables extends Migration {
+        /**
+         * Run the migration.
+         */
+        override async up(): Promise<void> {
+            await Schema.create('holders', (table: Blueprint): void => {
+                table.id();
+                table.string('name');
+            });
+
+            await Schema.create('markers', (table: Blueprint): void => {
+                table.json('id').primary();
+                table.string('name');
+            });
+        }
+    }
+
+    let held: Connection;
+    let sequence: number = 0;
+
+    /**
+     * Begin a query against the holders table.
+     */
+    function holders(): Builder<Named> {
+        return held.table<Named>('holders');
+    }
+
+    /**
+     * Build an array that holds itself among its elements.
+     */
+    function cyclic(): unknown[] {
+        const value: unknown[] = [1];
+
+        value.push(value);
+
+        return value;
+    }
+
+    beforeEach(async (): Promise<void> => {
+        held = new Connection('app', { database: `builder-reads-held-${++sequence}`, migrations: [CreateHoldersTables] });
+
+        await held.migrate();
+        await holders().insert([{ name: 'a' }, { name: 'b' }, { name: 'c' }]);
+    });
+
+    afterEach((): void => {
+        held.disconnect();
+    });
+
+    test('finds nothing for an array with a hole, which is not a key', async (): Promise<void> => {
+        expect(await holders().find([1, , 2] as IDBValidKey)).toBeNull();
+        await expect(holders().findOrFail([1, , 2] as IDBValidKey)).rejects.toBeInstanceOf(RecordsNotFoundException);
+    });
+
+    test('finds nothing for an array that contains itself', async (): Promise<void> => {
+        expect(await holders().find(cyclic() as IDBValidKey)).toBeNull();
+        expect(await holders().find([1, [2, cyclic()]] as IDBValidKey)).toBeNull();
+    }, 2000);
+
+    test('refuses a where value that contains itself', (): void => {
+        const refusal: TypeError = new TypeError('Unable to compare a value that contains itself.');
+        const nested: Record<string, unknown> = { name: 'a' };
+
+        nested['self'] = nested;
+
+        expect((): unknown => holders().where('name', cyclic())).toThrow(refusal);
+        expect((): unknown => holders().where('name', '=', nested)).toThrow(refusal);
+        expect((): unknown => holders().whereBetween('id', [cyclic(), 3])).toThrow(refusal);
+        expect((): unknown => holders().groupBy('name').having('name', cyclic())).toThrow(refusal);
+    }, 2000);
+
+    test('flattens a where value that holds one array twice', async (): Promise<void> => {
+        const shared: string[] = ['b'];
+
+        expect((await holders().where('name', [shared, shared]).first())?.name).toEqual('b');
+    });
+
+    test('matches the other values of a whereIn holding a hole', async (): Promise<void> => {
+        expect((await holders().whereIn('id', [1, , 3]).get()).map((holder: Named): number => holder.id)).toEqual([1, 3]);
+    });
+
+    test('finds a record stored under an infinite key on a JSON key path', async (): Promise<void> => {
+        await held.table('markers').insert([{ id: Infinity, name: 'far' }, { id: 1, name: 'near' }]);
+
+        expect(await held.table('markers').find(Infinity)).toEqual({ id: Infinity, name: 'far' });
+        expect(await held.table('markers').where('id', Infinity).explain()).toEqual('key');
+    });
+});

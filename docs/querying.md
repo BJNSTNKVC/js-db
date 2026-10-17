@@ -473,10 +473,12 @@ await DB.table<User>('users').max('age');
 
 `find` converts its key to the type of the key path column first, as `where` does, so
 `find(route.params.id)` finds the record even though a route parameter is always a string. A key
-may be anything IndexedDB takes as one: a number, a date, a string, binary data, or an array of
-these. A key that is `null`, `undefined` or anything else IndexedDB cannot use as a key, such as a
-boolean, returns `null` without reading the store, and `findOrFail` throws `RecordsNotFoundException`
-for it.
+may be anything IndexedDB takes as one: a number, `Infinity` included, a date, a string, binary
+data, or an array of these. A key that is `null`, `undefined` or anything else IndexedDB cannot use
+as a key, such as a boolean, an array with a hole or an array that contains itself, returns `null`
+without reading the store, and `findOrFail` throws `RecordsNotFoundException` for it. Before 19.0.2
+an array with a hole threw IndexedDB's `DataError`, an array that contains itself overflowed the
+stack, and `Infinity` returned `null` even from a JSON key path holding it.
 
 A key path declared as `json` can hold binary data, an `ArrayBuffer`, a typed array or a
 `DataView`, such as a UUID stored as 16 bytes. `find` reads the record whose key holds the same

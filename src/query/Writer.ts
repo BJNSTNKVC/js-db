@@ -1,6 +1,7 @@
 import { SchemaException, UniqueConstraintViolationException } from '../exceptions';
 import { Request } from '../database/Request';
 import { Enforcer } from '../schema/Enforcer';
+import { Planner } from './Planner';
 import { Signature } from './Signature';
 import type { IndexSchema, TableSchema } from '../schema/types';
 
@@ -212,7 +213,7 @@ export class Writer {
         // where a strict connection would refuse the absence as null.
         const key: unknown = Object.hasOwn(value, column) ? Enforcer.field(value[column], column, schema, strict, timezone) : undefined;
 
-        return this.#keyable(key) ? Request.settle(store.get(key as IDBValidKey) as IDBRequest<Record<string, unknown> | undefined>) : undefined;
+        return Planner.keyable(key) ? Request.settle(store.get(key as IDBValidKey) as IDBRequest<Record<string, unknown> | undefined>) : undefined;
     }
 
     /**
@@ -229,7 +230,7 @@ export class Writer {
 
         const entries: IDBValidKey[] = target.multiEntry
             ? this.#entries(prepared[columns[0] as string])
-            : [this.#keyOf(columns, prepared)].filter((key: IDBValidKey): boolean => this.#keyable(key));
+            : [this.#keyOf(columns, prepared)].filter((key: IDBValidKey): boolean => Planner.keyable(key));
 
         if (entries.length === 0) {
             return undefined;
@@ -267,7 +268,7 @@ export class Writer {
     static async #violated(store: IDBObjectStore, schema: TableSchema, record: Record<string, unknown>, previous: Record<string, unknown> | null, later: (key: IDBValidKey) => boolean, replaced: Record<string, unknown>[]): Promise<string | null> {
         // A generated key is absent from the record,
         // and an absent value is not a valid range.
-        if (previous === null && schema.key !== null && this.#keyable(record[schema.key])) {
+        if (previous === null && schema.key !== null && Planner.keyable(record[schema.key])) {
             const key: IDBValidKey = record[schema.key] as IDBValidKey;
 
             if (!later(key) && await Request.settle(store.count(IDBKeyRange.only(key))) > 0) {
@@ -284,7 +285,7 @@ export class Writer {
                 continue;
             }
 
-            if (!index.columns.every((column: string): boolean => this.#keyable(record[column]))) {
+            if (!index.columns.every((column: string): boolean => Planner.keyable(record[column]))) {
                 continue;
             }
 
@@ -343,7 +344,7 @@ export class Writer {
     static #holds(index: IndexSchema, record: Record<string, unknown>, key: IDBValidKey): boolean {
         const entries: IDBValidKey[] = index.multiEntry
             ? this.#entries(record[index.columns[0] as string])
-            : [this.#keyOf(index.columns, record)].filter((entry: IDBValidKey): boolean => this.#keyable(entry));
+            : [this.#keyOf(index.columns, record)].filter((entry: IDBValidKey): boolean => Planner.keyable(entry));
 
         return entries.some((entry: IDBValidKey): boolean => indexedDB.cmp(entry, key) === 0);
     }
@@ -364,7 +365,7 @@ export class Writer {
         const entries: IDBValidKey[] = [];
 
         for (const candidate of Array.isArray(value) ? value : [value]) {
-            if (this.#keyable(candidate) && !entries.some((entry: IDBValidKey): boolean => indexedDB.cmp(entry, candidate) === 0)) {
+            if (Planner.keyable(candidate) && !entries.some((entry: IDBValidKey): boolean => indexedDB.cmp(entry, candidate) === 0)) {
                 entries.push(candidate as IDBValidKey);
             }
         }
@@ -378,19 +379,6 @@ export class Writer {
     static #unchanged(columns: string[], record: Record<string, unknown>, previous: Record<string, unknown>): boolean {
         return Signature.ofValues(columns.map((column: string): unknown => record[column]))
             === Signature.ofValues(columns.map((column: string): unknown => previous[column]));
-    }
-
-    /**
-     * Determine whether the value may be used as an IndexedDB key.
-     */
-    static #keyable(value: unknown): boolean {
-        try {
-            indexedDB.cmp(value, value);
-
-            return true;
-        } catch {
-            return false;
-        }
     }
 
     /**

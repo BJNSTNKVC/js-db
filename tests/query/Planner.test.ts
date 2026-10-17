@@ -70,6 +70,17 @@ function order(col: string, direction: 'asc' | 'desc' = 'asc'): Order {
     return { column: col, direction };
 }
 
+/**
+ * Build an array that holds itself among its elements.
+ */
+function cyclic(): unknown[] {
+    const value: unknown[] = [1];
+
+    value.push(value);
+
+    return value;
+}
+
 describe('Planner key ranges', (): void => {
     test('drives an equality on the key path from the key', (): void => {
         const plan: Plan = Planner.plan([basic('id', '=', 7)], [], users);
@@ -154,6 +165,10 @@ describe('Planner key ranges', (): void => {
 
     test('drives an index from an array of keys', (): void => {
         expect(Planner.plan([basic('tags', '=', [1, 'a', new Date(1)])], [], users).range).toEqual(IDBKeyRange.only([1, 'a', new Date(1)]));
+    });
+
+    test('drives an index from an infinite number, which IndexedDB holds as a key', (): void => {
+        expect(Planner.plan([basic('tags', '=', Infinity)], [], users)).toMatchObject({ index: 'users_tags_index', range: IDBKeyRange.only(Infinity), residual: [] });
     });
 
     test('prefers the key path over an index', (): void => {
@@ -334,9 +349,10 @@ describe('Planner fallbacks to a scan', (): void => {
         ['a boolean', true],
         ['an object', { a: 1 }],
         ['an invalid date', new Date('')],
-        ['an infinite number', Infinity],
         ['NaN', NaN],
         ['an array holding a boolean', [1, true]],
+        ['an array with a hole', [1, , 2]],
+        ['an array that contains itself', cyclic()],
     ])('keeps %s off an index that would take it as given', (_: string, value: unknown): void => {
         expect(Planner.plan([basic('tags', '=', value)], [], users)).toMatchObject({ source: 'scan', range: null, values: null });
         expect(Planner.plan([{ type: 'in', column: 'tags', values: ['a', value], conjunction: 'and', not: false }], [], users).source).toEqual('scan');
@@ -554,6 +570,8 @@ describe('Planner.keyable', (): void => {
         ['a typed array of wider elements', new Uint16Array([513])],
         ['a DataView', new DataView(new Uint8Array([1, 2]).buffer)],
         ['an array holding binary values', [new Uint8Array([1]), 'x', new DataView(new ArrayBuffer(1))]],
+        ['a dense array of keys', [1, 'a', new Date(1), [2, 'b']]],
+        ['an infinite number', -Infinity],
     ] as [string, unknown][])('accepts %s', (_name: string, value: unknown): void => {
         expect(Planner.keyable(value)).toEqual(true);
     });
@@ -563,7 +581,12 @@ describe('Planner.keyable', (): void => {
         ['an object', { a: 1 }],
         ['null', null],
         ['NaN', NaN],
+        ['an invalid date', new Date('')],
         ['an array holding a boolean', [new Uint8Array([1]), true]],
+        ['an array with a hole', [1, , 2]],
+        ['an array with a hole at its end', [1, 2, ,]],
+        ['an array that contains itself', cyclic()],
+        ['an array that contains itself further down', [1, [2, cyclic()]]],
     ] as [string, unknown][])('refuses %s', (_name: string, value: unknown): void => {
         expect(Planner.keyable(value)).toEqual(false);
     });

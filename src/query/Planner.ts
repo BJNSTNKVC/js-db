@@ -88,19 +88,13 @@ export class Planner {
      * Determine whether the value may be used as an IndexedDB key.
      */
     static keyable(value: unknown): boolean {
-        if (typeof value === 'number') {
-            return Number.isFinite(value);
-        }
+        try {
+            indexedDB.cmp(value, value);
 
-        if (value instanceof Date) {
-            return !Number.isNaN(value.getTime());
-        }
-
-        if (typeof value === 'string' || value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
             return true;
+        } catch {
+            return false;
         }
-
-        return Array.isArray(value) && value.every((element: unknown): boolean => this.keyable(element));
     }
 
     /**

@@ -61,3 +61,8 @@ caught it or made no further query resolved.
 - reading a table inside `DB.transaction` that the transaction did not declare
 - `chunk`, `each` or `lazy` with a size, or `paginate` with a page size, that is not a whole number
   of at least 1
+
+A value that contains itself, such as an array holding itself among its elements, cannot be
+compared. Passed to `where`, `whereBetween` or `having`, it throws a `TypeError` saying so when the
+constraint is added, as `distinct()` and `groupBy` do when they meet one in a record. Before 19.0.2
+`where` overflowed the stack on it, throwing `RangeError`, or `InternalError` in Firefox.

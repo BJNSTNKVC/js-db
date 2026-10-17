@@ -4,6 +4,7 @@ import { NotNullConstraintViolationException, ReservedTableException, SchemaExce
 import { Migrator } from '../migrations/Migrator';
 import { Repository } from '../migrations/Repository';
 import { Columns } from '../query/Columns';
+import { Planner } from '../query/Planner';
 import { Writer } from '../query/Writer';
 import { Blueprint } from './Blueprint';
 import { Enforcer } from './Enforcer';
@@ -413,20 +414,7 @@ export class Schema {
 
         const candidates: unknown[] = index.multiEntry && Array.isArray(value) ? value : [value];
 
-        return candidates.filter((candidate: unknown): candidate is IDBValidKey => this.#keyable(candidate));
-    }
-
-    /**
-     * Determine whether IndexedDB accepts the value as a key.
-     */
-    static #keyable(value: unknown): boolean {
-        try {
-            indexedDB.cmp(value, value);
-
-            return true;
-        } catch {
-            return false;
-        }
+        return candidates.filter((candidate: unknown): candidate is IDBValidKey => Planner.keyable(candidate));
     }
 
     /**
