@@ -1134,6 +1134,36 @@ const MATCHED: Record<Matching, string[]> = {
     right: ['Alice:First', 'Alice:Second', 'Bob:Third', 'null:Fourth'],
 };
 
+/**
+ * Count the rows the join conditions are tested against while the given query runs.
+ */
+async function tested(query: Builder<Authored>): Promise<number> {
+    const compile: typeof Predicate.compile = Predicate.compile.bind(Predicate);
+    let count: number = 0;
+
+    const spy = vi.spyOn(Predicate, 'compile').mockImplementation((constraints: readonly Constraint[]): ((record: Record<string, unknown>) => boolean) => {
+        const matches: (record: Record<string, unknown>) => boolean = compile(constraints);
+
+        if (constraints.length === 0 || constraints.some((constraint: Constraint): boolean => constraint.type !== 'column')) {
+            return matches;
+        }
+
+        return (record: Record<string, unknown>): boolean => {
+            count++;
+
+            return matches(record);
+        };
+    });
+
+    try {
+        await query.get();
+    } finally {
+        spy.mockRestore();
+    }
+
+    return count;
+}
+
 describe('Joins across the types the columns hold', (): void => {
     let authored: Connection;
 
@@ -1164,38 +1194,8 @@ describe('Joins across the types the columns hold', (): void => {
         return (await query.get()).map((row: Authored): string => `${row.name}:${row.title}`).sort();
     }
 
-    /**
-     * Count the rows the join conditions are tested against while the given query runs.
-     */
-    async function tested(query: Builder<Authored>): Promise<number> {
-        const compile: typeof Predicate.compile = Predicate.compile.bind(Predicate);
-        let count: number = 0;
-
-        const spy = vi.spyOn(Predicate, 'compile').mockImplementation((constraints: readonly Constraint[]): ((record: Record<string, unknown>) => boolean) => {
-            const matches: (record: Record<string, unknown>) => boolean = compile(constraints);
-
-            if (constraints.length === 0 || constraints.some((constraint: Constraint): boolean => constraint.type !== 'column')) {
-                return matches;
-            }
-
-            return (record: Record<string, unknown>): boolean => {
-                count++;
-
-                return matches(record);
-            };
-        });
-
-        try {
-            await query.get();
-        } finally {
-            spy.mockRestore();
-        }
-
-        return count;
-    }
-
     beforeEach(async (): Promise<void> => {
-        authored = new Connection('app', { database: `joins-authored-${++databases}`, migrations: [CreateAuthoredTables] });
+        authored =new Connection('app', { database: `joins-authored-${++databases}`, migrations: [CreateAuthoredTables] });
 
         await authored.migrate();
 
@@ -1296,7 +1296,7 @@ describe('Joins across the types the columns hold', (): void => {
         ['two dates', 'right', ['posts.day', 'users.joined']],
     ] as [string, Matching, [string, string]][])('tests a join on %s through a %s join on %j only against the rows holding its value', async (_: string, kind: Matching, columns: [string, string]): Promise<void> => {
         expect(await tested(paired(kind, columns))).toEqual(3);
-        expect(await tested(paired(kind, columns, 2))).toEqual(16);
+        expect(await tested(paired(kind, columns, 2))).toEqual(3);
     });
 
     test('tests every pair when the columns hold values of different types', async (): Promise<void> => {
@@ -1885,5 +1885,178 @@ describe('A select on a joined query', (): void => {
     test('constrains and sorts the groups of an alias by the column it selects', async (): Promise<void> => {
         expect(await authors().groupBy('author').having('users.name', 'Alice').get()).toEqual([{ author: 'Alice' }]);
         expect(await authors().groupBy('author').orderBy('users.name', 'desc').get()).toEqual([{ author: 'Bob' }, { author: 'Alice' }]);
+    });
+});
+
+interface Ranked {
+    id: number;
+    name: string;
+    team: number | null;
+    level: number;
+}
+
+interface Filed {
+    id: number;
+    user_id: number | null;
+    team: number | null;
+    level: number;
+    code: string | null;
+    title: string;
+}
+
+type Linking = (join: Join) => void;
+
+class CreateRankedTables extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        await Schema.create('users', (table: Blueprint): void => {
+            table.id();
+            table.string('name');
+            table.integer('team').nullable();
+            table.integer('level');
+        });
+
+        await Schema.create('posts', (table: Blueprint): void => {
+            table.id();
+            table.integer('user_id').nullable();
+            table.integer('team').nullable();
+            table.integer('level');
+            table.string('code').nullable();
+            table.string('title');
+        });
+    }
+}
+
+const PAIRS: number = 24;
+
+const LINKED: [string, Matching, Linking, string[], number][] = [
+    ['two equalities', 'inner', (join: Join): void => {
+        join.on('users.id', '=', 'posts.user_id').on('users.team', '=', 'posts.team');
+    }, ['Alice:First', 'Bob:Third', 'Dave:Sixth'], 5],
+    ['two equalities', 'left', (join: Join): void => {
+        join.on('users.id', '=', 'posts.user_id').on('users.team', '=', 'posts.team');
+    }, ['Alice:First', 'Bob:Third', 'Carol:null', 'Dave:Sixth'], 5],
+    ['two equalities', 'right', (join: Join): void => {
+        join.on('users.id', '=', 'posts.user_id').on('users.team', '=', 'posts.team');
+    }, ['Alice:First', 'null:Second', 'Bob:Third', 'null:Fourth', 'null:Fifth', 'Dave:Sixth'], 5],
+    ['two equalities, the one holding nulls first', 'inner', (join: Join): void => {
+        join.on('users.team', '=', 'posts.team').on('users.id', '=', 'posts.user_id');
+    }, ['Alice:First', 'Bob:Third', 'Dave:Sixth'], 8],
+    ['two equalities, the one holding nulls first', 'left', (join: Join): void => {
+        join.on('posts.team', '=', 'users.team').on('posts.user_id', '=', 'users.id');
+    }, ['Alice:First', 'Bob:Third', 'Carol:null', 'Dave:Sixth'], 8],
+    ['two equalities, the one holding nulls first', 'right', (join: Join): void => {
+        join.on('users.team', '=', 'posts.team').on('users.id', '=', 'posts.user_id');
+    }, ['Alice:First', 'null:Second', 'Bob:Third', 'null:Fourth', 'null:Fifth', 'Dave:Sixth'], 8],
+    ['an equality and a <', 'inner', (join: Join): void => {
+        join.on('users.id', '=', 'posts.user_id').on('users.level', '<', 'posts.level');
+    }, ['Alice:Second', 'Bob:Third'], 5],
+    ['an equality and a <', 'left', (join: Join): void => {
+        join.on('users.id', '=', 'posts.user_id').on('users.level', '<', 'posts.level');
+    }, ['Alice:Second', 'Bob:Third', 'Carol:null', 'Dave:null'], 5],
+    ['a < and an equality', 'inner', (join: Join): void => {
+        join.on('users.level', '<', 'posts.level').on('users.id', '=', 'posts.user_id');
+    }, ['Alice:Second', 'Bob:Third'], 5],
+    ['a < and an equality', 'right', (join: Join): void => {
+        join.on('users.level', '<', 'posts.level').on('posts.user_id', '=', 'users.id');
+    }, ['null:First', 'Alice:Second', 'Bob:Third', 'null:Fourth', 'null:Fifth', 'null:Sixth'], 5],
+    ['an equality within the joined table and one between the tables', 'inner', (join: Join): void => {
+        join.on('posts.team', '=', 'posts.level').on('users.id', '=', 'posts.user_id');
+    }, ['Alice:First', 'Bob:Third'], 5],
+    ['an equality within this table and one between the tables', 'left', (join: Join): void => {
+        join.on('users.team', '=', 'users.level').on('users.id', '=', 'posts.user_id');
+    }, ['Alice:First', 'Alice:Second', 'Bob:null', 'Carol:null', 'Dave:null'], 5],
+    ['an equality written with orOn first and another', 'inner', (join: Join): void => {
+        join.orOn('users.id', '=', 'posts.user_id').on('users.team', '=', 'posts.team');
+    }, ['Alice:First', 'Bob:Third', 'Dave:Sixth'], 5],
+    ['an equality comparing a number with a string and another', 'inner', (join: Join): void => {
+        join.on('users.id', '=', 'posts.code').on('users.team', '=', 'posts.team');
+    }, ['Alice:First', 'Bob:Third', 'Dave:Sixth'], PAIRS],
+    ['an equality or another', 'inner', (join: Join): void => {
+        join.on('users.id', '=', 'posts.user_id').orOn('users.team', '=', 'posts.level');
+    }, ['Alice:First', 'Alice:Second', 'Bob:Third', 'Bob:Fourth', 'Carol:Fourth', 'Dave:First', 'Dave:Sixth'], PAIRS],
+];
+
+describe('Joins on several conditions', (): void => {
+    let ranked: Connection;
+
+    /**
+     * Join the users of the ranked database to their posts on the given conditions.
+     */
+    function linked(kind: Matching, conditions: Linking): Builder<Authored> {
+        const method: 'join' | 'leftJoin' | 'rightJoin' = kind === 'inner' ? 'join' : `${kind}Join`;
+
+        return ranked.table<Ranked>('users')[method]<Authored>('posts', conditions);
+    }
+
+    /**
+     * Get the name and title of every row a joined query returns, in its order.
+     */
+    async function pairs(query: Builder<Authored>): Promise<string[]> {
+        return (await query.get()).map((row: Authored): string => `${row.name}:${row.title}`);
+    }
+
+    /**
+     * Get the plan and record count of every query the given query announces.
+     */
+    async function announced(query: Builder<Authored>): Promise<[string, number][]> {
+        const seen: [string, number][] = [];
+        const listener: (event: Event) => void = ((event: QueryExecuted): void => {
+            seen.push([event.plan, event.records]);
+        }) as (event: Event) => void;
+
+        Dispatcher.listen('db:query', listener);
+
+        try {
+            await query.get();
+        } finally {
+            Dispatcher.forget('db:query', listener);
+        }
+
+        return seen;
+    }
+
+    beforeEach(async (): Promise<void> => {
+        ranked = new Connection('app', { database: `joins-ranked-${++databases}`, migrations: [CreateRankedTables] });
+
+        await ranked.migrate();
+
+        await ranked.table<Ranked>('users').insert([
+            { name: 'Alice', team: 1, level: 1 },
+            { name: 'Bob', team: 2, level: 1 },
+            { name: 'Carol', team: null, level: 2 },
+            { name: 'Dave', team: 1, level: 5 },
+        ]);
+
+        await ranked.table<Filed>('posts').insert([
+            { user_id: 1, team: 1, level: 1, code: '1', title: 'First' },
+            { user_id: 1, team: 2, level: 4, code: '1', title: 'Second' },
+            { user_id: 2, team: 2, level: 2, code: '2', title: 'Third' },
+            { user_id: 3, team: null, level: 2, code: '3', title: 'Fourth' },
+            { user_id: null, team: 1, level: 9, code: null, title: 'Fifth' },
+            { user_id: 4, team: 1, level: 5, code: '4', title: 'Sixth' },
+        ]);
+    });
+
+    afterEach((): void => {
+        ranked.disconnect();
+    });
+
+    test.each(LINKED)('returns the rows of a join on %s through a %s join in the order of checking every pair', async (_: string, kind: Matching, conditions: Linking, expected: string[]): Promise<void> => {
+        expect(await pairs(linked(kind, conditions))).toEqual(expected);
+    });
+
+    test.each(LINKED)('announces a join on %s through a %s join with the rows it returns', async (_: string, kind: Matching, conditions: Linking, expected: string[]): Promise<void> => {
+        expect(await announced(linked(kind, conditions))).toEqual([['join', expected.length]]);
+    });
+
+    test.each(LINKED.filter((linking: [string, Matching, Linking, string[], number]): boolean => linking[4] < PAIRS))('tests a join on %s through a %s join only against the rows holding its first equality', async (_: string, kind: Matching, conditions: Linking, _expected: string[], rows: number): Promise<void> => {
+        expect(await tested(linked(kind, conditions))).toEqual(rows);
+    });
+
+    test.each(LINKED.filter((linking: [string, Matching, Linking, string[], number]): boolean => linking[4] === PAIRS))('tests every pair of a join on %s through a %s join', async (_: string, kind: Matching, conditions: Linking): Promise<void> => {
+        expect(await tested(linked(kind, conditions))).toEqual(PAIRS);
     });
 });

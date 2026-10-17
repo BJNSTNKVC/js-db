@@ -167,22 +167,26 @@ export class Joiner {
     }
 
     /**
-     * Get the lookup and indexed columns of a single equality join.
+     * Get the lookup and indexed columns of the first equality between the tables.
      */
     static #sides(clause: JoinClause): [string, string] | null {
-        const condition: JoinCondition | undefined = clause.conditions[0];
-
-        if (clause.conditions.length !== 1 || condition?.operator !== '=') {
+        // The first condition's conjunction joins it to nothing,
+        // so only a later orOn widens what the clause matches.
+        if (clause.conditions.slice(1).some((condition: JoinCondition): boolean => condition.conjunction === 'or')) {
             return null;
         }
 
         const joined: (column: string) => boolean = (column: string): boolean => column.startsWith(`${clause.table}.`);
 
-        if (joined(condition.first) === joined(condition.second)) {
+        const equality: JoinCondition | undefined = clause.conditions.find((condition: JoinCondition): boolean => {
+            return condition.operator === '=' && joined(condition.first) !== joined(condition.second);
+        });
+
+        if (equality === undefined) {
             return null;
         }
 
-        const [inside, outside]: [string, string] = joined(condition.first) ? [condition.first, condition.second] : [condition.second, condition.first];
+        const [inside, outside]: [string, string] = joined(equality.first) ? [equality.first, equality.second] : [equality.second, equality.first];
 
         return clause.type === 'right' ? [inside, outside] : [outside, inside];
     }
