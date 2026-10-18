@@ -479,6 +479,167 @@ describe('Builder where', (): void => {
     });
 });
 
+describe('Builder where with an object of pairs', (): void => {
+    interface Contact {
+        id: number;
+        name: string;
+        role: string;
+        age: number | null;
+    }
+
+    interface Card {
+        id: number;
+        contact_id: number;
+        label: string;
+    }
+
+    class CreateContactsTables extends Migration {
+        /**
+         * Run the migration.
+         */
+        override async up(): Promise<void> {
+            await Schema.create('contacts', (table: Blueprint): void => {
+                table.id();
+                table.string('name').index();
+                table.string('role');
+                table.integer('age').nullable();
+            });
+
+            await Schema.create('cards', (table: Blueprint): void => {
+                table.id();
+                table.integer('contact_id');
+                table.string('label');
+            });
+        }
+    }
+
+    let paired: Connection;
+    let sequence: number = 0;
+
+    /**
+     * Begin a query against the contacts table.
+     */
+    function contacts(): Builder<Contact> {
+        return paired.table<Contact>('contacts');
+    }
+
+    /**
+     * Get the names a query returns, checking its count agrees.
+     */
+    async function matched(query: () => Builder<Contact>): Promise<string[]> {
+        const found: string[] = (await query().get()).map((contact: Contact): string => contact.name);
+
+        expect(await query().count()).toEqual(found.length);
+
+        return found;
+    }
+
+    /**
+     * Run a query, collecting the events it announces.
+     */
+    async function announced(run: () => Promise<unknown>): Promise<QueryExecuted[]> {
+        const seen: QueryExecuted[] = [];
+        const listener: (event: Event) => void = ((event: QueryExecuted): void => {
+            seen.push(event);
+        }) as (event: Event) => void;
+
+        Dispatcher.listen('db:query', listener);
+
+        try {
+            await run();
+        } finally {
+            Dispatcher.forget('db:query', listener);
+        }
+
+        return seen;
+    }
+
+    beforeEach(async (): Promise<void> => {
+        paired = new Connection('app', { database: `builder-reads-paired-${++sequence}`, migrations: [CreateContactsTables] });
+
+        await paired.migrate();
+        await contacts().insert([
+            { name: 'Alice', role: 'admin', age: 30 },
+            { name: 'Bob', role: 'member', age: 25 },
+            { name: 'Carol', role: 'member', age: 30 },
+            { name: 'Dave', role: 'member', age: null },
+            { name: 'Erin', role: 'owner', age: 41 },
+        ]);
+        await paired.table<Card>('cards').insert([
+            { contact_id: 1, label: 'blue' },
+            { contact_id: 2, label: 'blue' },
+            { contact_id: 3, label: 'blue' },
+            { contact_id: 4, label: 'blue' },
+            { contact_id: 5, label: 'gold' },
+        ]);
+    });
+
+    afterEach((): void => {
+        paired.disconnect();
+    });
+
+    test.each<[string, () => Builder<Contact>, string[]]>([
+        ['after a where', (): Builder<Contact> => contacts().where('name', 'Erin').orWhere({ role: 'member', age: 30 }), ['Alice', 'Bob', 'Carol', 'Dave', 'Erin']],
+        ['as the first constraint', (): Builder<Contact> => contacts().orWhere({ role: 'member', age: 30 }), ['Alice', 'Bob', 'Carol', 'Dave']],
+        ['holding a null, read as whereNull', (): Builder<Contact> => contacts().where('name', 'Erin').orWhere({ role: 'admin', age: null }), ['Alice', 'Dave', 'Erin']],
+        ['followed by a where, which binds tighter', (): Builder<Contact> => contacts().where('name', 'Erin').orWhere({ role: 'member', age: 30 }).where('name', '!=', 'Bob'), ['Alice', 'Carol', 'Dave', 'Erin']],
+        ['inside a closure passed to where, after a where', (): Builder<Contact> => contacts().where('role', 'member').where((query: Builder<Contact>): void => {
+            query.where('name', 'Bob').orWhere({ age: 30, name: 'Dave' });
+        }), ['Bob', 'Carol', 'Dave']],
+        ['first inside a closure passed to where', (): Builder<Contact> => contacts().where('role', 'member').where((query: Builder<Contact>): void => {
+            query.orWhere({ age: 30, name: 'Bob' });
+        }), ['Bob', 'Carol']],
+    ])('joins the pairs of an orWhere object with or %s', async (_: string, query: () => Builder<Contact>, expected: string[]): Promise<void> => {
+        expect(await matched(query)).toEqual(expected);
+    });
+
+    test('joins the pairs of an orWhere object with or on a joined query with qualified columns', async (): Promise<void> => {
+        const query: () => Builder<Contact> = (): Builder<Contact> => contacts()
+            .join<Contact>('cards', 'contacts.id', '=', 'cards.contact_id')
+            .where('cards.label', 'gold')
+            .orWhere({ 'contacts.role': 'member', 'contacts.age': 30 } as Partial<Contact>);
+
+        expect(await matched(query)).toEqual(['Alice', 'Bob', 'Carol', 'Dave', 'Erin']);
+    });
+
+    test('announces the nested group of an orWhere object with its pairs marked or', async (): Promise<void> => {
+        const seen: QueryExecuted[] = await announced((): Promise<unknown> => contacts().where('name', 'Erin').orWhere({ role: 'admin', age: null }).get());
+
+        expect(seen[0]?.constraints).toEqual([
+            { type: 'basic', column: 'name', operator: '=', value: 'Erin', conjunction: 'and', not: false },
+            {
+                type       : 'nested',
+                constraints: [
+                    { type: 'basic', column: 'role', operator: '=', value: 'admin', conjunction: 'or', not: false },
+                    { type: 'null', column: 'age', conjunction: 'or', not: false },
+                ],
+                conjunction: 'or',
+                not        : false,
+            },
+        ]);
+    });
+
+    test.each<[string, () => Builder<Contact>, string[]]>([
+        ['an orWhere object of one pair', (): Builder<Contact> => contacts().where('name', 'Erin').orWhere({ role: 'admin' }), ['Alice', 'Erin']],
+        ['an orWhere closure holding a where with the object', (): Builder<Contact> => contacts().where('name', 'Erin').orWhere((query: Builder<Contact>): void => {
+            query.where({ role: 'member', age: 30 });
+        }), ['Carol', 'Erin']],
+        ['a where object', (): Builder<Contact> => contacts().where({ role: 'member', age: 30 }), ['Carol']],
+        ['a whereNot object', (): Builder<Contact> => contacts().whereNot({ role: 'member', age: 30 }), ['Alice', 'Bob', 'Erin']],
+        ['an orWhereNot object', (): Builder<Contact> => contacts().where('name', 'Erin').orWhereNot({ role: 'member', age: 30 }), ['Erin']],
+    ])('reads %s as Laravel does', async (_: string, query: () => Builder<Contact>, expected: string[]): Promise<void> => {
+        expect(await matched(query)).toEqual(expected);
+    });
+
+    test('plans a query holding an orWhere object as before', async (): Promise<void> => {
+        expect(await contacts().where('name', 'Erin').orWhere({ role: 'member', age: 30 }).explain()).toEqual('scan');
+        expect(await contacts().orWhere({ role: 'member', name: 'Bob' }).explain()).toEqual('scan');
+        expect(await contacts().where('name', 'Bob').where((query: Builder<Contact>): void => {
+            query.orWhere({ role: 'member', age: 30 });
+        }).explain()).toEqual('index:contacts_name_index');
+    });
+});
+
 describe('Builder shaping', (): void => {
     test('projects only the selected columns', async (): Promise<void> => {
         expect(await users().where('name', 'Alice').select('name', 'role').get()).toEqual([{ name: 'Alice', role: 'admin' }]);

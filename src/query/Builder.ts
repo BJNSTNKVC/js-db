@@ -148,7 +148,7 @@ export class Builder<T = Record<string, unknown>> {
     orWhereNot(column: Key<T>, value: unknown): this;
     orWhereNot(column: Key<T>, operator: Operator, value: unknown): this;
     orWhereNot(column: Column<T>, ...parameters: unknown[]): this {
-        return this.#constrain('or', true, column, parameters, 'or');
+        return this.#constrain('or', true, column, parameters);
     }
 
     /**
@@ -1440,7 +1440,7 @@ export class Builder<T = Record<string, unknown>> {
     /**
      * Add a constraint of the given shape to the query.
      */
-    #constrain(conjunction: Conjunction, not: boolean, column: Column<T>, parameters: unknown[], pairs: Conjunction = 'and'): this {
+    #constrain(conjunction: Conjunction, not: boolean, column: Column<T>, parameters: unknown[]): this {
         if (typeof column === 'function') {
             const nested: Builder<T> = new Builder<T>(this.#connection, this.#table, this.#transaction)
 
@@ -1451,7 +1451,7 @@ export class Builder<T = Record<string, unknown>> {
 
         if (typeof column === 'object' && column !== null) {
             const constraints: Constraint[] = Object.entries(column).map(
-                ([key, held]: [string, unknown]): Constraint => this.#basic(pairs, false, key, '=', held),
+                ([key, held]: [string, unknown]): Constraint => this.#basic(conjunction, false, key, '=', held),
             );
 
             return this.#push({ type: 'nested', constraints, conjunction, not });

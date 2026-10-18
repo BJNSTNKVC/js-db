@@ -50,10 +50,12 @@ date constraints and `whereAny`, `whereAll` and `whereNone`, below. Each takes t
 `and` form. Before 19.1.0 there was no `orWhereNot`, no `or` form of a date constraint and none of
 `whereAny`, `whereAll` or `whereNone`.
 
-`orWhereNot` given an object joins its pairs with `or`, as Laravel's does, so
-`.orWhereNot({ role: 'guest', age: 30 })` adds a record whose role is not `'guest'` and whose age is
-not 30. `where`, `whereNot` and `orWhere` join an object's pairs with `and`, where Laravel's `orWhere`
-joins them with `or`.
+`orWhere` and `orWhereNot` given an object join its pairs with `or`, as Laravel's do, while `where`
+and `whereNot` join them with `and`. So `.orWhere({ role: 'admin', age: 30 })` adds a record whose
+role is `'admin'` or whose age is 30, and `.orWhereNot({ role: 'guest', age: 30 })` one whose role
+is not `'guest'` and whose age is not 30. To add only the records matching every pair, pass a
+closure: `.orWhere((query) => query.where({ role: 'admin', age: 30 }))`. Before 20.0.0 `orWhere`
+joined an object's pairs with `and`.
 
 `whereAny`, `whereAll` and `whereNone` apply one comparison to several columns at once, as a nested
 group joined to the rest of the query with `and`, and `orWhereAny`, `orWhereAll` and `orWhereNone`
