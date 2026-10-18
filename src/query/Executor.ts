@@ -545,22 +545,21 @@ export class Executor<T> {
     /**
      * Get the constraints with each value converted to its column's type.
      */
-    #prepared(schema: TableSchema): Constraint[] {
+    #prepared(schema: TableSchema, constraints: readonly Constraint[] = this.#query.constraints): Constraint[] {
         const types: Map<string, ColumnType> = new Map<string, ColumnType>(
             schema.columns.map((column: ColumnSchema): [string, ColumnType] => [column.name, column.type]),
         );
 
-        return Planner.prepare(this.#query.constraints, types, this.#connection.timezone);
+        return Planner.prepare(constraints, types, this.#connection.timezone);
     }
 
     /**
      * Plan the query over a source that can answer it.
      */
-    async #planned(schema: TableSchema, store: IDBObjectStore): Promise<Plan> {
-        const constraints: Constraint[] = this.#prepared(schema);
+    async #planned(schema: TableSchema, store: IDBObjectStore, constraints: Constraint[] = this.#prepared(schema), sorting: readonly Order[] = this.#orders()): Promise<Plan> {
         const excluded: Set<string | null> = new Set<string | null>();
 
-        let orders: readonly Order[] = this.#orders();
+        let orders: readonly Order[] = sorting;
 
         for (;;) {
             const plan: Plan = Planner.plan(constraints, orders, schema, excluded);
@@ -949,19 +948,15 @@ export class Executor<T> {
      * Run the joins and keep the rows the constraints match.
      */
     async #combined(tables: Map<string, string[]>, constraints: Constraint[], stores: (table: string) => IDBObjectStore): Promise<Row[]> {
-        const store: IDBObjectStore = stores(this.#query.table);
-
-        const [records, keys]: [Record<string, unknown>[], IDBValidKey[]] = await Promise.all([
-            Request.settle(store.getAll() as IDBRequest<Record<string, unknown>[]>),
-            Request.settle(store.getAllKeys()),
-        ]);
+        const entries: Entry<T>[] = await this.#based(tables, stores(this.#query.table));
+        const records: Record<string, unknown>[] = entries.map((entry: Entry<T>): Record<string, unknown> => entry.record as Record<string, unknown>);
 
         // Held under a symbol, the key travels through every join as the
         // rows are spread together, yet is never read as a column nor
         // flattened into the result. A row a right join keeps for the
         // other table alone has no base record, and so carries none.
         let rows: Row[] = Joiner.qualify(records, this.#query.table).map(
-            (row: Record<string, unknown>, index: number): Row => ({ ...row, [KEY]: keys[index] as IDBValidKey }),
+            (row: Record<string, unknown>, index: number): Row => ({ ...row, [KEY]: (entries[index] as Entry<T>).key }),
         );
 
         for (const clause of this.#query.joins) {
@@ -972,6 +967,42 @@ export class Executor<T> {
         }
 
         return rows.filter(Predicate.compile(constraints));
+    }
+
+    /**
+     * Read the base records its own constraints allow, in key order.
+     */
+    async #based(tables: Map<string, string[]>, store: IDBObjectStore): Promise<Entry<T>[]> {
+        const schema: TableSchema = await this.#connection.schema(this.#query.table);
+        const plan: Plan = await this.#planned(schema, store, this.#pushed(tables, schema), []);
+        const matches: (record: Record<string, unknown>) => boolean = Predicate.compile(plan.residual);
+
+        const collected: Entry<T>[] = plan.values === null
+            ? await this.#cursored(store, plan, matches)
+            : await this.#points(store, plan, matches);
+
+        // An index yields its records in index order,
+        // and lookups yield them value by value,
+        // so both are put back in key order.
+        return plan.index === null && plan.values === null
+            ? collected
+            : collected.sort((first: Entry<T>, second: Entry<T>): number => indexedDB.cmp(first.key, second.key));
+    }
+
+    /**
+     * Get the constraints naming only the base table, unqualified and prepared.
+     */
+    #pushed(tables: Map<string, string[]>, schema: TableSchema): Constraint[] {
+        const table: string = this.#query.table;
+        const constraints: Constraint[] = this.#query.constraints.map((constraint: Constraint): Constraint => Joiner.qualified(constraint, tables));
+
+        if (Planner.disjunctive(constraints) || this.#query.joins.some((clause: JoinClause): boolean => clause.type === 'right' || clause.table === table)) {
+            return [];
+        }
+
+        return this.#prepared(schema, constraints
+            .filter((constraint: Constraint): boolean => Joiner.confined(constraint, table))
+            .map((constraint: Constraint): Constraint => Joiner.unqualified(constraint)));
     }
 
     /**

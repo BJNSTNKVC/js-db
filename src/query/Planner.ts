@@ -26,8 +26,8 @@ export class Planner {
      * Compile the constraints and orders into an execution plan.
      */
     static plan(constraints: readonly Constraint[], orders: readonly Order[], schema: TableSchema, excluded: ReadonlySet<string | null> = new Set<string | null>()): Plan {
-        const candidate: Candidate | null = this.#disjunctive(constraints) ? null : this.#candidate(constraints, schema, excluded);
-        const ordering: Candidate | null = this.#disjunctive(constraints) ? null : this.#ordering(orders, schema, excluded);
+        const candidate: Candidate | null = this.disjunctive(constraints) ? null : this.#candidate(constraints, schema, excluded);
+        const ordering: Candidate | null = this.disjunctive(constraints) ? null : this.#ordering(orders, schema, excluded);
 
         if (candidate === null) {
             return this.#ordered(constraints, orders, ordering);
@@ -109,6 +109,13 @@ export class Planner {
     }
 
     /**
+     * Determine whether any top level constraint is disjunctive.
+     */
+    static disjunctive(constraints: readonly Constraint[]): boolean {
+        return constraints.some((constraint: Constraint, index: number): boolean => index > 0 && constraint.conjunction === 'or');
+    }
+
+    /**
      * Build the plan for a query no constraint could drive.
      */
     static #ordered(constraints: readonly Constraint[], orders: readonly Order[], ordering: Candidate | null): Plan {
@@ -125,13 +132,6 @@ export class Planner {
             ordered  : true,
             residual : [...constraints],
         };
-    }
-
-    /**
-     * Determine whether any top level constraint is disjunctive.
-     */
-    static #disjunctive(constraints: readonly Constraint[]): boolean {
-        return constraints.some((constraint: Constraint, index: number): boolean => index > 0 && constraint.conjunction === 'or');
     }
 
     /**

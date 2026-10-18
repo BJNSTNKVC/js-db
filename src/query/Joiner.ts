@@ -60,6 +60,34 @@ export class Joiner {
     }
 
     /**
+     * Determine whether every column a qualified constraint names belongs to the table.
+     */
+    static confined(constraint: Constraint, table: string): boolean {
+        if (constraint.type === 'nested') {
+            return constraint.constraints.every((nested: Constraint): boolean => this.confined(nested, table));
+        }
+
+        const columns: string[] = constraint.type === 'column' ? [constraint.column, constraint.other] : [constraint.column];
+
+        return columns.every((column: string): boolean => Columns.split(Columns.path(column).column).table === table);
+    }
+
+    /**
+     * Strip the table from every column a qualified constraint names.
+     */
+    static unqualified(constraint: Constraint): Constraint {
+        if (constraint.type === 'nested') {
+            return { ...constraint, constraints: constraint.constraints.map((nested: Constraint): Constraint => this.unqualified(nested)) };
+        }
+
+        if (constraint.type === 'column') {
+            return { ...constraint, column: this.#bare(constraint.column), other: this.#bare(constraint.other) };
+        }
+
+        return { ...constraint, column: this.#bare(constraint.column) };
+    }
+
+    /**
      * Flatten qualified rows as SQL does, later tables winning a collision.
      */
     static flatten(rows: Record<string, unknown>[], tables: Map<string, string[]>, columns: readonly string[] | null): Record<string, unknown>[] {
@@ -88,6 +116,15 @@ export class Joiner {
 
             return flat;
         });
+    }
+
+    /**
+     * Strip the table from a qualified column, keeping its JSON path.
+     */
+    static #bare(column: string): string {
+        const { column: name, path }: { column: string; path: string[] } = Columns.path(column);
+
+        return [Columns.split(name).name, ...path].join('->');
     }
 
     /**

@@ -108,6 +108,8 @@ Each resolves to a description of the plan chosen:
 - `count()` with no residual constraints uses `count()` on the store or index, reading no records,
   once the index passes the type check above, unless the query joins, or is `distinct` and either selects columns or reads a table without a key
   column, when it reads the records to count the distinct rows.
-- A joined query reads every table it joins in full and runs the join in memory, so no index takes
-  part. `explain()` on one returns `'join'`, the plan the `QueryExecuted` event reports for it, and
-  `count()` counts the joined rows.
+- A joined query plans the constraints naming only the table it starts from, as above, and reads
+  that table through them, unless it has a top-level `orWhere`, a right join or a join of that table
+  again. It reads every table it joins in full and runs the join in memory (see
+  [Joins](joins.md#what-joins-cost-and-what-they-do-not-support)). `explain()` on one returns
+  `'join'`, the plan the `QueryExecuted` event reports for it, and `count()` counts the joined rows.

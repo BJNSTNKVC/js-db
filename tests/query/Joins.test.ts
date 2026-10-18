@@ -14,6 +14,7 @@ import type { Transaction } from '../../src/database/Transaction';
 import type { Join } from '../../src/query/Join';
 import type { QueryExecuted } from '../../src/events';
 import type { Constraint, Paginated } from '../../src/query/types';
+import type { MockInstance } from 'vitest';
 
 interface User {
     id: number;
@@ -2058,5 +2059,219 @@ describe('Joins on several conditions', (): void => {
 
     test.each(LINKED.filter((linking: [string, Matching, Linking, string[], number]): boolean => linking[4] === PAIRS))('tests every pair of a join on %s through a %s join', async (_: string, kind: Matching, conditions: Linking): Promise<void> => {
         expect(await tested(linked(kind, conditions))).toEqual(PAIRS);
+    });
+});
+
+interface Ranker {
+    id: number;
+    name: string;
+    rank: number;
+}
+
+interface Article {
+    id: number;
+    user_id: number;
+    title: string;
+}
+
+interface Credited {
+    id: number | null;
+    name: string | null;
+    rank: number | null;
+    user_id: number | null;
+    title: string | null;
+}
+
+type Range = [unknown, unknown, boolean, boolean] | null;
+
+class CreatePlannedTables extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        await Schema.create('users', (table: Blueprint): void => {
+            table.id();
+            table.string('name');
+            table.integer('rank').index();
+        });
+
+        await Schema.create('posts', (table: Blueprint): void => {
+            table.id();
+            table.integer('user_id').index();
+            table.string('title');
+        });
+    }
+}
+
+describe('Joins reading the base table through its plan', (): void => {
+    let planned: Connection;
+
+    /**
+     * Begin a query against the users of the planned database.
+     */
+    function rankers(): Builder<Ranker> {
+        return planned.table<Ranker>('users');
+    }
+
+    /**
+     * Join the users of the planned database to their posts.
+     */
+    function authored(): Builder<Credited> {
+        return rankers().join<Credited>('posts', 'users.id', '=', 'posts.user_id');
+    }
+
+    /**
+     * Get the name and title of every row a joined query returns, in its order.
+     */
+    async function credits(query: Builder<Credited>): Promise<string[]> {
+        return (await query.get()).map((row: Credited): string => `${row.name}:${row.title}`);
+    }
+
+    /**
+     * Get the key range of every getAll the spy saw on the users table or its indexes.
+     */
+    function ranges(read: MockInstance): Range[] {
+        return read.mock.calls
+            .filter((_: unknown[], call: number): boolean => {
+                const source: IDBObjectStore | IDBIndex = read.mock.contexts[call] as IDBObjectStore | IDBIndex;
+
+                return (source instanceof IDBIndex ? source.objectStore : source).name === 'users';
+            })
+            .map((call: unknown[]): Range => {
+                const range: unknown = call[0];
+
+                return range instanceof IDBKeyRange ? [range.lower, range.upper, range.lowerOpen, range.upperOpen] : null;
+            });
+    }
+
+    beforeEach(async (): Promise<void> => {
+        planned = new Connection('app', { database: `joins-planned-${++databases}`, migrations: [CreatePlannedTables] });
+
+        await planned.migrate();
+
+        await rankers().insert([
+            { name: 'Alice', rank: 3 },
+            { name: 'Bob', rank: 1 },
+            { name: 'Carol', rank: 2 },
+            { name: 'Dave', rank: 1 },
+            { name: 'Erin', rank: 3 },
+        ]);
+
+        await planned.table<Article>('posts').insert([
+            { user_id: 1, title: 'First' },
+            { user_id: 2, title: 'Second' },
+            { user_id: 1, title: 'Third' },
+            { user_id: 4, title: 'Fourth' },
+            { user_id: 9, title: 'Orphan' },
+            { user_id: 3, title: 'Sixth' },
+            { user_id: 5, title: 'Seventh' },
+        ]);
+    });
+
+    afterEach((): void => {
+        vi.restoreAllMocks();
+        planned.disconnect();
+    });
+
+    test('returns the rows of an inner join over a key range, in key order', async (): Promise<void> => {
+        expect(await credits(authored().where('users.id', '<=', 3))).toEqual(['Alice:First', 'Alice:Third', 'Bob:Second', 'Carol:Sixth']);
+    });
+
+    test('returns the rows of a left join over a key range, in key order', async (): Promise<void> => {
+        await rankers().insert({ name: 'Frank', rank: 2 });
+
+        expect(await credits(rankers().leftJoin<Credited>('posts', 'users.id', '=', 'posts.user_id').where('users.id', '>=', 4)))
+            .toEqual(['Dave:Fourth', 'Erin:Seventh', 'Frank:null']);
+    });
+
+    test('returns the rows of a cross join over a key, in key order', async (): Promise<void> => {
+        expect(await credits(rankers().crossJoin<Credited>('posts').where('users.id', 2)))
+            .toEqual(['Bob:First', 'Bob:Second', 'Bob:Third', 'Bob:Fourth', 'Bob:Orphan', 'Bob:Sixth', 'Bob:Seventh']);
+    });
+
+    test('returns the rows of a join over indexed values looked up out of key order, in key order', async (): Promise<void> => {
+        expect(await credits(authored().whereIn('users.rank', [3, 1]))).toEqual(['Alice:First', 'Alice:Third', 'Bob:Second', 'Dave:Fourth', 'Erin:Seventh']);
+    });
+
+    test('returns the rows of a join over an index range, in key order', async (): Promise<void> => {
+        expect(await credits(authored().where('users.rank', '<=', 2))).toEqual(['Bob:Second', 'Carol:Sixth', 'Dave:Fourth']);
+    });
+
+    test('returns the rows of a join constrained on both tables', async (): Promise<void> => {
+        expect(await credits(authored().where('users.id', '<=', 3).where('posts.title', '!=', 'Third'))).toEqual(['Alice:First', 'Bob:Second', 'Carol:Sixth']);
+    });
+
+    test('returns the rows of a join constrained on an unqualified column of this table', async (): Promise<void> => {
+        expect(await credits(authored().where('name', 'Carol'))).toEqual(['Carol:Sixth']);
+    });
+
+    test('returns the rows of a join constrained by a group on this table', async (): Promise<void> => {
+        const query: Builder<Credited> = authored().where((group: Builder<Credited>): void => {
+            group.where('users.id', 1).orWhere('users.id', 5);
+        });
+
+        expect(await credits(query)).toEqual(['Alice:First', 'Alice:Third', 'Erin:Seventh']);
+    });
+
+    test('returns the rows of a join comparing two columns of this table', async (): Promise<void> => {
+        expect(await credits(authored().whereColumn('users.rank', '<', 'users.id'))).toEqual(['Bob:Second', 'Carol:Sixth', 'Dave:Fourth', 'Erin:Seventh']);
+    });
+
+    test('asks for the key range of a join over one', async (): Promise<void> => {
+        const read: MockInstance = vi.spyOn(IDBObjectStore.prototype, 'getAll');
+
+        await authored().where('users.id', '<=', 3).get();
+
+        expect(ranges(read)).toEqual([[undefined, 3, true, false]]);
+    });
+
+    test('asks the index for the range of a join over one', async (): Promise<void> => {
+        const read: MockInstance = vi.spyOn(IDBIndex.prototype, 'getAll');
+
+        await authored().where('users.rank', '<=', 2).get();
+
+        expect(ranges(read)).toEqual([[undefined, 2, true, false]]);
+    });
+
+    test.each([
+        ['a right join', (): Builder<Credited> => rankers().rightJoin<Credited>('posts', 'users.id', '=', 'posts.user_id').whereNull('users.id'), ['null:Orphan'], [null]],
+        ['a right join over a key range', (): Builder<Credited> => rankers().rightJoin<Credited>('posts', 'users.id', '=', 'posts.user_id').where('users.id', '<=', 2), ['Alice:First', 'Bob:Second', 'Alice:Third'], [null]],
+        ['an orWhere', (): Builder<Credited> => authored().where('users.id', '<=', 1).orWhere('posts.title', 'Fourth'), ['Alice:First', 'Alice:Third', 'Dave:Fourth'], [null]],
+        ['a whereColumn across the tables', (): Builder<Credited> => authored().whereColumn('posts.id', '>', 'users.id'), ['Alice:Third', 'Carol:Sixth', 'Erin:Seventh'], [null]],
+        ['a join of this table again', (): Builder<Credited> => rankers().crossJoin<Credited>('users').where('users.id', 1).select('users.name', 'users.name as title'), Array(5).fill('Alice:Alice'), [null, null]],
+    ] as [string, () => Builder<Credited>, string[], Range[]][])('reads the whole table under %s and returns the same rows', async (_: string, query: () => Builder<Credited>, expected: string[], read: Range[]): Promise<void> => {
+        const spy: MockInstance = vi.spyOn(IDBObjectStore.prototype, 'getAll');
+
+        expect(await credits(query())).toEqual(expected);
+        expect(ranges(spy)).toEqual(read);
+    });
+
+    test('counts the rows of a join over a key range', async (): Promise<void> => {
+        expect(await authored().where('users.id', '<=', 3).count()).toEqual(4);
+    });
+
+    test('chunks the rows of a join over a key range', async (): Promise<void> => {
+        const pages: string[][] = [];
+
+        await authored().where('users.id', '<=', 3).chunk(3, (rows: Credited[]): void => {
+            pages.push(rows.map((row: Credited): string => `${row.name}:${row.title}`));
+        });
+
+        expect(pages).toEqual([['Alice:First', 'Alice:Third', 'Bob:Second'], ['Carol:Sixth']]);
+    });
+
+    test('finds a record through a join over a key range', async (): Promise<void> => {
+        expect(await authored().where('users.id', '<=', 3).find(2)).toEqual({ id: 2, name: 'Bob', rank: 1, user_id: 2, title: 'Second' });
+        expect(await authored().where('users.id', '<=', 3).find(4)).toBeNull();
+    });
+
+    test('updates the records of a join over a key range', async (): Promise<void> => {
+        expect(await authored().where('users.id', '<=', 2).update({ rank: 7 })).toEqual(2);
+        expect((await rankers().get()).map((user: Ranker): number => user.rank)).toEqual([7, 7, 2, 1, 3]);
+    });
+
+    test('deletes the records of a join over a key range', async (): Promise<void> => {
+        expect(await authored().where('users.id', '>=', 4).delete()).toEqual(2);
+        expect((await rankers().get()).map((user: Ranker): string => user.name)).toEqual(['Alice', 'Bob', 'Carol']);
     });
 });

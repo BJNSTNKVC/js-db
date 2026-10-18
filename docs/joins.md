@@ -182,9 +182,17 @@ with no such equality, or whose equality compares values of more than one type f
 nested loop, which checks every pair of rows. Either way a condition matches the rows `whereColumn`
 would, so a number matches the same number held as a string, two dates match when they name the
 same moment, two binary values match when they hold the same bytes, and a null or missing value
-matches nothing. The join reads every table it names in full, without an index, and the `where`
-clauses then filter the joined rows, so memory is proportional to the tables involved. That is fine
-at the data volumes a browser holds, and worth knowing before joining two large tables.
+matches nothing.
+
+The table the query starts from is read through its key path or an index when its own constraints
+allow, planned as a query without a join plans them (see [Query plans](query-plans.md)), so
+`where('users.id', '<=', 100)` reads only those hundred users. Only the constraints naming nothing
+but this table narrow the read, and only when there is no `orWhere` at the top level, no right join
+and no join of this table again. The joined tables are read in full, without an index. Every `where`
+clause then filters the joined rows, which come back in the same order whichever way the table was
+read, so memory is proportional to the joined tables and the records read from this one. That is
+fine at the data volumes a browser holds, and worth knowing before joining two large tables. Before
+19.0.3, every table a join named was read in full, whatever its constraints.
 
 `orderBy` on a joined query always sorts in memory, since the row is synthesised and no index covers
 it, and `chunk` slices the materialised result rather than walking keys.
@@ -281,7 +289,8 @@ table behind it.
 - **It runs in one transaction** over every table the join reads, so no other tab can change the
   joined rows between choosing the records and writing them. Inside `DB.transaction()` with
   `options.tables`, every one of those tables has to be listed.
-- **It costs what a joined read does:** every table involved is read in full and joined in memory.
+- **It costs what a joined read does:** this table is read as far as its own constraints allow,
+  every joined table in full, and the rows are joined in memory.
 
 `whereColumn` compares two columns of the same row, and is available on any query:
 
