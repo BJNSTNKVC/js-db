@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { Connection } from '../../src/database/Connection';
 import { Migration } from '../../src/migrations/Migration';
 import { Schema } from '../../src/schema/Schema';
@@ -747,4 +747,60 @@ describe('Moving dates written by 7.0.0 to UTC days', (): void => {
         expect((await DB.table('birthdays').whereDate('born', '2024-01-15').pluck('name')).sort()).toEqual(noon.getUTCDate() === 15 ? ['before', 'noon', 'seven', 'twin'] : ['before', 'seven', 'twin']);
         expect((await DB.table('birthdays').whereDay('born', 8).pluck('name')).sort()).toEqual(['skipped']);
     }, 2000);
+});
+
+describe('The or forms of the date constraints on a local connection', (): void => {
+    const zone: string = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    let sequence: number = 0;
+    let connection: Connection;
+
+    /**
+     * Begin a query against the moments table of the local connection.
+     */
+    function moments(): Builder<Moment> {
+        return connection.table<Moment>('moments');
+    }
+
+    /**
+     * Get the names of the moments a query returns, sorted.
+     */
+    async function named(query: Builder<Moment>): Promise<string[]> {
+        return (await query.get()).map((moment: Moment): string => moment.name).sort();
+    }
+
+    beforeEach(async (): Promise<void> => {
+        connection = new Connection('app', { database: `builder-extras-or-dates-${++sequence}`, migrations: [CreateMomentsTable], timezone: 'local' });
+
+        await connection.migrate();
+    });
+
+    afterEach((): void => {
+        connection.disconnect();
+        vi.stubEnv('TZ', zone);
+        vi.unstubAllEnvs();
+    });
+
+    const FORMS: [string, (query: Builder<Moment>) => Builder<Moment>, string[]][] = [
+        ['orWhereDate with =', (query: Builder<Moment>): Builder<Moment> => query.orWhereDate('plain', '2024-01-01'), ['day', 'noon']],
+        ['orWhereDate with !=', (query: Builder<Moment>): Builder<Moment> => query.orWhereDate('plain', '!=', '2023-12-31'), ['day', 'noon']],
+        ['orWhereDate with <', (query: Builder<Moment>): Builder<Moment> => query.orWhereDate('plain', '<', '2024-01-01'), ['eve', 'noon']],
+        ['orWhereTime', (query: Builder<Moment>): Builder<Moment> => query.orWhereTime('plain', '>=', '23:00'), ['eve', 'noon']],
+        ['orWhereYear', (query: Builder<Moment>): Builder<Moment> => query.orWhereYear('plain', 2023), ['eve', 'noon']],
+        ['orWhereMonth', (query: Builder<Moment>): Builder<Moment> => query.orWhereMonth('plain', 12), ['eve', 'noon']],
+        ['orWhereDay', (query: Builder<Moment>): Builder<Moment> => query.orWhereDay('plain', 1), ['day', 'noon']],
+    ];
+
+    describe.each(Env.zones())('with the process in %s', (process: string): void => {
+        test.each(FORMS)('%s reads the local day and time', async (_: string, constrain: (query: Builder<Moment>) => Builder<Moment>, expected: string[]): Promise<void> => {
+            Env.moveTo(process);
+
+            await moments().insert([
+                { name: 'eve', indexed: new Date(2023, 11, 31, 23, 30), plain: new Date(2023, 11, 31, 23, 30) },
+                { name: 'day', indexed: new Date(2024, 0, 1, 0, 30), plain: new Date(2024, 0, 1, 0, 30) },
+                { name: 'noon', indexed: new Date(2024, 5, 15, 12), plain: new Date(2024, 5, 15, 12) },
+            ]);
+
+            expect(await named(constrain(moments().where('name', 'noon')))).toEqual(expected);
+        });
+    });
 });

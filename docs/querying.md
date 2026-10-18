@@ -43,12 +43,21 @@ DB.table<User>('users')
     .whereNotLike('name', 'Test%');
 ```
 
-Every one of these has an `or` form too: `orWhere`, `orWhereIn`, `orWhereNotIn`, `orWhereNull`,
-`orWhereNotNull`, `orWhereBetween`, `orWhereNotBetween`, `orWhereLike`, `orWhereNotLike` and
-`orWhereColumn`, so a disjunction no longer needs a nested closure.
+Every one of these has an `or` form too: `orWhere`, `orWhereNot`, `orWhereIn`, `orWhereNotIn`,
+`orWhereNull`, `orWhereNotNull`, `orWhereBetween`, `orWhereNotBetween`, `orWhereLike`,
+`orWhereNotLike` and `orWhereColumn`, so a disjunction no longer needs a nested closure. So do the
+date constraints and `whereAny`, `whereAll` and `whereNone`, below. Each takes the arguments of its
+`and` form. Before 19.1.0 there was no `orWhereNot`, no `or` form of a date constraint and none of
+`whereAny`, `whereAll` or `whereNone`.
+
+`orWhereNot` given an object joins its pairs with `or`, as Laravel's does, so
+`.orWhereNot({ role: 'guest', age: 30 })` adds a record whose role is not `'guest'` and whose age is
+not 30. `where`, `whereNot` and `orWhere` join an object's pairs with `and`, where Laravel's `orWhere`
+joins them with `or`.
 
 `whereAny`, `whereAll` and `whereNone` apply one comparison to several columns at once, as a nested
-group joined to the rest of the query with `and`:
+group joined to the rest of the query with `and`, and `orWhereAny`, `orWhereAll` and `orWhereNone`
+join the same group with `or`:
 
 ```ts
 DB.table<User>('users')
@@ -111,7 +120,10 @@ or after it.
 `whereDate` becomes a range and can be served by an index under every operator but `!=` and `<>`,
 which become a nested pair of ranges joined with `or` and are checked against every record the
 query reads. The other parts, and `whereTime`, are always checked that way. A null or missing value
-matches none of them, under `!=` as under any other operator. None of them has an `or` form.
+matches none of them, under `!=` as under any other operator. Each has an `or` form, `orWhereDate`,
+`orWhereYear`, `orWhereMonth`, `orWhereDay` and `orWhereTime`, which reads the same arguments the
+same way and joins the rest of the query with `or`, so `orWhereDate` with `!=` adds its pair of
+ranges as one group. Before 19.1.0 none of them had an `or` form.
 
 Operators: `=`, `==`, `===`, `!=`, `<>`, `!==`, `<`, `>`, `<=`, `>=`, `like`, `not like`. `==` is
 loose and `===` is strict, except on a JSON column or a column no blueprint declares, which compare
@@ -234,6 +246,14 @@ exactly one. Both are case insensitive, both cross newlines, and a backslash esc
 `'100\\%'` matches a literal percent. Everything else in the pattern is a literal, so a pattern full
 of regular expression syntax matches only itself. Only strings are matched, so a number, a date or
 any other value satisfies neither `like` nor `not like`.
+
+`whereLike`, `orWhereLike`, `whereNotLike` and `orWhereNotLike` take a third argument,
+`caseSensitive`, `false` by default. Set to `true`, the pattern's letters match only as written, so
+`whereLike('email', 'Mixed%', true)` matches `Mixed@X` and `whereLike('email', 'mixed%', true)`
+does not. `%`, `_` and their escapes work as they do without it, and `*`, `?` and `[` stay literal
+characters, as in MySQL's `like binary`. Laravel on SQLite runs a case-sensitive pattern through
+`glob`, where `[` opens a set of characters, so there `'A[B]'` matches `AB` rather than `A[B]`.
+Before 19.1.0 the four methods took no third argument and every pattern ignored case.
 
 The pattern is matched by a direct scan rather than a regular expression, which matters if your
 patterns come from a search box. A regular expression compiled from `%%%%%` backtracks over every

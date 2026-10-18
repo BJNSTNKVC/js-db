@@ -187,8 +187,8 @@ matches nothing.
 The table the query starts from is read through its key path or an index when its own constraints
 allow, planned as a query without a join plans them (see [Query plans](query-plans.md)), so
 `where('users.id', '<=', 100)` reads only those hundred users. Only the constraints naming nothing
-but this table narrow the read, and only when there is no `orWhere` at the top level, no right join
-and no join of this table again. The joined tables are read in full, without an index. Every `where`
+but this table narrow the read, and only when there is no `orWhere` or other `or` form at the top
+level, no right join and no join of this table again. The joined tables are read in full, without an index. Every `where`
 clause then filters the joined rows, which come back in the same order whichever way the table was
 read, so memory is proportional to the joined tables and the records read from this one. That is
 fine at the data volumes a browser holds, and worth knowing before joining two large tables. Before

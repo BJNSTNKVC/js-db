@@ -168,7 +168,7 @@ export class Predicate {
             return this.#negate(constraint.not, lower === false || upper === false ? false : lower && upper);
         }
 
-        return this.#negate(constraint.not, this.#compared(held, constraint.operator, constraint.value, constraint.kinds));
+        return this.#negate(constraint.not, this.#compared(held, constraint.operator, constraint.value, constraint.kinds, constraint.caseSensitive));
     }
 
     /**
@@ -233,20 +233,20 @@ export class Predicate {
     /**
      * Compare a held value against a given one, unknown against null.
      */
-    static #compared(held: unknown, operator: Operator, given: unknown, kinds: boolean = false): Truth {
-        return this.#absent(given) ? null : this.#compare(held, operator, given, kinds);
+    static #compared(held: unknown, operator: Operator, given: unknown, kinds: boolean = false, sensitive: boolean = false): Truth {
+        return this.#absent(given) ? null : this.#compare(held, operator, given, kinds, sensitive);
     }
 
     /**
      * Compare a held value against a given one.
      */
-    static #compare(held: unknown, operator: Operator, given: unknown, kinds: boolean = false): Truth {
+    static #compare(held: unknown, operator: Operator, given: unknown, kinds: boolean = false, sensitive: boolean = false): Truth {
         if (operator === 'like' || operator === 'not like') {
             if (typeof held !== 'string') {
                 return null;
             }
 
-            const matched: boolean = this.#like(String(given), held);
+            const matched: boolean = this.#like(String(given), held, sensitive);
 
             return operator === 'like' ? matched : !matched;
         }
@@ -388,8 +388,8 @@ export class Predicate {
     /**
      * Determine whether a subject matches a like pattern.
      */
-    static #like(pattern: string, subject: string): boolean {
-        const tokens: LikeToken[] = this.#tokens(pattern);
+    static #like(pattern: string, subject: string, sensitive: boolean): boolean {
+        const tokens: LikeToken[] = this.#tokens(pattern, sensitive);
 
         let token: number = 0;
         let index: number = 0;
@@ -414,7 +414,7 @@ export class Predicate {
             // Lowercasing one character at a time rather than the whole subject,
             // because a character whose lower case is longer than
             // itself would otherwise shift every index after it.
-            if (current?.kind === 'one' || current?.value === (subject[index] as string).toLowerCase()) {
+            if (current?.kind === 'one' || current?.value === this.#folded(subject[index] as string, sensitive)) {
                 token++;
                 index++;
 
@@ -442,14 +442,14 @@ export class Predicate {
     /**
      * Reduce a like pattern to the tokens it matches by.
      */
-    static #tokens(pattern: string): LikeToken[] {
+    static #tokens(pattern: string, sensitive: boolean): LikeToken[] {
         const tokens: LikeToken[] = [];
 
         for (let index: number = 0; index < pattern.length; index++) {
             const character: string = pattern[index] as string;
 
             if (character === '\\' && (pattern[index + 1] === '%' || pattern[index + 1] === '_')) {
-                tokens.push({ kind: 'literal', value: (pattern[index + 1] as string).toLowerCase() });
+                tokens.push({ kind: 'literal', value: pattern[index + 1] as string });
                 index++;
 
                 continue;
@@ -471,9 +471,16 @@ export class Predicate {
                 continue;
             }
 
-            tokens.push({ kind: 'literal', value: character.toLowerCase() });
+            tokens.push({ kind: 'literal', value: this.#folded(character, sensitive) });
         }
 
         return tokens;
+    }
+
+    /**
+     * Lowercase a character of a like pattern or subject unless matching exactly.
+     */
+    static #folded(character: string, sensitive: boolean): string {
+        return sensitive ? character : character.toLowerCase();
     }
 }

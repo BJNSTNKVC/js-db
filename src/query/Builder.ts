@@ -142,6 +142,16 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
+     * Add a negated constraint to the query, disjunctively.
+     */
+    orWhereNot(column: Partial<T> | Nested<T>): this;
+    orWhereNot(column: Key<T>, value: unknown): this;
+    orWhereNot(column: Key<T>, operator: Operator, value: unknown): this;
+    orWhereNot(column: Column<T>, ...parameters: unknown[]): this {
+        return this.#constrain('or', true, column, parameters, 'or');
+    }
+
+    /**
      * Constrain a column to one of the given values.
      */
     whereIn(column: Key<T>, values: unknown[]): this {
@@ -228,29 +238,29 @@ export class Builder<T = Record<string, unknown>> {
     /**
      * Constrain a column to match a pattern.
      */
-    whereLike(column: Key<T>, pattern: string): this {
-        return this.#push({ type: 'basic', column, operator: 'like', value: pattern, conjunction: 'and', not: false });
+    whereLike(column: Key<T>, pattern: string, caseSensitive: boolean = false): this {
+        return this.#push(this.#like('and', 'like', column, pattern, caseSensitive));
     }
 
     /**
      * Constrain a column to match a pattern, disjunctively.
      */
-    orWhereLike(column: Key<T>, pattern: string): this {
-        return this.#push({ type: 'basic', column, operator: 'like', value: pattern, conjunction: 'or', not: false });
+    orWhereLike(column: Key<T>, pattern: string, caseSensitive: boolean = false): this {
+        return this.#push(this.#like('or', 'like', column, pattern, caseSensitive));
     }
 
     /**
      * Constrain a column to not match a pattern.
      */
-    whereNotLike(column: Key<T>, pattern: string): this {
-        return this.#push({ type: 'basic', column, operator: 'not like', value: pattern, conjunction: 'and', not: false });
+    whereNotLike(column: Key<T>, pattern: string, caseSensitive: boolean = false): this {
+        return this.#push(this.#like('and', 'not like', column, pattern, caseSensitive));
     }
 
     /**
      * Constrain a column to not match a pattern, disjunctively.
      */
-    orWhereNotLike(column: Key<T>, pattern: string): this {
-        return this.#push({ type: 'basic', column, operator: 'not like', value: pattern, conjunction: 'or', not: false });
+    orWhereNotLike(column: Key<T>, pattern: string, caseSensitive: boolean = false): this {
+        return this.#push(this.#like('or', 'not like', column, pattern, caseSensitive));
     }
 
     /**
@@ -259,31 +269,16 @@ export class Builder<T = Record<string, unknown>> {
     whereDate(column: Key<T>, value: Date | string): this;
     whereDate(column: Key<T>, operator: DateOperator, value: Date | string): this;
     whereDate(column: Key<T>, ...parameters: unknown[]): this {
-        const resolved: { operator: DateOperator; value: unknown } = this.#dated(parameters);
-        const timezone: string = this.#connection.timezone;
-        const day: Parts = Calendar.parts(Calendar.moment(resolved.value, timezone) ?? new Date(NaN), timezone);
+        return this.#date('and', column, parameters);
+    }
 
-        // A day is expressed as the range it covers, so an indexed column can still
-        // drive the scan and a stored time of day does not have to match.
-        const from: Date = Calendar.midnight(day.year, day.month, day.day, timezone);
-        const to: Date = new Date(Calendar.midnight(day.year, day.month, day.day + 1, timezone).getTime() - 1);
-
-        if (resolved.operator === '=') {
-            return this.#push({ type: 'between', column, from, to, conjunction: 'and', not: false });
-        }
-
-        if (resolved.operator === '!=' || resolved.operator === '<>') {
-            const constraints: Constraint[] = [
-                { type: 'basic', column, operator: '<', value: from, conjunction: 'and', not: false },
-                { type: 'basic', column, operator: '>', value: to, conjunction: 'or', not: false },
-            ];
-
-            return this.#push({ type: 'nested', constraints, conjunction: 'and', not: false });
-        }
-
-        const bound: Date = resolved.operator === '>' || resolved.operator === '<=' ? to : from;
-
-        return this.#push({ type: 'basic', column, operator: resolved.operator, value: bound, conjunction: 'and', not: false });
+    /**
+     * Constrain a date column by the day it falls on, disjunctively.
+     */
+    orWhereDate(column: Key<T>, value: Date | string): this;
+    orWhereDate(column: Key<T>, operator: DateOperator, value: Date | string): this;
+    orWhereDate(column: Key<T>, ...parameters: unknown[]): this {
+        return this.#date('or', column, parameters);
     }
 
     /**
@@ -296,12 +291,30 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
+     * Constrain the year of a date column, disjunctively.
+     */
+    orWhereYear(column: Key<T>, value: number | string): this;
+    orWhereYear(column: Key<T>, operator: DateOperator, value: number | string): this;
+    orWhereYear(column: Key<T>, ...parameters: unknown[]): this {
+        return this.#part('or', column, 'year', parameters);
+    }
+
+    /**
      * Constrain the month of a date column, numbered from one.
      */
     whereMonth(column: Key<T>, value: number | string): this;
     whereMonth(column: Key<T>, operator: DateOperator, value: number | string): this;
     whereMonth(column: Key<T>, ...parameters: unknown[]): this {
         return this.#part('and', column, 'month', parameters);
+    }
+
+    /**
+     * Constrain the month of a date column, numbered from one, disjunctively.
+     */
+    orWhereMonth(column: Key<T>, value: number | string): this;
+    orWhereMonth(column: Key<T>, operator: DateOperator, value: number | string): this;
+    orWhereMonth(column: Key<T>, ...parameters: unknown[]): this {
+        return this.#part('or', column, 'month', parameters);
     }
 
     /**
@@ -314,19 +327,30 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
+     * Constrain the day of the month of a date column, disjunctively.
+     */
+    orWhereDay(column: Key<T>, value: number | string): this;
+    orWhereDay(column: Key<T>, operator: DateOperator, value: number | string): this;
+    orWhereDay(column: Key<T>, ...parameters: unknown[]): this {
+        return this.#part('or', column, 'day', parameters);
+    }
+
+    /**
      * Constrain a date column's time of day, as HH:MM:SS or HH:MM.
      */
     whereTime(column: Key<T>, value: string): this;
     whereTime(column: Key<T>, operator: DateOperator, value: string): this;
     whereTime(column: Key<T>, operator: string, value?: string): this {
-        const resolved: { operator: DateOperator; value: unknown } = this.#dated(value === undefined ? [operator] : [operator, value]);
-        const given: string = resolved.value as string;
+        return this.#time('and', column, operator, value);
+    }
 
-        // Times compare as strings, so one given without
-        // seconds is padded to the stored shape.
-        const time: string = /^\d{2}:\d{2}$/.test(given) ? `${given}:00` : given;
-
-        return this.#push({ type: 'time', column, operator: resolved.operator, value: time, timezone: this.#connection.timezone, conjunction: 'and', not: false });
+    /**
+     * Constrain a date column's time of day, as HH:MM:SS or HH:MM, disjunctively.
+     */
+    orWhereTime(column: Key<T>, value: string): this;
+    orWhereTime(column: Key<T>, operator: DateOperator, value: string): this;
+    orWhereTime(column: Key<T>, operator: string, value?: string): this {
+        return this.#time('or', column, operator, value);
     }
 
     /**
@@ -335,7 +359,16 @@ export class Builder<T = Record<string, unknown>> {
     whereAny(columns: Key<T>[], value: unknown): this;
     whereAny(columns: Key<T>[], operator: Operator, value: unknown): this;
     whereAny(columns: Key<T>[], ...parameters: unknown[]): this {
-        return this.#across('or', false, columns, parameters);
+        return this.#across('and', 'or', false, columns, parameters);
+    }
+
+    /**
+     * Constrain the query to records where any column matches, disjunctively.
+     */
+    orWhereAny(columns: Key<T>[], value: unknown): this;
+    orWhereAny(columns: Key<T>[], operator: Operator, value: unknown): this;
+    orWhereAny(columns: Key<T>[], ...parameters: unknown[]): this {
+        return this.#across('or', 'or', false, columns, parameters);
     }
 
     /**
@@ -344,7 +377,16 @@ export class Builder<T = Record<string, unknown>> {
     whereAll(columns: Key<T>[], value: unknown): this;
     whereAll(columns: Key<T>[], operator: Operator, value: unknown): this;
     whereAll(columns: Key<T>[], ...parameters: unknown[]): this {
-        return this.#across('and', false, columns, parameters);
+        return this.#across('and', 'and', false, columns, parameters);
+    }
+
+    /**
+     * Constrain the query to records where every column matches, disjunctively.
+     */
+    orWhereAll(columns: Key<T>[], value: unknown): this;
+    orWhereAll(columns: Key<T>[], operator: Operator, value: unknown): this;
+    orWhereAll(columns: Key<T>[], ...parameters: unknown[]): this {
+        return this.#across('or', 'and', false, columns, parameters);
     }
 
     /**
@@ -353,7 +395,16 @@ export class Builder<T = Record<string, unknown>> {
     whereNone(columns: Key<T>[], value: unknown): this;
     whereNone(columns: Key<T>[], operator: Operator, value: unknown): this;
     whereNone(columns: Key<T>[], ...parameters: unknown[]): this {
-        return this.#across('or', true, columns, parameters);
+        return this.#across('and', 'or', true, columns, parameters);
+    }
+
+    /**
+     * Constrain the query to records where no column matches, disjunctively.
+     */
+    orWhereNone(columns: Key<T>[], value: unknown): this;
+    orWhereNone(columns: Key<T>[], operator: Operator, value: unknown): this;
+    orWhereNone(columns: Key<T>[], ...parameters: unknown[]): this {
+        return this.#across('or', 'or', true, columns, parameters);
     }
 
     /**
@@ -1389,7 +1440,7 @@ export class Builder<T = Record<string, unknown>> {
     /**
      * Add a constraint of the given shape to the query.
      */
-    #constrain(conjunction: Conjunction, not: boolean, column: Column<T>, parameters: unknown[]): this {
+    #constrain(conjunction: Conjunction, not: boolean, column: Column<T>, parameters: unknown[], pairs: Conjunction = 'and'): this {
         if (typeof column === 'function') {
             const nested: Builder<T> = new Builder<T>(this.#connection, this.#table, this.#transaction)
 
@@ -1400,7 +1451,7 @@ export class Builder<T = Record<string, unknown>> {
 
         if (typeof column === 'object' && column !== null) {
             const constraints: Constraint[] = Object.entries(column).map(
-                ([key, held]: [string, unknown]): Constraint => this.#basic('and', false, key, '=', held),
+                ([key, held]: [string, unknown]): Constraint => this.#basic(pairs, false, key, '=', held),
             );
 
             return this.#push({ type: 'nested', constraints, conjunction, not });
@@ -1450,14 +1501,68 @@ export class Builder<T = Record<string, unknown>> {
     /**
      * Add a nested group comparing each of the columns alike.
      */
-    #across(joiner: Conjunction, not: boolean, columns: Key<T>[], parameters: unknown[]): this {
+    #across(conjunction: Conjunction, joiner: Conjunction, not: boolean, columns: Key<T>[], parameters: unknown[]): this {
         const nested: Builder<T> = new Builder<T>(this.#connection, this.#table, this.#transaction);
 
         for (const column of columns) {
             nested.#constrain(joiner, false, column, parameters);
         }
 
-        return this.#push({ type: 'nested', constraints: nested.#constraints, conjunction: 'and', not });
+        return this.#push({ type: 'nested', constraints: nested.#constraints, conjunction, not });
+    }
+
+    /**
+     * Build a pattern match, matching the letters exactly when asked.
+     */
+    #like(conjunction: Conjunction, operator: 'like' | 'not like', column: string, pattern: string, caseSensitive: boolean): Constraint {
+        const constraint: Extract<Constraint, { type: 'basic' }> = { type: 'basic', column, operator, value: pattern, conjunction, not: false };
+
+        return caseSensitive ? { ...constraint, caseSensitive } : constraint;
+    }
+
+    /**
+     * Add a constraint on the day a date column falls on.
+     */
+    #date(conjunction: Conjunction, column: Key<T>, parameters: unknown[]): this {
+        const resolved: { operator: DateOperator; value: unknown } = this.#dated(parameters);
+        const timezone: string = this.#connection.timezone;
+        const day: Parts = Calendar.parts(Calendar.moment(resolved.value, timezone) ?? new Date(NaN), timezone);
+
+        // A day is expressed as the range it covers, so an indexed column can still
+        // drive the scan and a stored time of day does not have to match.
+        const from: Date = Calendar.midnight(day.year, day.month, day.day, timezone);
+        const to: Date = new Date(Calendar.midnight(day.year, day.month, day.day + 1, timezone).getTime() - 1);
+
+        if (resolved.operator === '=') {
+            return this.#push({ type: 'between', column, from, to, conjunction, not: false });
+        }
+
+        if (resolved.operator === '!=' || resolved.operator === '<>') {
+            const constraints: Constraint[] = [
+                { type: 'basic', column, operator: '<', value: from, conjunction: 'and', not: false },
+                { type: 'basic', column, operator: '>', value: to, conjunction: 'or', not: false },
+            ];
+
+            return this.#push({ type: 'nested', constraints, conjunction, not: false });
+        }
+
+        const bound: Date = resolved.operator === '>' || resolved.operator === '<=' ? to : from;
+
+        return this.#push({ type: 'basic', column, operator: resolved.operator, value: bound, conjunction, not: false });
+    }
+
+    /**
+     * Add a constraint on the time of day of a date column.
+     */
+    #time(conjunction: Conjunction, column: Key<T>, operator: string, value?: string): this {
+        const resolved: { operator: DateOperator; value: unknown } = this.#dated(value === undefined ? [operator] : [operator, value]);
+        const given: string = resolved.value as string;
+
+        // Times compare as strings, so one given without
+        // seconds is padded to the stored shape.
+        const time: string = /^\d{2}:\d{2}$/.test(given) ? `${given}:00` : given;
+
+        return this.#push({ type: 'time', column, operator: resolved.operator, value: time, timezone: this.#connection.timezone, conjunction, not: false });
     }
 
     /**

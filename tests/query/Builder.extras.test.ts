@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { Connection } from '../../src/database/Connection';
 import { Migration } from '../../src/migrations/Migration';
 import { Schema } from '../../src/schema/Schema';
@@ -59,6 +59,39 @@ class CreateVisitsTables extends Migration {
             table.string('name');
             table.integer('person_id');
             table.datetime('at').nullable().index();
+        });
+    }
+}
+
+interface Contact {
+    id: number;
+    name: string;
+    email: string;
+    role: string;
+    seen_at: Date | null;
+}
+
+interface Mark {
+    id: number;
+    text: string;
+}
+
+class CreateContactsTables extends Migration {
+    /**
+     * Run the migration.
+     */
+    override async up(): Promise<void> {
+        await Schema.create('contacts', (table: Blueprint): void => {
+            table.id();
+            table.string('name');
+            table.string('email');
+            table.string('role');
+            table.datetime('seen_at').nullable();
+        });
+
+        await Schema.create('marks', (table: Blueprint): void => {
+            table.id();
+            table.string('text');
         });
     }
 }
@@ -444,6 +477,134 @@ describe('Builder date parts with an operator', (): void => {
         expect((await joined().whereMonth('visits.at', '<', '07').pluck<string>('visits.name')).sort()).toEqual(['early', 'spring']);
         expect((await joined().whereDate('at', '!=', '2024-07-07').where('people.name', 'Alice').pluck<string>('visits.name')).sort()).toEqual(['spring']);
         expect(await joined().whereDay('at', '<=', 7).count()).toEqual(2);
+    });
+});
+
+
+describe('Builder or forms and case-sensitive like', (): void => {
+    let databases: number = 0;
+    let marked: Connection;
+
+    /**
+     * Begin a query against the contacts of the marked database.
+     */
+    function contacts(): Builder<Contact> {
+        return marked.table<Contact>('contacts');
+    }
+
+    /**
+     * Begin a query against the marks of the marked database.
+     */
+    function marks(): Builder<Mark> {
+        return marked.table<Mark>('marks');
+    }
+
+    /**
+     * Get the names of the contacts a query returns, in key order.
+     */
+    async function called(query: Builder<Contact>): Promise<string[]> {
+        return (await query.orderBy('id').get()).map((contact: Contact): string => contact.name);
+    }
+
+    /**
+     * Get the texts of the marks a query returns, in key order.
+     */
+    async function texts(query: Builder<Mark>): Promise<string[]> {
+        return (await query.orderBy('id').get()).map((mark: Mark): string => mark.text);
+    }
+
+    beforeEach(async (): Promise<void> => {
+        marked = new Connection('app', { database: `builder-extras-or-${++databases}`, migrations: [CreateContactsTables] });
+
+        await marked.migrate();
+
+        await contacts().insert([
+            { name: 'Alice', email: 'alice@example.com', role: 'admin', seen_at: new Date('2026-02-01T09:30:00.000Z') },
+            { name: 'Bob', email: 'bob@example.com', role: 'member', seen_at: new Date('2026-02-01T18:45:00.000Z') },
+            { name: 'Carol', email: 'carol@example.com', role: 'member', seen_at: new Date('2026-03-15T00:00:00.000Z') },
+            { name: 'Dave', email: 'dave@example.com', role: 'member', seen_at: null },
+            { name: 'Erin', email: 'erin@example.com', role: 'owner', seen_at: new Date('2025-12-25T00:00:00.000Z') },
+            { name: 'Mixed', email: 'Mixed@X', role: 'guest', seen_at: null },
+        ]);
+
+        await marks().insert(['A*B', 'AxB', 'A?B', 'A[B]', 'AB', 'a*b', 'a?b', 'a[b]', 'A%B', 'a%b', 'A\\xB'].map((text: string): Omit<Mark, 'id'> => ({ text })));
+    });
+
+    afterEach((): void => {
+        marked.disconnect();
+    });
+
+    const OR_FORMS: [string, (query: Builder<Contact>) => Builder<Contact>, string[]][] = [
+        ['orWhereNot with a column', (query: Builder<Contact>): Builder<Contact> => query.where('name', 'Bob').orWhereNot('role', 'member'), ['Alice', 'Bob', 'Erin', 'Mixed']],
+        ['orWhereNot with an operator', (query: Builder<Contact>): Builder<Contact> => query.where('name', 'Bob').orWhereNot('id', '>', 2), ['Alice', 'Bob']],
+        ['orWhereNot with an object', (query: Builder<Contact>): Builder<Contact> => query.where('name', 'Dave').orWhereNot({ role: 'member', name: 'Bob' }), ['Alice', 'Dave', 'Erin', 'Mixed']],
+        ['orWhereNot with a closure', (query: Builder<Contact>): Builder<Contact> => query.where('name', 'Bob').orWhereNot((nested: Builder<Contact>): Builder<Contact> => nested.where('role', 'member').orWhere('role', 'guest')), ['Alice', 'Bob', 'Erin']],
+        ['orWhereDate with =', (query: Builder<Contact>): Builder<Contact> => query.where('name', 'Erin').orWhereDate('seen_at', '2026-02-01'), ['Alice', 'Bob', 'Erin']],
+        ['orWhereDate with !=', (query: Builder<Contact>): Builder<Contact> => query.where('name', 'Dave').orWhereDate('seen_at', '!=', '2026-02-01'), ['Carol', 'Dave', 'Erin']],
+        ['orWhereDate with <>', (query: Builder<Contact>): Builder<Contact> => query.where('name', 'Dave').orWhereDate('seen_at', '<>', '2026-02-01'), ['Carol', 'Dave', 'Erin']],
+        ['orWhereDate with <', (query: Builder<Contact>): Builder<Contact> => query.where('name', 'Mixed').orWhereDate('seen_at', '<', '2026-02-01'), ['Erin', 'Mixed']],
+        ['orWhereTime with >', (query: Builder<Contact>): Builder<Contact> => query.where('name', 'Dave').orWhereTime('seen_at', '>', '12:00:00'), ['Bob', 'Dave']],
+        ['orWhereTime with a time alone', (query: Builder<Contact>): Builder<Contact> => query.where('name', 'Dave').orWhereTime('seen_at', '09:30:00'), ['Alice', 'Dave']],
+        ['orWhereYear with a year alone', (query: Builder<Contact>): Builder<Contact> => query.where('name', 'Dave').orWhereYear('seen_at', 2025), ['Dave', 'Erin']],
+        ['orWhereYear with >=', (query: Builder<Contact>): Builder<Contact> => query.where('name', 'Dave').orWhereYear('seen_at', '>=', 2026), ['Alice', 'Bob', 'Carol', 'Dave']],
+        ['orWhereMonth with a month alone', (query: Builder<Contact>): Builder<Contact> => query.where('name', 'Dave').orWhereMonth('seen_at', 3), ['Carol', 'Dave']],
+        ['orWhereMonth with <', (query: Builder<Contact>): Builder<Contact> => query.where('name', 'Dave').orWhereMonth('seen_at', '<', 3), ['Alice', 'Bob', 'Dave']],
+        ['orWhereDay with a day alone', (query: Builder<Contact>): Builder<Contact> => query.where('name', 'Dave').orWhereDay('seen_at', 25), ['Dave', 'Erin']],
+        ['orWhereDay with >', (query: Builder<Contact>): Builder<Contact> => query.where('name', 'Dave').orWhereDay('seen_at', '>', 1), ['Carol', 'Dave', 'Erin']],
+        ['orWhereAny with an operator', (query: Builder<Contact>): Builder<Contact> => query.where('name', 'Dave').orWhereAny(['name', 'role'], 'like', '%o%'), ['Bob', 'Carol', 'Dave', 'Erin']],
+        ['orWhereAny with a value alone', (query: Builder<Contact>): Builder<Contact> => query.where('name', 'Dave').orWhereAny(['name', 'role'], 'admin'), ['Alice', 'Dave']],
+        ['orWhereAll', (query: Builder<Contact>): Builder<Contact> => query.where('name', 'Alice').orWhereAll(['name', 'role'], 'like', '%e%'), ['Alice', 'Dave', 'Erin', 'Mixed']],
+        ['orWhereNone', (query: Builder<Contact>): Builder<Contact> => query.where('name', 'Bob').orWhereNone(['name', 'role'], 'like', '%o%'), ['Alice', 'Bob', 'Dave', 'Mixed']],
+    ];
+
+    test.each(OR_FORMS)('%s after a where returns the rows of either', async (_: string, constrain: (query: Builder<Contact>) => Builder<Contact>, expected: string[]): Promise<void> => {
+        expect(await called(constrain(contacts()))).toEqual(expected);
+        expect(await constrain(contacts()).count()).toEqual(expected.length);
+    });
+
+    test('whereLike without the flag still ignores case', async (): Promise<void> => {
+        expect(await called(contacts().whereLike('email', 'mixed%'))).toEqual(['Mixed']);
+        expect(await texts(marks().whereLike('text', 'a*b'))).toEqual(['A*B', 'a*b']);
+    });
+
+    test('whereLike with the flag matches the letters exactly', async (): Promise<void> => {
+        expect(await called(contacts().whereLike('email', 'mixed%', true))).toEqual([]);
+        expect(await called(contacts().whereLike('email', 'Mixed%', true))).toEqual(['Mixed']);
+        expect(await called(contacts().whereLike('email', 'Mixe_@%', true))).toEqual(['Mixed']);
+        expect(await texts(marks().whereLike('text', 'a%', true))).toEqual(['a*b', 'a?b', 'a[b]', 'a%b']);
+        expect(await texts(marks().whereLike('text', 'A_B', true))).toEqual(['A*B', 'AxB', 'A?B', 'A%B']);
+    });
+
+    test('whereNotLike with the flag returns the rest', async (): Promise<void> => {
+        expect(await called(contacts().whereNotLike('email', 'Mixed%', true))).toEqual(['Alice', 'Bob', 'Carol', 'Dave', 'Erin']);
+        expect(await called(contacts().whereNotLike('email', 'mixed%', true))).toEqual(['Alice', 'Bob', 'Carol', 'Dave', 'Erin', 'Mixed']);
+        expect(await texts(marks().whereNotLike('text', 'A*B', true))).toEqual(['AxB', 'A?B', 'A[B]', 'AB', 'a*b', 'a?b', 'a[b]', 'A%B', 'a%b', 'A\\xB']);
+    });
+
+    test('orWhereLike with the flag after a where returns the rows of either', async (): Promise<void> => {
+        expect(await called(contacts().where('name', 'Alice').orWhereLike('email', 'Mixed%', true))).toEqual(['Alice', 'Mixed']);
+        expect(await called(contacts().where('name', 'Alice').orWhereLike('email', 'mixed%', true))).toEqual(['Alice']);
+    });
+
+    test('orWhereNotLike with the flag after a where returns the rows of either', async (): Promise<void> => {
+        expect(await called(contacts().where('name', 'Alice').orWhereNotLike('email', '%@example.com', true))).toEqual(['Alice', 'Mixed']);
+        expect(await called(contacts().where('name', 'Alice').orWhereNotLike('email', '%@EXAMPLE.COM', true))).toEqual(['Alice', 'Bob', 'Carol', 'Dave', 'Erin', 'Mixed']);
+    });
+
+    test.each([
+        ['A*B', ['A*B']],
+        ['A?B', ['A?B']],
+        ['A[B]', ['A[B]']],
+        ['A[%', ['A[B]']],
+        ['A\\%B', ['A%B']],
+    ])('a case-sensitive %s matches only the literal characters', async (pattern: string, expected: string[]): Promise<void> => {
+        expect(await texts(marks().whereLike('text', pattern, true))).toEqual(expected);
+    });
+
+    test('a case-sensitive like is checked on every record rather than through an index', async (): Promise<void> => {
+        expect(await users().whereLike('email', 'alice%', true).explain()).toEqual('scan');
+        expect(await users().whereLike('email', 'alice%', true).where('email', 'alice@example.com').explain()).toEqual('index:users_email_unique');
+        expect(await names(users().whereLike('email', 'alice%', true))).toEqual(['Alice']);
     });
 });
 
