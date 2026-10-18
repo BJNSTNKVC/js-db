@@ -1045,22 +1045,26 @@ export class Builder<T = Record<string, unknown>> {
     }
 
     /**
-     * Update the matching record, inserting it when there is none.
+     * Update the first matching record, inserting one when there is none.
      */
-    async updateOrInsert(attributes: Partial<T>, values: Partial<T> = {} as Partial<T>): Promise<boolean> {
+    async updateOrInsert(attributes: Partial<T>, values: Partial<T> | ((exists: boolean) => Partial<T>) = {} as Partial<T>): Promise<boolean> {
         this.#executor().writable('updateOrInsert');
 
         const query: Builder<T> = this.clone().where(attributes as Partial<T>);
+        const exists: boolean = await query.exists();
+        const changes: Partial<T> = typeof values === 'function' ? values(exists) : values;
 
-        if (await query.exists()) {
-            await query.update(values);
+        if (!exists) {
+            await this.clone().insert({ ...attributes, ...changes });
 
-            return false;
+            return true;
         }
 
-        await this.clone().insert({ ...attributes, ...values });
+        if (Object.keys(changes).length === 0) {
+            return true;
+        }
 
-        return true;
+        return await query.limit(1).update(changes) > 0;
     }
 
     /**

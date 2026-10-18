@@ -113,7 +113,7 @@ describe('Builder writes of a date-only string', (): void => {
 
             test('updates through updateOrInsert the row the same string wrote', async (): Promise<void> => {
                 expect(await birthdays().updateOrInsert({ born: '2024-01-15' as unknown as Date }, { name: 'Alice' })).toEqual(true);
-                expect(await birthdays().updateOrInsert({ born: '2024-01-15' as unknown as Date }, { name: 'Alicia' })).toEqual(false);
+                expect(await birthdays().updateOrInsert({ born: '2024-01-15' as unknown as Date }, { name: 'Alicia' })).toEqual(true);
 
                 expect(await birthdays().pluck('name')).toEqual(['Alicia']);
             });
@@ -196,7 +196,7 @@ describe('Builder writes of a date-only string', (): void => {
 
             test('updates through updateOrInsert the row the same string wrote', async (): Promise<void> => {
                 expect(await birthdays().updateOrInsert({ born: '2024-01-15' as unknown as Date }, { name: 'Alice' })).toEqual(true);
-                expect(await birthdays().updateOrInsert({ born: '2024-01-15' as unknown as Date }, { name: 'Alicia' })).toEqual(false);
+                expect(await birthdays().updateOrInsert({ born: '2024-01-15' as unknown as Date }, { name: 'Alicia' })).toEqual(true);
 
                 expect(await birthdays().pluck('name')).toEqual(['Alicia']);
             });

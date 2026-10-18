@@ -533,13 +533,90 @@ describe('Builder updateOrInsert', (): void => {
     test('updates when a record matches', async (): Promise<void> => {
         await users().insert({ name: 'Alice', email: 'alice@example.com' });
 
-        expect(await users().updateOrInsert({ email: 'alice@example.com' }, { name: 'Alicia' })).toEqual(false);
+        expect(await users().updateOrInsert({ email: 'alice@example.com' }, { name: 'Alicia' })).toEqual(true);
         expect((await users().firstOrFail()).name).toEqual('Alicia');
         expect(await users().count()).toEqual(1);
     });
 
     test('inserts with only the attributes when no values are given', async (): Promise<void> => {
         expect(await users().updateOrInsert({ name: 'Alice', email: 'alice@example.com' })).toEqual(true);
+    });
+
+    test('updates only the first matching record in key order', async (): Promise<void> => {
+        await users().insert([
+            { name: 'Alice', email: 'a@x', role: 'member' },
+            { name: 'Bob', email: 'b@x', role: 'admin' },
+            { name: 'Carol', email: 'c@x', role: 'member' },
+        ]);
+
+        const updated: boolean = await users().updateOrInsert({ role: 'member' }, { nickname: 'first' });
+
+        expect(await users().orderBy('id').pluck('nickname')).toEqual(['first', null, null]);
+        expect(updated).toEqual(true);
+    });
+
+    test('updates only the first matching record in the order the query gives', async (): Promise<void> => {
+        await users().insert([
+            { name: 'Alice', email: 'a@x', role: 'member' },
+            { name: 'Bob', email: 'b@x', role: 'admin' },
+            { name: 'Carol', email: 'c@x', role: 'member' },
+        ]);
+
+        const updated: boolean = await users().orderBy('id', 'desc').updateOrInsert({ role: 'member' }, { nickname: 'last' });
+
+        expect(await users().orderBy('id').pluck('nickname')).toEqual([null, null, 'last']);
+        expect(updated).toEqual(true);
+    });
+
+    test('writes nothing when given no values for a matching record', async (): Promise<void> => {
+        const stamped: Date = new Date('2020-01-15T10:00:00.000Z');
+
+        await users().insert({ name: 'Alice', email: 'alice@example.com', updated_at: stamped });
+
+        const outcomes: boolean[] = [
+            await users().updateOrInsert({ email: 'alice@example.com' }),
+            await users().updateOrInsert({ email: 'alice@example.com' }, {}),
+        ];
+
+        expect((await users().firstOrFail()).updated_at).toEqual(stamped);
+        expect(outcomes).toEqual([true, true]);
+    });
+
+    test('calls a callback with whether a record exists and writes its values', async (): Promise<void> => {
+        const calls: boolean[] = [];
+        const values = (exists: boolean): Partial<User> => {
+            calls.push(exists);
+
+            return { name: exists ? 'Updated' : 'Inserted' };
+        };
+
+        expect(await users().updateOrInsert({ email: 'alice@example.com' }, values)).toEqual(true);
+        expect(await users().pluck('name')).toEqual(['Inserted']);
+
+        expect(await users().updateOrInsert({ email: 'alice@example.com' }, values)).toEqual(true);
+        expect(await users().pluck('name')).toEqual(['Updated']);
+
+        expect(calls).toEqual([false, true]);
+    });
+
+    test('writes nothing when a callback gives no values for a matching record', async (): Promise<void> => {
+        const stamped: Date = new Date('2020-01-15T10:00:00.000Z');
+
+        await users().insert({ name: 'Alice', email: 'alice@example.com', updated_at: stamped });
+
+        const updated: boolean = await users().updateOrInsert({ email: 'alice@example.com' }, (): Partial<User> => ({}));
+
+        expect((await users().firstOrFail()).updated_at).toEqual(stamped);
+        expect(updated).toEqual(true);
+    });
+
+    test('refuses a joined query before calling the callback', async (): Promise<void> => {
+        const values = vi.fn((): Partial<User> => ({ name: 'Alice' }));
+
+        await expect(users().join('guests', 'users.email', '=', 'guests.email').updateOrInsert({ email: 'a@x' }, values)).rejects.toThrow(SchemaException);
+
+        expect(values).not.toHaveBeenCalled();
+        expect(await users().count()).toEqual(0);
     });
 
     test('lets two calls made at once collide on a unique index', async (): Promise<void> => {
@@ -2531,7 +2608,7 @@ describe('Builder inserts naming a column with a table', (): void => {
 
         test('inserts through qualified attributes with updateOrInsert, then updates through them', async (): Promise<void> => {
             expect(await people().updateOrInsert({ 'users.email': 'alice@example.com' }, { 'users.name': 'Alice' })).toEqual(true);
-            expect(await people().updateOrInsert({ 'users.email': 'alice@example.com' }, { 'users.name': 'Alicia' })).toEqual(false);
+            expect(await people().updateOrInsert({ 'users.email': 'alice@example.com' }, { 'users.name': 'Alicia' })).toEqual(true);
 
             expect(await people().get()).toMatchObject([{ name: 'Alicia', email: 'alice@example.com' }]);
             expect(await dotted()).toEqual([]);

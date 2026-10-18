@@ -738,6 +738,23 @@ Inside `DB.transaction`, the exception aborts the whole
 transaction as it leaves the callback. IndexedDB cannot undo one write alone, so a callback that
 catches it keeps whatever the failed write changed before the collision.
 
+`updateOrInsert` inserts the attributes and the values together when no record matches the
+attributes. When records match, it updates only the first, in key order or in the order the query
+gives, as Laravel's does. It returns `true` either way, even when the values match what is stored,
+where Laravel on MySQL returns `false`. Given no values for a record that exists, it writes nothing
+and leaves `updated_at` alone. The values may be a callback, called with whether a record exists,
+whose result is written:
+
+```ts
+await DB.table<User>('users').updateOrInsert(
+    { email: 'john@example.com' },
+    (exists: boolean): Partial<User> => (exists ? { name: 'John' } : { name: 'John', role: 'member' }),
+);
+```
+
+Before 21.0.0 it updated every matching record, returned `false` after an update, stamped
+`updated_at` when given no values, and read a callback as no values.
+
 `updateOrInsert` checks for a matching record and then writes, as two steps with nothing held
 between them. Two calls made at once for the same attributes can both find
 nothing and both insert, inside `DB.transaction` as well as outside. On a table with a unique index
