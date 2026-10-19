@@ -5,11 +5,19 @@ import { Planner } from './Planner';
 import { Signature } from './Signature';
 import type { IndexSchema, TableSchema } from '../schema/types';
 
+export type Target = {
+    store: IDBObjectStore;
+    schema: TableSchema;
+    strict: boolean;
+    timezone: string;
+};
+
 export class Writer {
     /**
      * Add a record to the store, naming any unique index it violates.
      */
-    static async add(store: IDBObjectStore, schema: TableSchema, strict: boolean, timezone: string, record: Record<string, unknown>): Promise<IDBValidKey> {
+    static async add(target: Target, record: Record<string, unknown>): Promise<IDBValidKey> {
+        const { store, schema, strict, timezone }: Target = target;
         const prepared: Record<string, unknown> = Enforcer.insertable(record, schema, strict, timezone, new Date());
 
         try {
@@ -22,12 +30,12 @@ export class Writer {
     /**
      * Add the records one at a time, skipping collisions when told to.
      */
-    static async addEach(store: IDBObjectStore, schema: TableSchema, strict: boolean, timezone: string, records: Record<string, unknown>[], ignore: boolean): Promise<number> {
+    static async addEach(target: Target, records: Record<string, unknown>[], ignore: boolean): Promise<number> {
         let added: number = 0;
 
         for (const record of records) {
             try {
-                await this.add(store, schema, strict, timezone, record);
+                await this.add(target, record);
 
                 added++;
             } catch (error: unknown) {
@@ -45,7 +53,8 @@ export class Writer {
     /**
      * Add the records together, rolling back the transaction when one fails.
      */
-    static async addAll(store: IDBObjectStore, schema: TableSchema, strict: boolean, timezone: string, records: Record<string, unknown>[], ignore: boolean): Promise<number> {
+    static async addAll(target: Target, records: Record<string, unknown>[], ignore: boolean): Promise<number> {
+        const { store, schema, strict, timezone }: Target = target;
         const prepared: Record<string, unknown>[] = records.map((record: Record<string, unknown>): Record<string, unknown> => Enforcer.insertable(record, schema, strict, timezone, new Date()));
         const requests: Promise<IDBValidKey>[] = [];
 
@@ -175,13 +184,15 @@ export class Writer {
     /**
      * Insert a record, or merge it into the one it conflicts with.
      */
-    static async merge(store: IDBObjectStore, schema: TableSchema, strict: boolean, timezone: string, columns: string[], target: IndexSchema | null, value: Record<string, unknown>, update: string[] | undefined): Promise<void> {
-        const existing: Record<string, unknown> | undefined = target === null
-            ? await this.#stored(store, schema, strict, timezone, value)
-            : await this.#conflicting(store, schema, strict, timezone, columns, target, value);
+    static async merge(target: Target, columns: string[], index: IndexSchema | null, value: Record<string, unknown>, update: string[] | undefined): Promise<void> {
+        const { store, schema, strict, timezone }: Target = target;
+
+        const existing: Record<string, unknown> | undefined = index === null
+            ? await this.#stored(target, value)
+            : await this.#conflicting(target, columns, index, value);
 
         if (existing === undefined) {
-            await this.add(store, schema, strict, timezone, value);
+            await this.add(target, value);
 
             return;
         }
@@ -190,7 +201,7 @@ export class Writer {
             ? { ...value }
             : Object.fromEntries(update.map((column: string): [string, unknown] => [column, value[column]]));
 
-        if (target === null) {
+        if (index === null) {
             delete changes[schema.key as string];
         }
 
@@ -206,7 +217,8 @@ export class Writer {
     /**
      * Get the record stored under the key the row gives, if any.
      */
-    static async #stored(store: IDBObjectStore, schema: TableSchema, strict: boolean, timezone: string, value: Record<string, unknown>): Promise<Record<string, unknown> | undefined> {
+    static async #stored(target: Target, value: Record<string, unknown>): Promise<Record<string, unknown> | undefined> {
+        const { store, schema, strict, timezone }: Target = target;
         const column: string = schema.key as string;
 
         // A row leaving out a key the database generates has none to coerce,
@@ -219,7 +231,8 @@ export class Writer {
     /**
      * Get the one record holding the row's values in the unique index, if any.
      */
-    static async #conflicting(store: IDBObjectStore, schema: TableSchema, strict: boolean, timezone: string, columns: string[], target: IndexSchema, value: Record<string, unknown>): Promise<Record<string, unknown> | undefined> {
+    static async #conflicting(target: Target, columns: string[], index: IndexSchema, value: Record<string, unknown>): Promise<Record<string, unknown> | undefined> {
+        const { store, schema, strict, timezone }: Target = target;
         const prepared: Record<string, unknown> = Enforcer.updatable(
             Object.fromEntries(columns.map((column: string): [string, unknown] => [column, value[column]])),
             schema,
@@ -228,7 +241,7 @@ export class Writer {
             new Date(),
         );
 
-        const entries: IDBValidKey[] = target.multiEntry
+        const entries: IDBValidKey[] = index.multiEntry
             ? this.#entries(prepared[columns[0] as string])
             : [this.#keyOf(columns, prepared)].filter((key: IDBValidKey): boolean => Planner.keyable(key));
 
@@ -236,9 +249,9 @@ export class Writer {
             return undefined;
         }
 
-        return target.multiEntry
-            ? this.#holder(store, schema, target, entries)
-            : Request.settle(store.index(target.name).get(IDBKeyRange.only(entries[0] as IDBValidKey)) as IDBRequest<Record<string, unknown> | undefined>);
+        return index.multiEntry
+            ? this.#holder(store, schema, index, entries)
+            : Request.settle(store.index(index.name).get(IDBKeyRange.only(entries[0] as IDBValidKey)) as IDBRequest<Record<string, unknown> | undefined>);
     }
 
     /**

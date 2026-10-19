@@ -5,6 +5,7 @@ import { Handles } from '../database/Handles';
 import { Request } from '../database/Request';
 import { Migrator } from '../migrations/Migrator';
 import { Enforcer } from '../schema/Enforcer';
+import { Schemas } from '../schema/Schemas';
 import { Columns } from './Columns';
 import { Comparator } from './Comparator';
 import { Joiner } from './Joiner';
@@ -15,6 +16,7 @@ import { Writer } from './Writer';
 import type { Connection } from '../database/Connection';
 import type { ColumnSchema, ColumnType, IndexSchema, TableSchema } from '../schema/types';
 import type { Constraint, JoinClause, Order, Plan, Projection, Query } from './types';
+import type { Target } from './Writer';
 
 type Entry<T> = { record: T; key: IDBValidKey };
 
@@ -28,6 +30,13 @@ type Writes = {
     last: Promise<void>;
     failure: { record: Record<string, unknown>; previous: Record<string, unknown>; error: unknown } | null;
     later: { key: IDBValidKey; previous: Record<string, unknown> }[];
+};
+
+type Joining = {
+    schemas: Map<string, TableSchema>;
+    tables: Map<string, string[]>;
+    constraints: Constraint[];
+    stores: (table: string) => IDBObjectStore;
 };
 
 export class Executor<T> {
@@ -116,8 +125,8 @@ export class Executor<T> {
     async find(key: IDBValidKey | null | undefined): Promise<T | null> {
         return this.#settled(async (): Promise<T | null> => {
             const schema: TableSchema = await this.#connection.schema(this.#query.table);
-            const column: ColumnSchema | undefined = schema.columns.find((candidate: ColumnSchema): boolean => candidate.name === schema.key);
-            const prepared: unknown = column === undefined ? key : Planner.convert(key, column.type, this.#connection.timezone);
+            const type: ColumnType | undefined = Schemas.type(schema, schema.key);
+            const prepared: unknown = type === undefined ? key : Planner.convert(key, type, this.#connection.timezone);
 
             if (!Planner.keyable(prepared)) {
                 return null;
@@ -152,7 +161,7 @@ export class Executor<T> {
             const store: IDBObjectStore = await this.#store('readonly');
             const plan: Plan = await this.#planned(schema, store);
             const started: number = performance.now();
-            const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index);
+            const source: IDBObjectStore | IDBIndex = this.#source(store, plan.index);
             const fresh: ((row: Record<string, unknown>) => boolean) | null = this.#deduplicates(schema, this.#query.distinct) ? this.#fresh() : null;
             const ranges: (IDBKeyRange | undefined)[] = plan.values === null
                 ? [plan.range ?? undefined]
@@ -240,10 +249,11 @@ export class Executor<T> {
 
             const schema: TableSchema = await this.#connection.schema(this.#query.table);
             const store: IDBObjectStore = await this.#store('readwrite');
+            const target: Target = this.#target(store, schema);
             const started: number = performance.now();
             const inserted: number = this.#owns(store)
-                ? await Writer.addAll(store, schema, this.#connection.strict, this.#connection.timezone, rows as Record<string, unknown>[], ignore)
-                : await Writer.addEach(store, schema, this.#connection.strict, this.#connection.timezone, rows as Record<string, unknown>[], ignore);
+                ? await Writer.addAll(target, rows as Record<string, unknown>[], ignore)
+                : await Writer.addEach(target, rows as Record<string, unknown>[], ignore);
 
             this.#emit('insert', started, inserted);
 
@@ -261,7 +271,7 @@ export class Executor<T> {
             const schema: TableSchema = await this.#connection.schema(this.#query.table);
             const store: IDBObjectStore = await this.#store('readwrite');
             const started: number = performance.now();
-            const key: IDBValidKey = await Writer.add(store, schema, this.#connection.strict, this.#connection.timezone, record as Record<string, unknown>);
+            const key: IDBValidKey = await Writer.add(this.#target(store, schema), record as Record<string, unknown>);
 
             this.#emit('insert', started, 1);
 
@@ -277,13 +287,14 @@ export class Executor<T> {
             this.writable('upsert');
 
             const schema: TableSchema = await this.#connection.schema(this.#query.table);
-            const target: IndexSchema | null = Writer.conflict(schema, columns);
+            const index: IndexSchema | null = Writer.conflict(schema, columns);
             const store: IDBObjectStore = await this.#store('readwrite');
+            const target: Target = this.#target(store, schema);
             const started: number = performance.now();
 
             try {
                 for (const value of values) {
-                    await Writer.merge(store, schema, this.#connection.strict, this.#connection.timezone, columns, target, value as Record<string, unknown>, update);
+                    await Writer.merge(target, columns, index, value as Record<string, unknown>, update);
                 }
             } catch (error: unknown) {
                 if (this.#owns(store)) {
@@ -319,7 +330,7 @@ export class Executor<T> {
 
             const arranged: boolean = this.#query.random || this.#query.orders.length > 0;
             const collects: boolean = !plan.ordered && arranged && (limit !== null || offset > 0);
-            const writes: Writes = { last: Promise.resolve(), failure: null, later: [] };
+            const writes: Writes = this.#writes();
             const apply: (cursor: IDBCursorWithValue) => void = this.#writer(change, writes);
 
             let seen: number = 0;
@@ -366,7 +377,7 @@ export class Executor<T> {
             };
 
             const stopped: () => boolean = (): boolean => writes.failure !== null || (ceiling !== null && seen >= ceiling);
-            const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index);
+            const source: IDBObjectStore | IDBIndex = this.#source(store, plan.index);
 
             if (plan.index !== null && this.#moves(schema, plan.index, changes)) {
                 await this.#byKey(store, await this.#keys(source, plan), (cursor: IDBCursorWithValue): boolean => !stopped() && visit(cursor), stopped);
@@ -438,10 +449,10 @@ export class Executor<T> {
     /**
      * Get the columns of every table the query reads, keyed by table.
      */
-    async tables(): Promise<Map<string, string[]>> {
+    async tables(schemas?: Map<string, TableSchema>): Promise<Map<string, string[]>> {
         const tables: Map<string, string[]> = new Map<string, string[]>();
 
-        for (const [name, schema] of await this.#schemas()) {
+        for (const [name, schema] of schemas ?? await this.#schemas()) {
             tables.set(name, schema.columns.map((column: ColumnSchema): string => column.name));
         }
 
@@ -513,6 +524,13 @@ export class Executor<T> {
         await this.#connection.schema(table);
 
         return this.#own(database.transaction(table, mode)).objectStore(table);
+    }
+
+    /**
+     * Get the index to read through, or the store itself without one.
+     */
+    #source(store: IDBObjectStore, index: string | null): IDBObjectStore | IDBIndex {
+        return index === null ? store : store.index(index);
     }
 
     /**
@@ -605,13 +623,13 @@ export class Executor<T> {
             ? schema.key
             : schema.indexes.find((candidate: IndexSchema): boolean => candidate.name === index)?.columns[0];
 
-        const type: ColumnType | undefined = schema.columns.find((candidate: ColumnSchema): boolean => candidate.name === column)?.type;
+        const type: ColumnType | undefined = Schemas.type(schema, column);
 
         if (type === undefined || type === 'json') {
             return true;
         }
 
-        const source: IDBObjectStore | IDBIndex = index === null ? store : store.index(index);
+        const source: IDBObjectStore | IDBIndex = this.#source(store, index);
 
         // IndexedDB orders keys by type first, so the first
         // and last keys tell the type of every one.
@@ -647,7 +665,7 @@ export class Executor<T> {
      * Determine whether a column may hold a value of any kind.
      */
     #loose(schema: TableSchema, column: string): boolean {
-        const type: ColumnType | undefined = schema.columns.find((candidate: ColumnSchema): boolean => candidate.name === column)?.type;
+        const type: ColumnType | undefined = Schemas.type(schema, column);
 
         return type === undefined || type === 'json';
     }
@@ -660,7 +678,7 @@ export class Executor<T> {
             return null;
         }
 
-        if (schema.columns.some((candidate: ColumnSchema): boolean => candidate.name === column && candidate.type === 'boolean')) {
+        if (Schemas.type(schema, column) === 'boolean') {
             return null;
         }
 
@@ -691,7 +709,7 @@ export class Executor<T> {
         const ceiling: number | null = follows && this.#query.limit !== null ? this.#query.offset - skipped + this.#query.limit : null;
 
         if (bare && follows && plan.residual.length === 0 && fresh === null) {
-            const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index);
+            const source: IDBObjectStore | IDBIndex = this.#source(store, plan.index);
             const keys: IDBValidKey[] = this.#paged(await this.#keys(source, plan, skipped, ceiling), this.#query.offset - skipped);
 
             this.#emit(Planner.describe(plan), started, keys.length);
@@ -774,7 +792,7 @@ export class Executor<T> {
      * Collect the records a walk over the planned source yields.
      */
     async #cursored(store: IDBObjectStore, plan: Plan, matches: (record: Record<string, unknown>) => boolean, fresh: ((record: T) => boolean) | null = null, skip: number = 0, ceiling: number | null = null): Promise<Entry<T>[]> {
-        const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index);
+        const source: IDBObjectStore | IDBIndex = this.#source(store, plan.index);
 
         if (this.#batched(plan, skip, ceiling, plan.residual.length > 0 || fresh !== null)) {
             const [records, keys]: [T[], IDBValidKey[]] = await Promise.all([
@@ -804,7 +822,7 @@ export class Executor<T> {
      * Collect the records the planned point lookups yield.
      */
     async #points(store: IDBObjectStore, plan: Plan, matches: (record: Record<string, unknown>) => boolean, fresh: ((record: T) => boolean) | null = null, ceiling: number | null = null): Promise<Entry<T>[]> {
-        const source: IDBObjectStore | IDBIndex = plan.index === null ? store : store.index(plan.index);
+        const source: IDBObjectStore | IDBIndex = this.#source(store, plan.index);
         const collected: Entry<T>[] = [];
 
         for (const value of plan.values as unknown[]) {
@@ -885,23 +903,19 @@ export class Executor<T> {
      * Get the schema of every table the query reads, keyed by table.
      */
     async #schemas(): Promise<Map<string, TableSchema>> {
-        const schemas: Map<string, TableSchema> = new Map<string, TableSchema>();
         const names: string[] = [this.#query.table, ...this.#query.joins.map((clause: JoinClause): string => clause.table)];
+        const schemas: TableSchema[] = await Schemas.of(this.#connection, names);
 
-        for (const name of names) {
-            schemas.set(name, await this.#connection.schema(name));
-        }
-
-        return schemas;
+        return new Map<string, TableSchema>(schemas.map((schema: TableSchema, index: number): [string, TableSchema] => [names[index] as string, schema]));
     }
 
     /**
      * Get the constraints qualified by table, values in their column's type.
      */
-    async #qualified(tables: Map<string, string[]>): Promise<Constraint[]> {
+    #qualified(tables: Map<string, string[]>, schemas: Map<string, TableSchema>): Constraint[] {
         const types: Map<string, ColumnType> = new Map<string, ColumnType>();
 
-        for (const [name, schema] of await this.#schemas()) {
+        for (const [name, schema] of schemas) {
             for (const column of schema.columns) {
                 types.set(`${name}.${column.name}`, column.type);
             }
@@ -945,10 +959,18 @@ export class Executor<T> {
     }
 
     /**
+     * Get the store, schema and connection settings a write goes through.
+     */
+    #target(store: IDBObjectStore, schema: TableSchema): Target {
+        return { store, schema, strict: this.#connection.strict, timezone: this.#connection.timezone };
+    }
+
+    /**
      * Run the joins and keep the rows the constraints match.
      */
-    async #combined(tables: Map<string, string[]>, constraints: Constraint[], stores: (table: string) => IDBObjectStore): Promise<Row[]> {
-        const entries: Entry<T>[] = await this.#based(tables, stores(this.#query.table));
+    async #combined(joining: Joining): Promise<Row[]> {
+        const { schemas, tables, constraints, stores }: Joining = joining;
+        const entries: Entry<T>[] = await this.#based(tables, schemas.get(this.#query.table) as TableSchema, stores(this.#query.table));
         const records: Record<string, unknown>[] = entries.map((entry: Entry<T>): Record<string, unknown> => entry.record as Record<string, unknown>);
 
         // Held under a symbol, the key travels through every join as the
@@ -972,8 +994,7 @@ export class Executor<T> {
     /**
      * Read the base records its own constraints allow, in key order.
      */
-    async #based(tables: Map<string, string[]>, store: IDBObjectStore): Promise<Entry<T>[]> {
-        const schema: TableSchema = await this.#connection.schema(this.#query.table);
+    async #based(tables: Map<string, string[]>, schema: TableSchema, store: IDBObjectStore): Promise<Entry<T>[]> {
         const plan: Plan = await this.#planned(schema, store, this.#pushed(tables, schema), []);
         const matches: (record: Record<string, unknown>) => boolean = Predicate.compile(plan.residual);
 
@@ -1006,14 +1027,25 @@ export class Executor<T> {
     }
 
     /**
+     * Get the schemas, columns, qualified constraints and stores a join reads.
+     */
+    async #joining(mode: IDBTransactionMode): Promise<Joining> {
+        const schemas: Map<string, TableSchema> = await this.#schemas();
+        const tables: Map<string, string[]> = await this.tables(schemas);
+        const constraints: Constraint[] = this.#qualified(tables, schemas);
+        const stores: (table: string) => IDBObjectStore = await this.#stores([...tables.keys()], mode);
+
+        return { schemas, tables, constraints, stores };
+    }
+
+    /**
      * Run the joins, returning flat rows.
      */
     async #joined(distinct: boolean): Promise<Record<string, unknown>[]> {
-        const tables: Map<string, string[]> = await this.tables();
-        const constraints: Constraint[] = await this.#qualified(tables);
-        const stores: (table: string) => IDBObjectStore = await this.#stores([...tables.keys()], 'readonly');
+        const joining: Joining = await this.#joining('readonly');
+        const tables: Map<string, string[]> = joining.tables;
         const started: number = performance.now();
-        const sorted: Row[] = this.#arranged(await this.#combined(tables, constraints, stores), tables);
+        const sorted: Row[] = this.#arranged(await this.#combined(joining), tables);
         const rows: Record<string, unknown>[] = distinct
             ? this.#paged(Joiner.flatten(sorted, tables, this.#query.columns).filter(this.#fresh()))
             : Joiner.flatten(this.#paged(sorted), tables, this.#query.columns);
@@ -1027,12 +1059,11 @@ export class Executor<T> {
      * Get the first joined row holding the record with the given key.
      */
     async #sought(key: IDBValidKey): Promise<T | null> {
-        const tables: Map<string, string[]> = await this.tables();
-        const constraints: Constraint[] = await this.#qualified(tables);
-        const stores: (table: string) => IDBObjectStore = await this.#stores([...tables.keys()], 'readonly');
+        const joining: Joining = await this.#joining('readonly');
+        const tables: Map<string, string[]> = joining.tables;
         const started: number = performance.now();
 
-        const held: Row[] = (await this.#combined(tables, constraints, stores)).filter((row: Row): boolean => {
+        const held: Row[] = (await this.#combined(joining)).filter((row: Row): boolean => {
             return row[KEY] !== undefined && indexedDB.cmp(row[KEY], key) === 0;
         });
 
@@ -1062,11 +1093,9 @@ export class Executor<T> {
             return (await this.#joined(true)).length;
         }
 
-        const tables: Map<string, string[]> = await this.tables();
-        const constraints: Constraint[] = await this.#qualified(tables);
-        const stores: (table: string) => IDBObjectStore = await this.#stores([...tables.keys()], 'readonly');
+        const joining: Joining = await this.#joining('readonly');
         const started: number = performance.now();
-        const count: number = (await this.#combined(tables, constraints, stores)).length;
+        const count: number = (await this.#combined(joining)).length;
 
         this.#emit('join', started, count);
 
@@ -1081,16 +1110,14 @@ export class Executor<T> {
             throw new SchemaException(`Table [${this.#query.table}] does not support ordering, a limit or an offset on a write through a join.`);
         }
 
-        const tables: Map<string, string[]> = await this.tables();
-        const constraints: Constraint[] = await this.#qualified(tables);
-        const stores: (table: string) => IDBObjectStore = await this.#stores([...tables.keys()], 'readwrite');
-        const store: IDBObjectStore = stores(this.#query.table);
+        const joining: Joining = await this.#joining('readwrite');
+        const store: IDBObjectStore = joining.stores(this.#query.table);
         const started: number = performance.now();
         const keys: Set<IDBValidKey> = new Set<IDBValidKey>();
-        const writes: Writes = { last: Promise.resolve(), failure: null, later: [] };
+        const writes: Writes = this.#writes();
         const apply: (cursor: IDBCursorWithValue) => void = this.#writer(change, writes);
 
-        for (const row of await this.#combined(tables, constraints, stores)) {
+        for (const row of await this.#combined(joining)) {
             if (row[KEY] !== undefined) {
                 keys.add(row[KEY]);
             }
@@ -1104,11 +1131,18 @@ export class Executor<T> {
             affected++;
         }, (): boolean => writes.failure !== null);
 
-        await this.#landed(store, await this.#connection.schema(this.#query.table), writes);
+        await this.#landed(store, joining.schemas.get(this.#query.table) as TableSchema, writes);
 
         this.#emit('join', started, affected);
 
         return affected;
+    }
+
+    /**
+     * Start tracking the writes a walk sends, with none yet sent.
+     */
+    #writes(): Writes {
+        return { last: Promise.resolve(), failure: null, later: [] };
     }
 
     /**

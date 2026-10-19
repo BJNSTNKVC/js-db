@@ -1,5 +1,6 @@
 import { CheckConstraintViolationException, NotNullConstraintViolationException } from '../exceptions';
 import { Calendar } from './Calendar';
+import { Schemas } from './Schemas';
 import type { ColumnSchema, ColumnType, TableSchema } from './types';
 
 const FALSY: ReadonlySet<string> = new Set<string>(['false', '0']);
@@ -100,7 +101,7 @@ export class Enforcer {
      * Coerce the value a write gives one column.
      */
     static field(value: unknown, name: string, schema: TableSchema, strict: boolean, timezone: string): unknown {
-        const column: ColumnSchema | undefined = schema.columns.find((candidate: ColumnSchema): boolean => candidate.name === name);
+        const column: ColumnSchema | undefined = Schemas.column(schema, name);
 
         return column === undefined ? value : this.#value(value, column, schema, strict, timezone);
     }

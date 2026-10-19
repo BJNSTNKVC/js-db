@@ -8,6 +8,7 @@ import { Writer } from './Writer';
 import { Calendar } from '../schema/Calendar';
 import type { Parts } from '../schema/Calendar';
 import { Enforcer } from '../schema/Enforcer';
+import { Schemas } from '../schema/Schemas';
 import type { Connection } from '../database/Connection';
 import type { ColumnSchema, ColumnType, TableSchema } from '../schema/types';
 import type {
@@ -1173,7 +1174,7 @@ export class Builder<T = Record<string, unknown>> {
      * Determine whether a column belongs to a joined table.
      */
     async #joinedColumn(column: string): Promise<boolean> {
-        const declares: (schema: TableSchema) => boolean = (schema: TableSchema): boolean => schema.columns.some((declared: ColumnSchema): boolean => declared.name === column);
+        const declares: (schema: TableSchema) => boolean = (schema: TableSchema): boolean => Schemas.column(schema, column) !== undefined;
 
         if (declares(await this.#connection.schema(this.#table))) {
             return false;
@@ -1370,11 +1371,7 @@ export class Builder<T = Record<string, unknown>> {
      * Get a lookup from a column to the type its table declares.
      */
     async #types(): Promise<(column: string) => ColumnType | undefined> {
-        const schemas: TableSchema[] = [];
-
-        for (const table of [this.#table, ...this.#joins.map((clause: JoinClause): string => clause.table)]) {
-            schemas.push(await this.#connection.schema(table));
-        }
+        const schemas: TableSchema[] = await Schemas.of(this.#connection, [this.#table, ...this.#joins.map((clause: JoinClause): string => clause.table)]);
 
         // A bare column on a join reads from the last table declaring it,
         // as the flattened row holds it.

@@ -1,4 +1,5 @@
 import { Calendar } from '../schema/Calendar';
+import { Schemas } from '../schema/Schemas';
 import { Columns } from './Columns';
 import type { ColumnSchema, ColumnType, IndexSchema, TableSchema } from '../schema/types';
 import type { Constraint, Operator, Order, Plan } from './types';
@@ -26,8 +27,9 @@ export class Planner {
      * Compile the constraints and orders into an execution plan.
      */
     static plan(constraints: readonly Constraint[], orders: readonly Order[], schema: TableSchema, excluded: ReadonlySet<string | null> = new Set<string | null>()): Plan {
-        const candidate: Candidate | null = this.disjunctive(constraints) ? null : this.#candidate(constraints, schema, excluded);
-        const ordering: Candidate | null = this.disjunctive(constraints) ? null : this.#ordering(orders, schema, excluded);
+        const disjunctive: boolean = this.disjunctive(constraints);
+        const candidate: Candidate | null = disjunctive ? null : this.#candidate(constraints, schema, excluded);
+        const ordering: Candidate | null = disjunctive ? null : this.#ordering(orders, schema, excluded);
 
         if (candidate === null) {
             return this.#ordered(constraints, orders, ordering);
@@ -175,7 +177,7 @@ export class Planner {
             return null;
         }
 
-        const type: ColumnType | undefined = schema.columns.find((candidate: ColumnSchema): boolean => candidate.name === constraint.column)?.type;
+        const type: ColumnType | undefined = Schemas.type(schema, constraint.column);
         // An index orders the kinds of key otherwise than a comparison ranks kinds,
         // and holds no boolean or object, so on a column that can hold
         // several kinds only equality is looked up through it.
@@ -276,7 +278,7 @@ export class Planner {
             return null;
         }
 
-        const column: ColumnSchema | undefined = schema.columns.find((candidate: ColumnSchema): boolean => candidate.name === order.column);
+        const column: ColumnSchema | undefined = Schemas.column(schema, order.column);
 
         if (column?.nullable) {
             return null;
