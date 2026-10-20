@@ -173,6 +173,12 @@ interface Named {
     name: string;
 }
 
+interface Item {
+    id: number;
+    name: string;
+    flag: number | null;
+}
+
 interface Log {
     id: number;
     level: string;
@@ -3087,5 +3093,97 @@ describe('Builder values IndexedDB cannot hold as keys', (): void => {
 
         expect(await held.table('markers').find(Infinity)).toEqual({ id: Infinity, name: 'far' });
         expect(await held.table('markers').where('id', Infinity).explain()).toEqual('key');
+    });
+});
+
+describe('Builder empty groups', (): void => {
+    class CreateItemsTable extends Migration {
+        /**
+         * Run the migration.
+         */
+        override async up(): Promise<void> {
+            await Schema.create('items', (table: Blueprint): void => {
+                table.id();
+                table.string('name');
+                table.integer('flag').nullable().index();
+            });
+        }
+    }
+
+    let grouped: Connection;
+    let sequence: number = 0;
+
+    /**
+     * Begin a query against the items table.
+     */
+    function items(): Builder<Item> {
+        return grouped.table<Item>('items');
+    }
+
+    /**
+     * Get the names of the items a query matches, in key order.
+     */
+    async function names(query: Builder<Item>): Promise<string[]> {
+        return query.orderBy('id').pluck<string>('name');
+    }
+
+    beforeEach(async (): Promise<void> => {
+        grouped = new Connection('app', { database: `builder-reads-grouped-${++sequence}`, migrations: [CreateItemsTable] });
+
+        await grouped.migrate();
+        await items().insert([{ name: 'a', flag: 1 }, { name: 'b', flag: 2 }, { name: 'c', flag: null }]);
+    });
+
+    afterEach((): void => {
+        grouped.disconnect();
+    });
+
+    test('adds nothing for a negated closure that adds nothing', async (): Promise<void> => {
+        expect(await names(items().whereNot((): void => undefined))).toEqual(['a', 'b', 'c']);
+    });
+
+    test('adds nothing for a negated empty object', async (): Promise<void> => {
+        expect(await names(items().whereNot({}))).toEqual(['a', 'b', 'c']);
+    });
+
+    test('adds nothing for whereNone over no columns', async (): Promise<void> => {
+        expect(await names(items().whereNone([], 'x'))).toEqual(['a', 'b', 'c']);
+    });
+
+    test('adds nothing for an or closure that adds nothing', async (): Promise<void> => {
+        const query: Builder<Item> = items().where('name', 'a').orWhere((): void => undefined);
+
+        expect(await names(query.clone())).toEqual(['a']);
+        expect(await query.count()).toEqual(1);
+    });
+
+    test('adds nothing for an or empty object', async (): Promise<void> => {
+        expect(await names(items().where('name', 'a').orWhere({}))).toEqual(['a']);
+    });
+
+    test('adds nothing for orWhereAny over no columns', async (): Promise<void> => {
+        expect(await names(items().where('name', 'a').orWhereAny([], 'x'))).toEqual(['a']);
+    });
+
+    test('deletes only what the rest of the query matches', async (): Promise<void> => {
+        expect(await items().where('name', 'a').orWhere((): void => undefined).delete()).toEqual(1);
+        expect(await names(items())).toEqual(['b', 'c']);
+    });
+
+    test('plans the rest of the query as if the group were absent', async (): Promise<void> => {
+        expect(await items().where('id', 1).orWhere((): void => undefined).explain()).toEqual('key');
+    });
+
+    test('adds nothing for a closure that adds nothing', async (): Promise<void> => {
+        expect(await names(items().where((): void => undefined))).toEqual(['a', 'b', 'c']);
+    });
+
+    test('adds nothing for whereAny and whereAll over no columns', async (): Promise<void> => {
+        expect(await names(items().whereAny([], 'x'))).toEqual(['a', 'b', 'c']);
+        expect(await names(items().whereAll([], 'x'))).toEqual(['a', 'b', 'c']);
+    });
+
+    test('adds nothing for an or negated closure that adds nothing', async (): Promise<void> => {
+        expect(await names(items().where('name', 'a').orWhereNot((): void => undefined))).toEqual(['a']);
     });
 });

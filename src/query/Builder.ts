@@ -1447,7 +1447,7 @@ export class Builder<T = Record<string, unknown>> {
 
             ;(column as Nested<T>)(nested);
 
-            return this.#push({ type: 'nested', constraints: nested.#constraints, conjunction, not });
+            return this.#nest(nested.#constraints, conjunction, not);
         }
 
         if (typeof column === 'object' && column !== null) {
@@ -1455,7 +1455,7 @@ export class Builder<T = Record<string, unknown>> {
                 ([key, held]: [string, unknown]): Constraint => this.#basic(conjunction, false, key, '=', held),
             );
 
-            return this.#push({ type: 'nested', constraints, conjunction, not });
+            return this.#nest(constraints, conjunction, not);
         }
 
         // Resolved by how many arguments were passed rather than
@@ -1509,7 +1509,14 @@ export class Builder<T = Record<string, unknown>> {
             nested.#constrain(joiner, false, column, parameters);
         }
 
-        return this.#push({ type: 'nested', constraints: nested.#constraints, conjunction, not });
+        return this.#nest(nested.#constraints, conjunction, not);
+    }
+
+    /**
+     * Add a nested group of constraints, unless it holds none.
+     */
+    #nest(constraints: Constraint[], conjunction: Conjunction, not: boolean): this {
+        return constraints.length === 0 ? this : this.#push({ type: 'nested', constraints, conjunction, not });
     }
 
     /**

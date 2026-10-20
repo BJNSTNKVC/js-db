@@ -57,6 +57,23 @@ is not `'guest'` and whose age is not 30. To add only the records matching every
 closure: `.orWhere((query) => query.where({ role: 'admin', age: 30 }))`. Before 20.0.0 `orWhere`
 joined an object's pairs with `and`.
 
+A closure that adds nothing, an empty object and an empty list of columns for `whereAny`, `whereAll`
+or `whereNone` add nothing to the query, in any of their forms, as in Laravel. So a closure may add
+its constraints only when a filter is set:
+
+```ts
+DB.table<User>('users')
+    .where('role', 'admin')
+    .orWhere((query: Builder<User>): void => {
+        if (term !== '') {
+            query.whereLike('name', `%${term}%`);
+        }
+    });
+```
+
+With no term, this matches the admins alone. Before 21.0.1 such a group matched every record and its
+negation none, so an `orWhere` beside it matched every record, and a `delete` reached them all.
+
 `whereAny`, `whereAll` and `whereNone` apply one comparison to several columns at once, as a nested
 group joined to the rest of the query with `and`, and `orWhereAny`, `orWhereAll` and `orWhereNone`
 join the same group with `or`:
